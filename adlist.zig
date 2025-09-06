@@ -195,11 +195,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn iterator(self: *List, direction: Iterator.Direction) Iterator {
-            return .{
-                .list = self,
-                .curr = if (direction == .forward) self.first else self.last,
-                .direction = direction,
-            };
+            return .init(self, direction);
         }
 
         pub fn dupe(
