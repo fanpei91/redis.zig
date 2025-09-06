@@ -23,29 +23,8 @@ pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!*Sds {
     return s;
 }
 
-test new {
-    const allocator = testing.allocator;
-    const init = "hello";
-    const s = try new(allocator, init);
-    defer s.free(allocator);
-
-    try testing.expectEqual(init.len, s.len);
-    try testing.expectEqual(0, s.avail);
-    try testing.expectEqualStrings(init, s.toSlice());
-}
-
 pub fn empty(allocator: Allocator) Allocator.Error!*Sds {
     return new(allocator, "");
-}
-
-test empty {
-    const allocator = testing.allocator;
-    const s = try empty(allocator);
-    defer s.free(allocator);
-
-    try testing.expectEqual(0, s.len);
-    try testing.expectEqual(0, s.avail);
-    try testing.expectStringEndsWith("", s.toSlice());
 }
 
 pub fn fromI64(
@@ -57,48 +36,13 @@ pub fn fromI64(
     return new(allocator, digits);
 }
 
-test fromI64 {
-    const allocator = testing.allocator;
-
-    const min = try fromI64(allocator, std.math.minInt(i64));
-    defer min.free(allocator);
-    try testing.expectEqualStrings("-9223372036854775808", min.toSlice());
-
-    const max = try fromI64(allocator, std.math.maxInt(i64));
-    defer max.free(allocator);
-    try testing.expectEqualStrings("9223372036854775807", max.toSlice());
-}
-
 pub fn dupe(s: *Sds, allocator: Allocator) Allocator.Error!*Sds {
     return new(allocator, s.toSlice());
-}
-
-test dupe {
-    const allocator = testing.allocator;
-
-    const s = try new(allocator, "hello");
-    defer s.free(allocator);
-
-    const dup = try s.dupe(allocator);
-    defer dup.free(allocator);
-
-    try testing.expectEqualStrings(s.toSlice(), dup.toSlice());
 }
 
 pub fn clear(s: *Sds) void {
     s.avail += s.len;
     s.len = 0;
-}
-
-test clear {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    defer s.free(allocator);
-
-    s.clear();
-    try testing.expectEqual(0, s.len);
-    try testing.expectEqual(5, s.avail);
-    try testing.expectEqualStrings("", s.toSlice());
 }
 
 pub fn makeRoomFor(
@@ -130,17 +74,6 @@ pub fn makeRoomFor(
     return ns;
 }
 
-test makeRoomFor {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    const s1 = try s.makeRoomFor(allocator, 5);
-    defer s1.free(allocator);
-
-    try testing.expectEqual(5, s1.len);
-    try testing.expectEqual(15, s1.avail);
-    try testing.expectEqualStrings("hello", s1.toSlice());
-}
-
 pub fn cat(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     const ns = try s.makeRoomFor(allocator, t.len);
     const buf_ptr: [*]u8 = ns.bufPtr();
@@ -152,31 +85,8 @@ pub fn cat(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     return ns;
 }
 
-test cat {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    const ns = try s.cat(allocator, "world");
-    defer ns.free(allocator);
-
-    try testing.expectEqual(10, ns.len);
-    try testing.expectEqualStrings("helloworld", ns.toSlice());
-}
-
 pub fn catSds(s: *Sds, allocator: Allocator, t: *Sds) Allocator.Error!*Sds {
     return s.cat(allocator, t.toSlice());
-}
-
-test catSds {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    const t = try new(allocator, "world");
-    defer t.free(allocator);
-
-    const ns = try s.catSds(allocator, t);
-    defer ns.free(allocator);
-
-    try testing.expectEqual(10, ns.len);
-    try testing.expectEqualStrings("helloworld", ns.toSlice());
 }
 
 pub fn catPrintf(
@@ -193,14 +103,6 @@ pub fn catPrintf(
         return s.cat(allocator, alloc_buf);
     };
     return s.cat(allocator, buf);
-}
-
-test catPrintf {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    const ns = try s.catPrintf(allocator, " {s} {d}", .{ "world", 2025 });
-    defer ns.free(allocator);
-    try testing.expectEqualStrings("hello world 2025", ns.toSlice());
 }
 
 pub fn catRepr(
@@ -232,16 +134,6 @@ pub fn catRepr(
     return ns;
 }
 
-test catRepr {
-    const allocator = testing.allocator;
-    const s = try empty(allocator);
-    const input = "\x07\n\x00foo\r"; // in c: "\a\n\0foo\r"
-    const ns = try s.catRepr(allocator, input);
-    defer ns.free(allocator);
-
-    try testing.expectEqualStrings("\"\\a\\n\\x00foo\\r\"", ns.toSlice());
-}
-
 pub fn removeAvailSpace(s: *Sds, allocator: Allocator) Allocator.Error!*Sds {
     const old_mem_size = @sizeOf(Sds) + s.len + s.avail;
     const new_mem_size = @sizeOf(Sds) + s.len;
@@ -261,13 +153,6 @@ pub fn allocSize(s: *Sds) usize {
     return @sizeOf(Sds) + s.len + s.avail;
 }
 
-test allocSize {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    defer s.free(allocator);
-    try testing.expectEqual(@sizeOf(Sds) + 5, s.allocSize());
-}
-
 pub fn incrLen(s: *Sds, incr: i32) void {
     if (incr >= 0) {
         debug.assert(s.avail >= incr);
@@ -276,28 +161,6 @@ pub fn incrLen(s: *Sds, incr: i32) void {
     }
     s.avail = @intCast(@as(i64, s.avail) - @as(i64, incr));
     s.len = @intCast(@as(i64, s.len) + @as(i64, incr));
-}
-
-test "incrLen-" {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    defer s.free(allocator);
-    s.incrLen(-3);
-
-    try testing.expectEqual(2, s.len);
-    try testing.expectEqual(3, s.avail);
-}
-
-test "incrLen+" {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    defer s.free(allocator);
-    s.avail = 5;
-    s.incrLen(3);
-    try testing.expectEqual(8, s.len);
-    try testing.expectEqual(2, s.avail);
-    s.len = 5;
-    s.avail = 0;
 }
 
 pub fn growZero(
@@ -320,21 +183,6 @@ pub fn growZero(
     return ns;
 }
 
-test growZero {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-
-    const ns = try s.growZero(allocator, 10);
-    defer ns.free(allocator);
-
-    try testing.expectEqual(10, ns.len);
-    try testing.expectEqualSlices(
-        u8,
-        &.{ 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0, 0 },
-        ns.toSlice(),
-    );
-}
-
 pub fn copy(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     var ns = s;
     var total_len: usize = ns.len + ns.avail;
@@ -350,22 +198,6 @@ pub fn copy(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     return ns;
 }
 
-test copy {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-
-    var cp = try s.copy(allocator, "world");
-    try testing.expectEqual(cp.len, 5);
-    try testing.expectEqualStrings("world", cp.toSlice());
-    try testing.expectEqual(s, cp);
-
-    cp = try cp.copy(allocator, "world!");
-    defer cp.free(allocator);
-    try testing.expectEqual(cp.len, 6);
-    try testing.expectEqualStrings("world!", cp.toSlice());
-    try testing.expect(s != cp);
-}
-
 pub fn trim(s: *Sds, t: []const u8) void {
     const trimed = std.mem.trim(u8, s.toSlice(), t);
     const new_len: u32 = @intCast(trimed.len);
@@ -373,18 +205,6 @@ pub fn trim(s: *Sds, t: []const u8) void {
     @memmove(buf_ptr[0..new_len], trimed);
     s.avail = s.avail + (s.len - new_len);
     s.len = new_len;
-}
-
-test trim {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "AA...AA.a.aa.aHelloWorld     :::");
-    defer s.free(allocator);
-
-    s.trim("Aa. :");
-    try testing.expectEqualStrings("HelloWorld", s.toSlice());
-
-    s.trim("d");
-    try testing.expectEqualStrings("HelloWorl", s.toSlice());
 }
 
 pub fn range(s: *Sds, start: i32, incl_end: i32) void {
@@ -425,6 +245,222 @@ pub fn range(s: *Sds, start: i32, incl_end: i32) void {
 
     s.avail = s.avail + (s.len - @as(u32, @intCast(new_len)));
     s.len = @intCast(new_len);
+}
+
+pub fn toLower(s: *Sds) void {
+    const slice = s.toSlice();
+    for (slice, 0..) |c, i| {
+        slice[i] = std.ascii.toLower(c);
+    }
+}
+
+pub fn cmp(s1: *Sds, s2: *Sds) std.math.Order {
+    const lhs = s1.toSlice();
+    const rhs = s2.toSlice();
+    const n = @min(lhs.len, rhs.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        switch (std.math.order(lhs[i], rhs[i])) {
+            .eq => continue,
+            .lt => return .lt,
+            .gt => return .gt,
+        }
+    }
+    return std.math.order(lhs.len, rhs.len);
+}
+
+pub fn free(s: *Sds, allocator: Allocator) void {
+    const mem_size = @sizeOf(Sds) + s.len + s.avail;
+    const mem: [*]align(@alignOf(Sds)) u8 = @ptrCast(s);
+    allocator.free(mem[0..mem_size]);
+}
+
+pub fn toSlice(s: *Sds) []u8 {
+    return s.bufPtr()[0..s.len];
+}
+
+fn bufPtr(s: *Sds) [*]u8 {
+    return @ptrFromInt(@intFromPtr(s) + @sizeOf(Sds));
+}
+
+test new {
+    const allocator = testing.allocator;
+    const init = "hello";
+    const s = try new(allocator, init);
+    defer s.free(allocator);
+
+    try testing.expectEqual(init.len, s.len);
+    try testing.expectEqual(0, s.avail);
+    try testing.expectEqualStrings(init, s.toSlice());
+}
+
+test empty {
+    const allocator = testing.allocator;
+    const s = try empty(allocator);
+    defer s.free(allocator);
+
+    try testing.expectEqual(0, s.len);
+    try testing.expectEqual(0, s.avail);
+    try testing.expectStringEndsWith("", s.toSlice());
+}
+
+test fromI64 {
+    const allocator = testing.allocator;
+
+    const min = try fromI64(allocator, std.math.minInt(i64));
+    defer min.free(allocator);
+    try testing.expectEqualStrings("-9223372036854775808", min.toSlice());
+
+    const max = try fromI64(allocator, std.math.maxInt(i64));
+    defer max.free(allocator);
+    try testing.expectEqualStrings("9223372036854775807", max.toSlice());
+}
+
+test dupe {
+    const allocator = testing.allocator;
+
+    const s = try new(allocator, "hello");
+    defer s.free(allocator);
+
+    const dup = try s.dupe(allocator);
+    defer dup.free(allocator);
+
+    try testing.expectEqualStrings(s.toSlice(), dup.toSlice());
+}
+
+test clear {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    defer s.free(allocator);
+
+    s.clear();
+    try testing.expectEqual(0, s.len);
+    try testing.expectEqual(5, s.avail);
+    try testing.expectEqualStrings("", s.toSlice());
+}
+
+test makeRoomFor {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    const s1 = try s.makeRoomFor(allocator, 5);
+    defer s1.free(allocator);
+
+    try testing.expectEqual(5, s1.len);
+    try testing.expectEqual(15, s1.avail);
+    try testing.expectEqualStrings("hello", s1.toSlice());
+}
+
+test cat {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    const ns = try s.cat(allocator, "world");
+    defer ns.free(allocator);
+
+    try testing.expectEqual(10, ns.len);
+    try testing.expectEqualStrings("helloworld", ns.toSlice());
+}
+
+test catSds {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    const t = try new(allocator, "world");
+    defer t.free(allocator);
+
+    const ns = try s.catSds(allocator, t);
+    defer ns.free(allocator);
+
+    try testing.expectEqual(10, ns.len);
+    try testing.expectEqualStrings("helloworld", ns.toSlice());
+}
+
+test catPrintf {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    const ns = try s.catPrintf(allocator, " {s} {d}", .{ "world", 2025 });
+    defer ns.free(allocator);
+    try testing.expectEqualStrings("hello world 2025", ns.toSlice());
+}
+
+test catRepr {
+    const allocator = testing.allocator;
+    const s = try empty(allocator);
+    const input = "\x07\n\x00foo\r"; // in c: "\a\n\0foo\r"
+    const ns = try s.catRepr(allocator, input);
+    defer ns.free(allocator);
+
+    try testing.expectEqualStrings("\"\\a\\n\\x00foo\\r\"", ns.toSlice());
+}
+
+test allocSize {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    defer s.free(allocator);
+    try testing.expectEqual(@sizeOf(Sds) + 5, s.allocSize());
+}
+
+test "incrLen-" {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    defer s.free(allocator);
+    s.incrLen(-3);
+
+    try testing.expectEqual(2, s.len);
+    try testing.expectEqual(3, s.avail);
+}
+
+test "incrLen+" {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+    defer s.free(allocator);
+    s.avail = 5;
+    s.incrLen(3);
+    try testing.expectEqual(8, s.len);
+    try testing.expectEqual(2, s.avail);
+    s.len = 5;
+    s.avail = 0;
+}
+
+test growZero {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+
+    const ns = try s.growZero(allocator, 10);
+    defer ns.free(allocator);
+
+    try testing.expectEqual(10, ns.len);
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0, 0 },
+        ns.toSlice(),
+    );
+}
+
+test copy {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "hello");
+
+    var cp = try s.copy(allocator, "world");
+    try testing.expectEqual(cp.len, 5);
+    try testing.expectEqualStrings("world", cp.toSlice());
+    try testing.expectEqual(s, cp);
+
+    cp = try cp.copy(allocator, "world!");
+    defer cp.free(allocator);
+    try testing.expectEqual(cp.len, 6);
+    try testing.expectEqualStrings("world!", cp.toSlice());
+    try testing.expect(s != cp);
+}
+
+test trim {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "AA...AA.a.aa.aHelloWorld     :::");
+    defer s.free(allocator);
+
+    s.trim("Aa. :");
+    try testing.expectEqualStrings("HelloWorld", s.toSlice());
+
+    s.trim("d");
+    try testing.expectEqualStrings("HelloWorl", s.toSlice());
 }
 
 test "range(1, 1)" {
@@ -490,13 +526,6 @@ test "range(0, 1)" {
     try testing.expectEqualStrings("!h", s.toSlice());
 }
 
-pub fn toLower(s: *Sds) void {
-    const slice = s.toSlice();
-    for (slice, 0..) |c, i| {
-        slice[i] = std.ascii.toLower(c);
-    }
-}
-
 test toLower {
     const allocator = testing.allocator;
     const s = try new(allocator, "Hello1");
@@ -504,21 +533,6 @@ test toLower {
     s.toLower();
 
     try testing.expectEqualStrings("hello1", s.toSlice());
-}
-
-pub fn cmp(s1: *Sds, s2: *Sds) std.math.Order {
-    const lhs = s1.toSlice();
-    const rhs = s2.toSlice();
-    const n = @min(lhs.len, rhs.len);
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        switch (std.math.order(lhs[i], rhs[i])) {
-            .eq => continue,
-            .lt => return .lt,
-            .gt => return .gt,
-        }
-    }
-    return std.math.order(lhs.len, rhs.len);
 }
 
 test "cmp.gt" {
@@ -552,20 +566,6 @@ test "cmp.lt" {
     defer s2.free(allocator);
 
     try testing.expectEqual(std.math.Order.lt, s1.cmp(s2));
-}
-
-pub fn free(s: *Sds, allocator: Allocator) void {
-    const mem_size = @sizeOf(Sds) + s.len + s.avail;
-    const mem: [*]align(@alignOf(Sds)) u8 = @ptrCast(s);
-    allocator.free(mem[0..mem_size]);
-}
-
-fn bufPtr(s: *Sds) [*]u8 {
-    return @ptrFromInt(@intFromPtr(s) + @sizeOf(Sds));
-}
-
-pub fn toSlice(s: *Sds) []u8 {
-    return s.bufPtr()[0..s.len];
 }
 
 const std = @import("std");
