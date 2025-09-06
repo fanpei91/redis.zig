@@ -160,7 +160,7 @@ pub fn DoublyLinkedList(
             allocator: Allocator,
             existing_node: *Node,
         ) void {
-            defer allocator.destroy(existing_node);
+            defer existing_node.destroy(allocator);
             defer self.ctx.free(existing_node.value);
 
             const prev = existing_node.prev;
