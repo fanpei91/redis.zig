@@ -357,13 +357,13 @@ test copy {
     var cp = try s.copy(allocator, "world");
     try testing.expectEqual(cp.len, 5);
     try testing.expectEqualStrings("world", cp.toSlice());
-    try testing.expectEqual(@intFromPtr(s), @intFromPtr(cp));
+    try testing.expectEqual(s, cp);
 
     cp = try cp.copy(allocator, "world!");
     defer cp.free(allocator);
     try testing.expectEqual(cp.len, 6);
     try testing.expectEqualStrings("world!", cp.toSlice());
-    try testing.expect(@intFromPtr(s) != @intFromPtr(cp));
+    try testing.expect(s != cp);
 }
 
 pub fn trim(s: *Sds, t: []const u8) void {
