@@ -106,7 +106,7 @@ pub fn catRepr(
     allocator: Allocator,
     p: []const u8,
 ) Allocator.Error!*Sds {
-    var ns = try cat(s, allocator, "\"");
+    var ns = try s.cat(allocator, "\"");
     for (p) |b| {
         switch (b) {
             '\\', '"' => ns = try ns.catPrintf(allocator, "\\{c}", .{b}),
@@ -194,8 +194,8 @@ pub fn copy(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     return ns;
 }
 
-pub fn trim(s: *Sds, t: []const u8) void {
-    const trimed = std.mem.trim(u8, s.toSlice(), t);
+pub fn trim(s: *Sds, values_to_strip: []const u8) void {
+    const trimed = std.mem.trim(u8, s.toSlice(), values_to_strip);
     const new_len: u32 = @intCast(trimed.len);
     const buf_ptr: [*]u8 = s.bufPtr();
     @memmove(buf_ptr[0..new_len], trimed);
