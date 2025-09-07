@@ -75,14 +75,14 @@ pub fn Dict(
 
             fn create(
                 allocator: Allocator,
-                slots: usize,
+                length: usize,
             ) Allocator.Error!HashTable {
-                const mem = try allocator.alloc(?*Entry, slots);
+                const mem = try allocator.alloc(?*Entry, length);
                 @memset(mem, null);
                 return .{
                     .used = 0,
-                    .size = slots,
-                    .sizemask = slots - 1,
+                    .size = length,
+                    .sizemask = length - 1,
                     .table = mem.ptr,
                 };
             }
@@ -106,13 +106,21 @@ pub fn Dict(
                         self.used -= 1;
                     }
                 }
-                if (self.table) |table| {
-                    allocator.free(table[0..self.size]);
-                }
+                self.releaseTable(allocator);
+                self.reset();
+            }
+
+            fn reset(self: *HashTable) void {
                 self.used = 0;
                 self.size = 0;
                 self.sizemask = 0;
                 self.table = null;
+            }
+
+            fn releaseTable(self: *HashTable, allocator: Allocator) void {
+                if (self.table) |table| {
+                    allocator.free(table[0..self.size]);
+                }
             }
         };
 
@@ -124,13 +132,17 @@ pub fn Dict(
             return self.ht[0].used + self.ht[1].used;
         }
 
+        pub fn slots(self: *Self) usize {
+            return self.ht[0].size + self.ht[1].size;
+        }
+
         pub fn add(
             self: *Self,
             allocator: Allocator,
             key: Key,
             val: Value,
         ) Allocator.Error!bool {
-            if (self.isRehashing()) self.rehashStep();
+            if (self.isRehashing()) self.rehashStep(allocator);
             if (try self.expandIfNeeded(allocator) == false) {
                 return false;
             }
@@ -149,9 +161,9 @@ pub fn Dict(
             return true;
         }
 
-        pub fn find(self: *Self, key: Key) ?*Entry {
+        pub fn find(self: *Self, allocator: Allocator, key: Key) ?*Entry {
             if (self.ht[0].size == 0) return null;
-            if (self.isRehashing()) self.rehashStep();
+            if (self.isRehashing()) self.rehashStep(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
@@ -168,9 +180,14 @@ pub fn Dict(
             return null;
         }
 
+        pub fn fetchValue(self: *Self, allocator: Allocator, key: Key) ?Value {
+            const entry = self.find(allocator, key) orelse return null;
+            return entry.val;
+        }
+
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
             if (self.ht[0].size == 0) return false;
-            if (self.isRehashing()) self.rehashStep();
+            if (self.isRehashing()) self.rehashStep(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
@@ -261,7 +278,7 @@ pub fn Dict(
         }
 
         fn freeIndexFor(self: *Self, key: Key) ?usize {
-            const hash = self.ctx.hash(key);
+            const hash: Hash = self.ctx.hash(key);
             var idx: ?usize = null;
             for (0..self.ht.len) |i| {
                 idx = hash & self.ht[i].sizemask;
@@ -282,12 +299,13 @@ pub fn Dict(
             allocator: Allocator,
         ) Allocator.Error!bool {
             if (self.isRehashing()) return true;
-            if (self.ht[0].size == 0) {
+            const h0 = &self.ht[0];
+            if (h0.size == 0) {
                 return self.expand(allocator, HT_INITIAL_SIZE);
             }
 
-            const hused = self.ht[0].used;
-            const hsize = self.ht[0].size;
+            const hused = h0.used;
+            const hsize = h0.size;
             const ratio = hused / hsize;
             const force_resize = ratio > force_resize_ratio;
             if (hused >= hsize and (dict_can_resize or force_resize)) {
@@ -296,29 +314,47 @@ pub fn Dict(
             return true;
         }
 
-        fn rehashStep(self: *Self) void {
+        fn rehashStep(self: *Self, allocator: Allocator) void {
             if (self.iterators != 0) return;
+            _ = self.rehash(allocator, 1);
         }
 
         /// more to rehash if returning true
-        fn rehash(self: *Self, n: usize) bool {
-            var empty_visits = n * 10;
+        fn rehash(self: *Self, allocator: Allocator, n: usize) bool {
             if (!self.isRehashing()) return false;
-            var cnt = n;
-            while (cnt > 0 and self.ht[0].used > 0) : (cnt -= 0) {
-                while (self.ht[0].table.?[self.rehashidx.?] == null) {
+
+            var empty_visits = n * 10;
+            var h0: *HashTable = &self.ht[0];
+            var h1: *HashTable = &self.ht[1];
+            var limit = n;
+            while (limit > 0 and h0.used > 0) : (limit -= 1) {
+                while (h0.table.?[self.rehashidx.?] == null) {
                     empty_visits -= 1;
-                    if (empty_visits == 0) return true;
                     self.rehashidx.? += 1;
+                    if (empty_visits == 0) return true;
                 }
-                var entry = self.ht[0].table.?[self.rehashidx.?];
+                var entry = h0.table.?[self.rehashidx.?];
                 while (entry) |ent| {
                     entry = ent.next;
-                    // TODO:
+                    const hash: Hash = self.ctx.hash(ent.key);
+                    const idx = hash & h1.sizemask;
+                    ent.next = h1.table.?[idx];
+                    h1.table.?[idx] = ent;
+                    h1.used += 1;
+                    h0.used -= 1;
                 }
-                self.ht[0].table.?[self.rehashidx.?] = null;
+                h0.table.?[self.rehashidx.?] = null;
                 self.rehashidx.? += 1;
             }
+
+            if (h0.used == 0) {
+                h0.releaseTable(allocator);
+                h0.* = h1.*;
+                h1.reset();
+                self.rehashidx = null;
+                return false;
+            }
+
             return true;
         }
     };
