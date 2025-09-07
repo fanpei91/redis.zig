@@ -478,7 +478,10 @@ const UnitTestContext = struct {
     }
 
     fn create(allocator: Allocator, v: u32) *u32 {
-        const ptr = allocator.create(u32) catch @panic("OOM");
+        const ptr = allocator.create(u32) catch |err| {
+            @branchHint(.unlikely);
+            std.debug.panic("Allocation Error: {}", .{err});
+        };
         ptr.* = v;
         return ptr;
     }
