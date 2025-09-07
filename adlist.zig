@@ -70,11 +70,11 @@ pub fn DoublyLinkedList(
             pub fn rewind(self: *Iterator, direction: Direction) void {
                 if (direction == .forward) {
                     self.curr = self.list.first;
-                    self.direction = Direction.forward;
+                    self.direction = .forward;
                     return;
                 }
                 self.curr = self.list.last;
-                self.direction = Direction.backward;
+                self.direction = .backward;
             }
         };
 
@@ -267,7 +267,7 @@ test "prepend/insertBefore" {
     try ll.prepend(allocator, v2);
 
     try testing.expectEqual(2, ll.len);
-    try testing.expectEqual(@intFromPtr(v2), @intFromPtr(ll.first.?.value));
+    try testing.expectEqual(v2, ll.first.?.value);
 }
 
 test "append/insertAfter" {
@@ -298,11 +298,15 @@ test "removeNode" {
     const v2 = UnitTestContext.create(allocator, 2);
     try ll.append(allocator, v2);
 
-    const first_node = ll.first.?;
-    ll.removeNode(allocator, first_node);
+    const v3 = UnitTestContext.create(allocator, 3);
+    try ll.append(allocator, v3);
 
-    try testing.expectEqual(1, ll.len);
-    try testing.expectEqual(v2, ll.first.?.value);
+    const v2_node = ll.first.?.next.?;
+    ll.removeNode(allocator, v2_node);
+
+    try testing.expectEqual(2, ll.len);
+    try testing.expectEqual(v1, ll.first.?.value);
+    try testing.expectEqual(v3, ll.last.?.value);
 }
 
 test "rotate" {
