@@ -478,7 +478,7 @@ const UnitTestContext = struct {
     }
 
     fn create(allocator: Allocator, v: u32) *u32 {
-        const ptr = allocator.create(u32) catch unreachable;
+        const ptr = allocator.create(u32) catch @panic("OOM");
         ptr.* = v;
         return ptr;
     }
