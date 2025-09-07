@@ -109,7 +109,7 @@ pub fn catRepr(
     var ns = try cat(s, allocator, "\"");
     for (p) |b| {
         switch (b) {
-            '\\', '"' => ns = try ns.catPrintf(allocator, "\\{d}", .{b}),
+            '\\', '"' => ns = try ns.catPrintf(allocator, "\\{c}", .{b}),
             '\n' => ns = try ns.cat(allocator, "\\n"),
             '\r' => ns = try ns.cat(allocator, "\\r"),
             '\t' => ns = try ns.cat(allocator, "\\t"),
@@ -367,11 +367,11 @@ test catPrintf {
 test catRepr {
     const allocator = testing.allocator;
     const s = try empty(allocator);
-    const input = "\x07\n\x00foo\r"; // in c: "\a\n\0foo\r"
+    const input = "\x07\n\x00foo\r\""; // in c: \a\n\0foo\r\"
     const ns = try s.catRepr(allocator, input);
     defer ns.free(allocator);
 
-    try testing.expectEqualStrings("\"\\a\\n\\x00foo\\r\"", ns.toSlice());
+    try testing.expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", ns.toSlice());
 }
 
 test allocSize {
