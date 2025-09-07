@@ -85,10 +85,6 @@ pub fn cat(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
     return ns;
 }
 
-pub fn catSds(s: *Sds, allocator: Allocator, t: *Sds) Allocator.Error!*Sds {
-    return s.cat(allocator, t.toSlice());
-}
-
 pub fn catPrintf(
     s: *Sds,
     allocator: Allocator,
@@ -354,19 +350,6 @@ test cat {
     const allocator = testing.allocator;
     const s = try new(allocator, "hello");
     const ns = try s.cat(allocator, "world");
-    defer ns.free(allocator);
-
-    try testing.expectEqual(10, ns.len);
-    try testing.expectEqualStrings("helloworld", ns.toSlice());
-}
-
-test catSds {
-    const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
-    const t = try new(allocator, "world");
-    defer t.free(allocator);
-
-    const ns = try s.catSds(allocator, t);
     defer ns.free(allocator);
 
     try testing.expectEqual(10, ns.len);
