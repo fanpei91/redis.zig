@@ -25,13 +25,13 @@ pub const ReplaceResult = enum {
 ///
 ///     fn hash(self, Key) Hash
 ///
-///     fn dupeKey(self, Key) Allocation.Error!Key
+///     fn dupeKey(self, Allocator, Key) Allocator.Error!Key
 ///
-///     fn dupeVal(self, Value) Allocation.Error!Value
+///     fn dupeVal(self, Allocator, Value) Allocator.Error!Value
 ///
-///     fn freeKey(self, Key) void
+///     fn freeKey(self, Allocator, Key) void
 ///
-///     fn freeVal(self, Value) void
+///     fn freeVal(self, Allocator, Value) void
 pub fn Dict(
     comptime Key: type,
     comptime Value: type,
@@ -59,8 +59,8 @@ pub fn Dict(
             ) Allocator.Error!*Entry {
                 const entry = try allocator.create(Entry);
                 entry.* = .{
-                    .key = try ctx.dupeKey(key),
-                    .val = try ctx.dupeVal(val),
+                    .key = try ctx.dupeKey(allocator, key),
+                    .val = try ctx.dupeVal(allocator, val),
                     .next = next,
                 };
                 return entry;
@@ -68,16 +68,17 @@ pub fn Dict(
 
             fn setVal(
                 self: *Entry,
+                allocator: Allocator,
                 ctx: *Context,
                 val: Value,
             ) Allocator.Error!void {
-                ctx.freeVal(self.val);
-                self.val = try ctx.dupeVal(val);
+                ctx.freeVal(allocator, self.val);
+                self.val = try ctx.dupeVal(allocator, val);
             }
 
             fn destroy(self: *Entry, allocator: Allocator, ctx: *Context) void {
-                ctx.freeKey(self.key);
-                ctx.freeVal(self.val);
+                ctx.freeKey(allocator, self.key);
+                ctx.freeVal(allocator, self.val);
                 allocator.destroy(self);
             }
         };
@@ -191,7 +192,7 @@ pub fn Dict(
 
         /// Return `.add` if the key was added from scratch, `.replace` if there
         /// was already an element with such key and `replace()` just performed
-        /// update operation and discard the old value.
+        /// update operation and call `ctx.freeVal()` to free old value.
         pub fn replace(
             self: *Self,
             allocator: Allocator,
@@ -202,7 +203,7 @@ pub fn Dict(
                 return .add;
             }
             const entry = self.find(allocator, key).?;
-            try entry.setVal(&self.ctx, val);
+            try entry.setVal(allocator, &self.ctx, val);
             return .replace;
         }
 
@@ -307,7 +308,7 @@ pub fn Dict(
             outer: while (stored < count and max_steps > 0) : (max_steps -= 1) {
                 for (0..tables) |j| {
                     if (tables == 2 and j == 0 and i < self.rehashidx.?) {
-                        // this happens when going from big to small table
+                        // This happens when going from big to small table.
                         if (i >= h1.size) i = self.rehashidx.?;
                         continue;
                     }
@@ -329,7 +330,7 @@ pub fn Dict(
                         }
                     }
                 }
-                i = (i + 1) & max_sizemask;
+                i = (i + 1) & max_sizemask; // Increment index by 1.
             }
 
             return try items.toOwnedSlice(allocator);
@@ -377,12 +378,12 @@ pub fn Dict(
                 return false;
             }
 
-            const realsize = nextPower(len);
-            if (realsize == self.ht[0].size) {
+            const real_size = nextPower(len);
+            if (real_size == self.ht[0].size) {
                 return false;
             }
 
-            const n = try HashTable.create(allocator, realsize);
+            const n = try HashTable.create(allocator, real_size);
 
             // First initialization.
             if (self.ht[0].size == 0) {
@@ -397,16 +398,13 @@ pub fn Dict(
         }
 
         /// Rehash between ms and ms+1.
-        pub fn rehashMilliseconds(self: *Self, ms: usize) usize {
+        pub fn rehashMilliseconds(self: *Self, ms: usize) void {
             const start = std.time.milliTimestamp();
-            var rehashes: usize = 0;
             const n = 100;
             while (self.rehash(n)) {
-                rehashes += n;
                 const end = std.time.milliTimestamp();
                 if (end - start > ms) break;
             }
-            return rehashes;
         }
 
         pub fn empty(
@@ -526,7 +524,7 @@ fn nextPower(size: usize) usize {
 
 test "Dict.add | Dict.find | Dict.fetchVal" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     const cnt = 1024;
@@ -581,7 +579,7 @@ test "Dict.add | Dict.find | Dict.fetchVal" {
 
 test "Dict.getRandom" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     try testing.expect(dict.getRandom(allocator) == null);
@@ -594,7 +592,7 @@ test "Dict.getRandom" {
 
 test "Dict.getSome" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     try UnitTestContext.addMany(&dict, allocator, 1024);
@@ -606,7 +604,7 @@ test "Dict.getSome" {
 
 test "Dict.replace" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     _ = try dict.add(allocator, "k1", "v1");
@@ -619,7 +617,7 @@ test "Dict.replace" {
 
 test "Dict.delete" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     _ = try dict.add(allocator, "k1", "v1");
@@ -631,7 +629,7 @@ test "Dict.delete" {
 
 test "Dict.expand | Dict.rehash" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init(allocator));
+    var dict: UnitTestDict = .create(.init());
     defer dict.destroy(allocator);
 
     var expanded = try dict.expand(allocator, 1023);
@@ -667,8 +665,6 @@ const UnitTestContext = struct {
     const Key = []const u8;
     const Value = []const u8;
 
-    allocator: Allocator,
-
     fn addMany(
         dict: *UnitTestDict,
         allocator: Allocator,
@@ -692,8 +688,8 @@ const UnitTestContext = struct {
         }
     }
 
-    fn init(allocator: Allocator) Self {
-        return .{ .allocator = allocator };
+    fn init() Self {
+        return .{};
     }
 
     fn eql(self: *Self, key: Key, other: Key) bool {
@@ -706,20 +702,20 @@ const UnitTestContext = struct {
         return std.hash.Wyhash.hash(0, key);
     }
 
-    fn dupeKey(self: *Self, key: Key) Allocator.Error!Key {
-        return try self.allocator.dupe(u8, key);
+    fn dupeKey(_: *Self, allocator: Allocator, key: Key) Allocator.Error!Key {
+        return try allocator.dupe(u8, key);
     }
 
-    fn dupeVal(self: *Self, val: Value) Allocator.Error!Value {
-        return try self.allocator.dupe(u8, val);
+    fn dupeVal(_: *Self, allocator: Allocator, val: Value) Allocator.Error!Value {
+        return try allocator.dupe(u8, val);
     }
 
-    fn freeKey(self: *Self, key: Key) void {
-        self.allocator.free(key);
+    fn freeKey(_: *Self, allocator: Allocator, key: Key) void {
+        allocator.free(key);
     }
 
-    fn freeVal(self: *Self, val: Value) void {
-        self.allocator.free(val);
+    fn freeVal(_: *Self, allocator: Allocator, val: Value) void {
+        allocator.free(val);
     }
 };
 
