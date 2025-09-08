@@ -152,6 +152,73 @@ pub fn Dict(
             }
         };
 
+        pub const Iterator = struct {
+            dict: *Self,
+            index: isize,
+            table: u32,
+            safe: bool,
+            entry: ?*Entry,
+            next_entry: ?*Entry,
+            fingerprint: i64,
+
+            pub fn next(self: *Iterator) ?*Entry {
+                while (true) {
+                    if (self.entry == null) {
+                        var ht: *HashTable = &self.dict.ht[self.table];
+                        if (self.index == -1 and self.table == 0) {
+                            if (self.safe) {
+                                self.dict.iterators += 1;
+                            } else {
+                                self.fingerprint = self.dict.fingerprint();
+                            }
+                        }
+                        self.index += 1;
+                        if (self.index > ht.size) {
+                            if (self.dict.isRehashing() and self.table == 0) {
+                                self.table += 1;
+                                self.index = 0;
+                                ht = &self.dict.ht[1];
+                            } else {
+                                break;
+                            }
+                        }
+                        const index: usize = @intCast(self.index);
+                        self.entry = ht.get(index);
+                    } else {
+                        self.entry = self.next_entry;
+                    }
+                    if (self.entry) |ent| {
+                        self.next_entry = ent.next;
+                        return ent;
+                    }
+                }
+                return null;
+            }
+
+            pub fn release(self: *Iterator) void {
+                if (!(self.index == -1 and self.table == 0)) {
+                    if (self.safe) {
+                        self.dict.iterators -= 1;
+                    } else {
+                        std.debug.assert(self.fingerprint == self.dict.fingerprint());
+                    }
+                }
+            }
+        };
+
+        pub fn iterator(self: *Self, safe: bool) Iterator {
+            const it: Iterator = .{
+                .dict = self,
+                .table = 0,
+                .index = -1,
+                .safe = safe,
+                .entry = null,
+                .next_entry = null,
+                .fingerprint = undefined,
+            };
+            return it;
+        }
+
         pub fn create(
             allocator: Allocator,
             ctx: Context,
@@ -287,7 +354,14 @@ pub fn Dict(
             n: usize,
         ) Allocator.Error![]*Entry {
             const count: usize = @min(self.size(), n);
-            if (self.isRehashing()) _ = self.rehash(allocator, count);
+
+            for (0..count) |_| {
+                if (self.isRehashing()) {
+                    self.rehashStep(allocator);
+                } else {
+                    break;
+                }
+            }
 
             var items = try std.ArrayList(*Entry).initCapacity(
                 allocator,
@@ -513,6 +587,35 @@ pub fn Dict(
 
             return true;
         }
+
+        fn fingerprint(self: *Self) i64 {
+            const h0 = self.ht[0];
+            const h1 = self.ht[1];
+
+            var intergers: [6]i64 = undefined;
+
+            intergers[0] = if (h0.table == null) 0 else @bitCast(@intFromPtr(h0.table));
+            intergers[1] = @bitCast(h0.size);
+            intergers[2] = @bitCast(h0.used);
+
+            intergers[3] = if (h1.table == null) 0 else @bitCast(@intFromPtr(h1.table));
+            intergers[4] = @bitCast(h1.size);
+            intergers[5] = @bitCast(h1.used);
+
+            var hash: i64 = 0;
+            var j: u8 = 0;
+            while (j < 6) : (j += 1) {
+                hash +%= intergers[j];
+                hash = (~hash) +% (hash << 21);
+                hash = hash ^ (hash >> 24);
+                hash = (hash +% (hash << 3)) +% (hash << 8);
+                hash = hash ^ (hash >> 14);
+                hash = (hash +% (hash << 2)) +% (hash << 4);
+                hash = hash ^ (hash >> 28);
+                hash = hash +% (hash << 31);
+            }
+            return hash;
+        }
     };
 }
 
@@ -658,6 +761,28 @@ test "Dict.expand | Dict.rehash" {
     try testing.expectEqual(0, dict.ht[1].size);
     try testing.expectEqual(0, dict.ht[1].used);
     try testing.expectEqual(1, dict.size());
+}
+
+test "Dict.iterator | Dict.fingerprint" {
+    const allocator = testing.allocator;
+    const dict: *UnitTestDict = try .create(allocator, .init());
+    defer dict.destroy(allocator);
+
+    const count = 1024;
+    try UnitTestContext.addMany(dict, allocator, count);
+
+    var iter = dict.iterator(false);
+
+    const fingerprint = dict.fingerprint();
+    var iters: usize = 0;
+    while (iter.next()) |_| {
+        iters += 1;
+    }
+    try testing.expectEqual(count, iters);
+    iter.release();
+
+    _ = try dict.add(allocator, "somekey1", "somevalue1");
+    try testing.expect(fingerprint != dict.fingerprint());
 }
 
 const UnitTestDict = Dict(
