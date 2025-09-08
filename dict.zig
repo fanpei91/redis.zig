@@ -21,17 +21,22 @@ pub const ReplaceResult = enum {
 
 /// Context must be a struct type with six member functions:
 ///
-///     fn eql(self, Key, Key) bool
+///     pub fn eql(self, Key, Key) bool
 ///
-///     fn hash(self, Key) Hash
+///     pub fn hash(self, Key) Hash
 ///
-///     fn dupeKey(self, Allocator, Key) Allocator.Error!Key
+///     pub fn dupeKey(self, Allocator, Key) Allocator.Error!Key
 ///
-///     fn dupeVal(self, Allocator, Value) Allocator.Error!Value
+///     pub fn dupeVal(self, Allocator, Value) Allocator.Error!Value
 ///
-///     fn freeKey(self, Allocator, Key) void
+///     pub fn freeKey(self, Allocator, Key) void
 ///
-///     fn freeVal(self, Allocator, Value) void
+///     pub fn freeVal(self, Allocator, Value) void
+///
+///     pub fn yield(self) void
+///
+///     pub fn scan(self, *Entry) void
+///
 pub fn Dict(
     comptime Key: type,
     comptime Value: type,
@@ -52,7 +57,7 @@ pub fn Dict(
 
             fn create(
                 allocator: Allocator,
-                ctx: *Context,
+                ctx: Context,
                 key: Key,
                 val: Value,
                 next: ?*Entry,
@@ -69,23 +74,19 @@ pub fn Dict(
             fn setVal(
                 self: *Entry,
                 allocator: Allocator,
-                ctx: *Context,
+                ctx: Context,
                 val: Value,
             ) Allocator.Error!void {
                 ctx.freeVal(allocator, self.val);
                 self.val = try ctx.dupeVal(allocator, val);
             }
 
-            fn destroy(self: *Entry, allocator: Allocator, ctx: *Context) void {
+            fn destroy(self: *Entry, allocator: Allocator, ctx: Context) void {
                 ctx.freeKey(allocator, self.key);
                 ctx.freeVal(allocator, self.val);
                 allocator.destroy(self);
             }
         };
-
-        pub const yieldCallback = *const fn (*Context) void;
-
-        pub const scanCallback = *const fn (*Context, *const Entry) void;
 
         const HashTable = struct {
             size: usize = 0, // Must be power of two。
@@ -118,14 +119,13 @@ pub fn Dict(
             fn free(
                 self: *HashTable,
                 allocator: Allocator,
-                ctx: *Context,
-                callback: ?yieldCallback,
+                ctx: Context,
             ) void {
                 var i: usize = 0;
                 while (i < self.size and self.used > 0) : (i += 1) {
                     // Give the caller some opportunity to do other tasks.
-                    if (callback != null and (i & 65535 == 0)) {
-                        callback.?(ctx);
+                    if ((i & 65535 == 0)) {
+                        ctx.yield();
                     }
                     var entry = self.table.?[i];
                     while (entry) |ent| {
@@ -187,7 +187,7 @@ pub fn Dict(
             const next = ht.get(index);
             const entry = try Entry.create(
                 allocator,
-                &self.ctx,
+                self.ctx,
                 key,
                 val,
                 next,
@@ -210,7 +210,7 @@ pub fn Dict(
                 return .add;
             }
             const entry = self.find(allocator, key).?;
-            try entry.setVal(allocator, &self.ctx, val);
+            try entry.setVal(allocator, self.ctx, val);
             return .replace;
         }
 
@@ -360,7 +360,7 @@ pub fn Dict(
                         } else {
                             ht.set(idx, ent.next);
                         }
-                        ent.destroy(allocator, &self.ctx);
+                        ent.destroy(allocator, self.ctx);
                         ht.used -= 1;
                         return true;
                     }
@@ -417,17 +417,16 @@ pub fn Dict(
         pub fn empty(
             self: *Self,
             allocator: Allocator,
-            callback: ?yieldCallback,
         ) void {
-            self.ht[0].free(allocator, &self.ctx, callback);
-            self.ht[1].free(allocator, &self.ctx, callback);
+            self.ht[0].free(allocator, self.ctx);
+            self.ht[1].free(allocator, self.ctx);
             self.iterators = 0;
             self.rehashidx = null;
         }
 
         pub fn destroy(self: *Self, allocator: Allocator) void {
-            self.ht[0].free(allocator, &self.ctx, null);
-            self.ht[1].free(allocator, &self.ctx, null);
+            self.ht[0].free(allocator, self.ctx);
+            self.ht[1].free(allocator, self.ctx);
             allocator.destroy(self);
         }
 
@@ -699,31 +698,35 @@ const UnitTestContext = struct {
         return .{};
     }
 
-    fn eql(self: *Self, key: Key, other: Key) bool {
+    fn eql(self: Self, key: Key, other: Key) bool {
         _ = self;
         return std.mem.eql(u8, key, other);
     }
 
-    fn hash(self: *Self, key: Key) Hash {
+    fn hash(self: Self, key: Key) Hash {
         _ = self;
         return std.hash.Wyhash.hash(0, key);
     }
 
-    fn dupeKey(_: *Self, allocator: Allocator, key: Key) Allocator.Error!Key {
+    fn dupeKey(_: Self, allocator: Allocator, key: Key) Allocator.Error!Key {
         return try allocator.dupe(u8, key);
     }
 
-    fn dupeVal(_: *Self, allocator: Allocator, val: Value) Allocator.Error!Value {
+    fn dupeVal(_: Self, allocator: Allocator, val: Value) Allocator.Error!Value {
         return try allocator.dupe(u8, val);
     }
 
-    fn freeKey(_: *Self, allocator: Allocator, key: Key) void {
+    fn freeKey(_: Self, allocator: Allocator, key: Key) void {
         allocator.free(key);
     }
 
-    fn freeVal(_: *Self, allocator: Allocator, val: Value) void {
+    fn freeVal(_: Self, allocator: Allocator, val: Value) void {
         allocator.free(val);
     }
+
+    fn yield(_: Self) void {}
+
+    fn scan(_: Self, _: *UnitTestDict.Entry) void {}
 };
 
 const std = @import("std");
