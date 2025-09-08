@@ -104,11 +104,11 @@ pub fn Dict(
                 };
             }
 
-            fn get(self: *HashTable, idx: usize) ?*Entry {
+            fn get(self: *const HashTable, idx: usize) ?*Entry {
                 return self.table.?[idx];
             }
 
-            fn set(self: *HashTable, idx: usize, entry: ?*Entry) void {
+            fn set(self: *const HashTable, idx: usize, entry: ?*Entry) void {
                 self.table.?[idx] = entry;
             }
 
@@ -227,6 +227,48 @@ pub fn Dict(
         pub fn fetchValue(self: *Self, allocator: Allocator, key: Key) ?Value {
             const entry = self.find(allocator, key) orelse return null;
             return entry.val;
+        }
+
+        pub fn getRandom(self: *Self, allocator: Allocator) ?*Entry {
+            if (self.size() == 0) return null;
+            if (self.isRehashing()) self.stepRehash(allocator);
+
+            var prng = std.Random.DefaultPrng.init(
+                @intCast(std.time.microTimestamp()),
+            );
+            var rand = prng.random();
+
+            const h0 = &self.ht[0];
+            const h1 = &self.ht[1];
+            var entry: ?*Entry = null;
+            if (self.isRehashing()) {
+                const rehashidx = self.rehashidx.?;
+                while (entry == null) {
+                    const random = rand.int(u32);
+                    const idx = rehashidx + (random % (h0.size + h1.size - rehashidx));
+                    entry = if (idx >= h0.size) h1.get(idx - h0.size) else h0.get(idx);
+                }
+            } else {
+                while (entry == null) {
+                    const random = rand.int(u32);
+                    const idx = random & h0.sizemask;
+                    entry = h0.get(idx);
+                }
+            }
+
+            const head = entry.?;
+            var list_len: usize = 0;
+            while (entry != null) {
+                entry = entry.?.next;
+                list_len += 1;
+            }
+            const random = rand.int(u32);
+            var list_ele = random % list_len;
+            entry = head;
+            while (list_ele > 0) : (list_ele -= 1) {
+                entry = entry.?.next;
+            }
+            return entry;
         }
 
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
@@ -471,6 +513,35 @@ test "Dict.add | Dict.find | Dict.fetchVal" {
     }
 
     try testing.expectEqual(cnt, dict.size());
+}
+
+test "Dict.getRandom" {
+    const allocator = testing.allocator;
+    var dict: UnitTestDict = .create(.init(allocator));
+    defer dict.destroy(allocator);
+
+    try testing.expect(dict.getRandom(allocator) == null);
+
+    const cnt = 1024;
+    for (0..cnt) |i| {
+        const key = std.fmt.allocPrint(
+            allocator,
+            "key-{}",
+            .{i},
+        ) catch unreachable;
+        defer allocator.free(key);
+
+        const val = std.fmt.allocPrint(
+            allocator,
+            "val-{}",
+            .{i},
+        ) catch unreachable;
+        defer allocator.free(val);
+        _ = try dict.add(allocator, key, val);
+    }
+
+    const entry = dict.getRandom(allocator);
+    try testing.expect(entry != null);
 }
 
 test "Dict.replace" {
