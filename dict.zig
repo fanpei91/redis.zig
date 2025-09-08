@@ -271,6 +271,66 @@ pub fn Dict(
             return entry;
         }
 
+        pub fn getSome(
+            self: *Self,
+            allocator: Allocator,
+            n: usize,
+        ) Allocator.Error![]*Entry {
+            const count: usize = @min(self.size(), n);
+            if (self.isRehashing()) _ = self.rehash(allocator, count);
+
+            var items = try std.ArrayList(*Entry).initCapacity(
+                allocator,
+                count,
+            );
+            errdefer items.deinit(allocator);
+
+            const h0 = &self.ht[0];
+            const h1 = &self.ht[1];
+            const tables: usize = if (self.isRehashing()) 2 else 1;
+            var max_sizemask = h0.sizemask;
+            if (tables > 1 and max_sizemask < h1.sizemask) {
+                max_sizemask = h1.sizemask;
+            }
+
+            var prng = std.Random.DefaultPrng.init(
+                @intCast(std.time.microTimestamp()),
+            );
+            var rand = prng.random();
+
+            var i = rand.int(u32) & max_sizemask;
+            var empty_visits: usize = 0;
+            var stored: usize = 0;
+            var max_steps = count * 10;
+            outer: while (stored < count and max_steps > 0) : (max_steps -= 1) {
+                for (0..tables) |j| {
+                    if (tables == 2 and j == 0 and i < self.rehashidx.?) {
+                        continue;
+                    }
+                    if (i >= self.ht[j].size) continue;
+                    var entry = self.ht[j].get(i);
+                    if (entry == null) {
+                        empty_visits += 1;
+                        if (empty_visits >= 5 and empty_visits > count) {
+                            i = rand.int(u32) & max_sizemask;
+                            empty_visits = 0;
+                        }
+                    } else {
+                        empty_visits = 0;
+                        while (entry) |ent| {
+                            try items.append(allocator, ent);
+                            entry = ent.next;
+                            stored += 1;
+                            if (stored == count) break :outer;
+                        }
+                    }
+                }
+                i = (i + 1) & max_sizemask;
+            }
+
+            return try items.toOwnedSlice(allocator);
+        }
+
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
             if (self.ht[0].size == 0) return false;
             if (self.isRehashing()) self.stepRehash(allocator);
@@ -522,26 +582,22 @@ test "Dict.getRandom" {
 
     try testing.expect(dict.getRandom(allocator) == null);
 
-    const cnt = 1024;
-    for (0..cnt) |i| {
-        const key = std.fmt.allocPrint(
-            allocator,
-            "key-{}",
-            .{i},
-        ) catch unreachable;
-        defer allocator.free(key);
-
-        const val = std.fmt.allocPrint(
-            allocator,
-            "val-{}",
-            .{i},
-        ) catch unreachable;
-        defer allocator.free(val);
-        _ = try dict.add(allocator, key, val);
-    }
+    try UnitTestContext.addMany(&dict, allocator, 1024);
 
     const entry = dict.getRandom(allocator);
     try testing.expect(entry != null);
+}
+
+test "Dict.getSome" {
+    const allocator = testing.allocator;
+    var dict: UnitTestDict = .create(.init(allocator));
+    defer dict.destroy(allocator);
+
+    try UnitTestContext.addMany(&dict, allocator, 1024);
+
+    const items = try dict.getSome(allocator, 100);
+    defer allocator.free(items);
+    try testing.expectEqual(100, items.len);
 }
 
 test "Dict.replace" {
@@ -608,6 +664,29 @@ const UnitTestContext = struct {
     const Value = []const u8;
 
     allocator: Allocator,
+
+    fn addMany(
+        dict: *UnitTestDict,
+        allocator: Allocator,
+        cnt: usize,
+    ) Allocator.Error!void {
+        for (0..cnt) |i| {
+            const key = std.fmt.allocPrint(
+                allocator,
+                "key-{}",
+                .{i},
+            ) catch unreachable;
+            defer allocator.free(key);
+
+            const val = std.fmt.allocPrint(
+                allocator,
+                "val-{}",
+                .{i},
+            ) catch unreachable;
+            defer allocator.free(val);
+            _ = try dict.add(allocator, key, val);
+        }
+    }
 
     fn init(allocator: Allocator) Self {
         return .{ .allocator = allocator };
