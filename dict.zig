@@ -84,6 +84,8 @@ pub fn Dict(
 
         pub const yieldCallback = *const fn (*Context) void;
 
+        pub const scanCallback = *const fn (*Context, *const Entry) void;
+
         const HashTable = struct {
             size: usize = 0, // Must be power of two。
             used: usize = 0,
@@ -305,6 +307,8 @@ pub fn Dict(
             outer: while (stored < count and max_steps > 0) : (max_steps -= 1) {
                 for (0..tables) |j| {
                     if (tables == 2 and j == 0 and i < self.rehashidx.?) {
+                        // this happens when going from big to small table
+                        if (i >= h1.size) i = self.rehashidx.?;
                         continue;
                     }
                     if (i >= self.ht[j].size) continue;
