@@ -29,10 +29,10 @@ pub fn empty(allocator: Allocator) Allocator.Error!*Sds {
 
 pub fn fromI64(
     allocator: Allocator,
-    value: i64,
+    num: i64,
 ) Allocator.Error!*Sds {
     var buf: [20]u8 = undefined;
-    const digits = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
+    const digits = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
     return new(allocator, digits);
 }
 
@@ -74,12 +74,12 @@ pub fn makeRoomFor(
     return ns;
 }
 
-pub fn cat(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
-    const ns = try s.makeRoomFor(allocator, t.len);
+pub fn cat(s: *Sds, allocator: Allocator, src: []const u8) Allocator.Error!*Sds {
+    const ns = try s.makeRoomFor(allocator, src.len);
     const buf_ptr: [*]u8 = ns.bufPtr();
-    @memcpy(buf_ptr[ns.len .. ns.len + t.len], t);
+    @memcpy(buf_ptr[ns.len .. ns.len + src.len], src);
 
-    const add_len: u32 = @intCast(t.len);
+    const add_len: u32 = @intCast(src.len);
     ns.len += add_len;
     ns.avail -= add_len;
     return ns;
@@ -91,8 +91,8 @@ pub fn catPrintf(
     comptime fmt: []const u8,
     args: anytype,
 ) (Allocator.Error)!*Sds {
-    var staic_buf: [1024]u8 = undefined;
-    const buf = std.fmt.bufPrint(&staic_buf, fmt, args) catch {
+    var static_buf: [1024]u8 = undefined;
+    const buf = std.fmt.bufPrint(&static_buf, fmt, args) catch {
         @branchHint(.unlikely);
         const alloc_buf = try std.fmt.allocPrint(allocator, fmt, args);
         defer allocator.free(alloc_buf);
@@ -104,10 +104,10 @@ pub fn catPrintf(
 pub fn catRepr(
     s: *Sds,
     allocator: Allocator,
-    p: []const u8,
+    raw: []const u8,
 ) Allocator.Error!*Sds {
     var ns = try s.cat(allocator, "\"");
-    for (p) |b| {
+    for (raw) |b| {
         switch (b) {
             '\\', '"' => ns = try ns.catPrintf(allocator, "\\{c}", .{b}),
             '\n' => ns = try ns.cat(allocator, "\\n"),
@@ -179,17 +179,17 @@ pub fn growZero(
     return ns;
 }
 
-pub fn copy(s: *Sds, allocator: Allocator, t: []const u8) Allocator.Error!*Sds {
+pub fn copy(s: *Sds, allocator: Allocator, src: []const u8) Allocator.Error!*Sds {
     var ns = s;
     var total_len: usize = ns.len + ns.avail;
-    if (t.len > total_len) {
-        ns = try ns.makeRoomFor(allocator, t.len - total_len);
+    if (src.len > total_len) {
+        ns = try ns.makeRoomFor(allocator, src.len - total_len);
         total_len = ns.len + ns.avail;
     }
     const buf_ptr: [*]u8 = ns.bufPtr();
-    @memcpy(buf_ptr[0..t.len], t);
+    @memcpy(buf_ptr[0..src.len], src);
 
-    ns.len = @intCast(t.len);
+    ns.len = @intCast(src.len);
     ns.avail = @intCast(total_len - ns.len);
     return ns;
 }
@@ -203,9 +203,9 @@ pub fn trim(s: *Sds, values_to_strip: []const u8) void {
     s.len = new_len;
 }
 
-pub fn range(s: *Sds, start: i32, incl_end: i32) void {
+pub fn range(s: *Sds, start: i32, end_inclusive: i32) void {
     var from: i64 = start;
-    var to: i64 = incl_end;
+    var to: i64 = end_inclusive;
     const len: i64 = s.len;
 
     if (len == 0) return;
