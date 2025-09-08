@@ -1,10 +1,10 @@
 /// Context must be a struct type with three member functions:
 ///
-///     fn eql(self, SearchKey, Value) bool
+///     pub fn eql(self, SearchKey, Value) bool
 ///
-///     fn dupe(self, Allocator, Value) Allocator.Error!Value
+///     pub fn dupe(self, Allocator, Value) Allocator.Error!Value
 ///
-///     fn free(self, Allocator, Value) void
+///     pub fn free(self, Allocator, Value) void
 pub fn DoublyLinkedList(
     comptime SearchKey: type,
     comptime Value: type,
