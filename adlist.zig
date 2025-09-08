@@ -2,9 +2,9 @@
 ///
 ///     fn eql(self, SearchKey, Value) bool
 ///
-///     fn dupe(self, Value) !Value
+///     fn dupe(self, Allocator, Value) Allocator.Error!Value
 ///
-///     fn free(self, Value) void
+///     fn free(self, Allocator, Value) void
 pub fn DoublyLinkedList(
     comptime SearchKey: type,
     comptime Value: type,
@@ -83,10 +83,15 @@ pub fn DoublyLinkedList(
         len: usize = 0,
         ctx: Context,
 
-        pub fn init(ctx: Context) List {
-            return .{
+        pub fn create(
+            allocator: Allocator,
+            ctx: Context,
+        ) Allocator.Error!*List {
+            const list = try allocator.create(List);
+            list.* = .{
                 .ctx = ctx,
             };
+            return list;
         }
 
         pub fn prepend(
@@ -161,7 +166,7 @@ pub fn DoublyLinkedList(
             existing_node: *Node,
         ) void {
             defer existing_node.destroy(allocator);
-            defer self.ctx.free(existing_node.value);
+            defer self.ctx.free(allocator, existing_node.value);
 
             const prev = existing_node.prev;
             const next = existing_node.next;
@@ -201,14 +206,14 @@ pub fn DoublyLinkedList(
         pub fn dupe(
             self: *List,
             allocator: Allocator,
-        ) Allocator.Error!List {
-            var dup_list: List = .init(self.ctx);
-            errdefer dup_list.deinit(allocator);
+        ) Allocator.Error!*List {
+            var dup_list = try List.create(allocator, self.ctx);
+            errdefer dup_list.destroy(allocator);
 
             var it = self.iterator(.forward);
             while (it.next()) |node| {
-                const dup_value = try self.ctx.dupe(node.value);
-                errdefer self.ctx.free(dup_value);
+                const dup_value = try self.ctx.dupe(allocator, node.value);
+                errdefer self.ctx.free(allocator, dup_value);
                 try dup_list.append(allocator, dup_value);
             }
             return dup_list;
@@ -242,14 +247,14 @@ pub fn DoublyLinkedList(
             return node;
         }
 
-        pub fn deinit(self: *List, allocator: Allocator) void {
+        pub fn destroy(self: *List, allocator: Allocator) void {
             var curr = self.first;
             while (curr) |node| {
                 curr = node.next;
-                self.ctx.free(node.value);
+                self.ctx.free(allocator, node.value);
                 node.destroy(allocator);
             }
-            self.* = undefined;
+            allocator.destroy(self);
         }
     };
 }
@@ -257,13 +262,13 @@ pub fn DoublyLinkedList(
 test "prepend/insertBefore" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.prepend(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.prepend(allocator, v2);
 
     try testing.expectEqual(2, ll.len);
@@ -273,13 +278,13 @@ test "prepend/insertBefore" {
 test "append/insertAfter" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
     try testing.expectEqual(2, ll.len);
@@ -289,16 +294,16 @@ test "append/insertAfter" {
 test "removeNode" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     const v2_node = ll.first.?.next.?;
@@ -312,16 +317,16 @@ test "removeNode" {
 test "rotate" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     ll.rotate();
@@ -340,16 +345,16 @@ test "rotate" {
 test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     var forward = ll.iterator(.forward);
@@ -380,20 +385,20 @@ test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
 test "dupe" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     var dup = try ll.dupe(allocator);
-    defer dup.deinit(allocator);
+    defer dup.destroy(allocator);
 
     try testing.expectEqual(3, dup.len);
 
@@ -413,16 +418,16 @@ test "dupe" {
 test "search" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     const found = ll.search(3);
@@ -434,16 +439,16 @@ test "search" {
 test "index" {
     const allocator = testing.allocator;
 
-    var ll: UnitTestList = .init(.init(allocator));
-    defer ll.deinit(allocator);
+    var ll: *UnitTestList = try .create(allocator, .init());
+    defer ll.destroy(allocator);
 
-    const v1 = UnitTestContext.create(allocator, 1);
+    const v1 = UnitTestContext.allocNum(allocator, 1);
     try ll.append(allocator, v1);
 
-    const v2 = UnitTestContext.create(allocator, 2);
+    const v2 = UnitTestContext.allocNum(allocator, 2);
     try ll.append(allocator, v2);
 
-    const v3 = UnitTestContext.create(allocator, 3);
+    const v3 = UnitTestContext.allocNum(allocator, 3);
     try ll.append(allocator, v3);
 
     var found = ll.index(0);
@@ -471,13 +476,11 @@ const UnitTestList = DoublyLinkedList(
 const UnitTestContext = struct {
     const Self = @This();
 
-    allocator: Allocator,
-
-    fn init(allocator: Allocator) Self {
-        return .{ .allocator = allocator };
+    fn init() Self {
+        return .{};
     }
 
-    fn create(allocator: Allocator, v: u32) *u32 {
+    fn allocNum(allocator: Allocator, v: u32) *u32 {
         const ptr = allocator.create(u32) catch |err| {
             @branchHint(.unlikely);
             std.debug.panic("Allocation Error: {}", .{err});
@@ -486,22 +489,23 @@ const UnitTestContext = struct {
         return ptr;
     }
 
-    fn eql(self: *Self, key: u32, value: *u32) bool {
+    fn eql(self: Self, key: u32, value: *u32) bool {
         _ = self;
         return key == value.*;
     }
 
     fn dupe(
-        self: *Self,
+        _: Self,
+        allocator: Allocator,
         value: *u32,
     ) Allocator.Error!*u32 {
-        const ptr = try self.allocator.create(u32);
+        const ptr = try allocator.create(u32);
         ptr.* = value.*;
         return ptr;
     }
 
-    fn free(self: *Self, value: *u32) void {
-        self.allocator.destroy(value);
+    fn free(_: Self, allocator: Allocator, value: *u32) void {
+        allocator.destroy(value);
     }
 };
 
