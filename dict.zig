@@ -16,17 +16,17 @@ pub fn disableResize() void {
 
 /// Context must be a struct type with six member functions:
 ///
-/// fn eql(self, Key, Key) bool
+///     fn eql(self, Key, Key) bool
 ///
-/// fn hash(self, Key) Hash
+///     fn hash(self, Key) Hash
 ///
-/// fn dupeKey(self, Key) Allocation.Error!Key
+///     fn dupeKey(self, Key) Allocation.Error!Key
 ///
-/// fn dupeVal(self, Value) Allocation.Error!Value
+///     fn dupeVal(self, Value) Allocation.Error!Value
 ///
-/// fn freeKey(self, Key) void
+///     fn freeKey(self, Key) void
 ///
-/// fn freeVal(self, Value) void
+///     fn freeVal(self, Value) void
 pub fn Dict(
     comptime Key: type,
     comptime Value: type,
@@ -39,6 +39,7 @@ pub fn Dict(
         iterators: usize = 0,
 
         const Self = @This();
+
         pub const Entry = struct {
             key: Key,
             val: Value,
@@ -66,28 +67,38 @@ pub fn Dict(
                 allocator.destroy(self);
             }
         };
+
         pub const yieldCallback = *const fn (*Context) void;
+
         const HashTable = struct {
-            size: usize = 0, //must be // 2^n
+            size: usize = 0, // Must be power of two。
             used: usize = 0,
             sizemask: usize = 0, // size - 1
             table: ?[*]?*Entry = null,
 
             fn create(
                 allocator: Allocator,
-                length: usize,
+                len: usize,
             ) Allocator.Error!HashTable {
-                const mem = try allocator.alloc(?*Entry, length);
+                const mem = try allocator.alloc(?*Entry, len);
                 @memset(mem, null);
                 return .{
                     .used = 0,
-                    .size = length,
-                    .sizemask = length - 1,
+                    .size = len,
+                    .sizemask = len - 1,
                     .table = mem.ptr,
                 };
             }
 
-            fn release(
+            fn get(self: *HashTable, idx: usize) ?*Entry {
+                return self.table.?[idx];
+            }
+
+            fn set(self: *HashTable, idx: usize, entry: ?*Entry) void {
+                self.table.?[idx] = entry;
+            }
+
+            fn free(
                 self: *HashTable,
                 allocator: Allocator,
                 ctx: *Context,
@@ -95,7 +106,7 @@ pub fn Dict(
             ) void {
                 var i: usize = 0;
                 while (i < self.size and self.used > 0) : (i += 1) {
-                    // Give the caller some opportunity to do other tasks
+                    // Give the caller some opportunity to do other tasks.
                     if (callback != null and (i & 65535 == 0)) {
                         callback.?(ctx);
                     }
@@ -106,7 +117,7 @@ pub fn Dict(
                         self.used -= 1;
                     }
                 }
-                self.releaseTable(allocator);
+                self.freeTable(allocator);
                 self.reset();
             }
 
@@ -117,7 +128,7 @@ pub fn Dict(
                 self.table = null;
             }
 
-            fn releaseTable(self: *HashTable, allocator: Allocator) void {
+            fn freeTable(self: *HashTable, allocator: Allocator) void {
                 if (self.table) |table| {
                     allocator.free(table[0..self.size]);
                 }
@@ -142,33 +153,35 @@ pub fn Dict(
             key: Key,
             val: Value,
         ) Allocator.Error!bool {
-            if (self.isRehashing()) self.rehashStep(allocator);
+            if (self.isRehashing()) self.stepRehash(allocator);
             if (try self.expandIfNeeded(allocator) == false) {
                 return false;
             }
 
             const index = self.freeIndexFor(key) orelse return false;
             var ht: *HashTable = if (self.isRehashing()) &self.ht[1] else &self.ht[0];
+            const next = ht.get(index);
             const entry = try Entry.create(
                 allocator,
                 &self.ctx,
                 key,
                 val,
-                ht.table.?[index],
+                next,
             );
-            ht.table.?[index] = entry;
+            ht.set(index, entry);
             ht.used += 1;
             return true;
         }
 
         pub fn find(self: *Self, allocator: Allocator, key: Key) ?*Entry {
             if (self.ht[0].size == 0) return null;
-            if (self.isRehashing()) self.rehashStep(allocator);
+            if (self.isRehashing()) self.stepRehash(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
-                const idx = hash & self.ht[i].sizemask;
-                var entry = self.ht[i].table.?[idx];
+                var ht: *HashTable = &self.ht[i];
+                const idx = hash & ht.sizemask;
+                var entry = ht.get(idx);
                 while (entry) |ent| {
                     if (self.ctx.eql(key, ent.key)) {
                         return ent;
@@ -187,24 +200,23 @@ pub fn Dict(
 
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
             if (self.ht[0].size == 0) return false;
-            if (self.isRehashing()) self.rehashStep(allocator);
+            if (self.isRehashing()) self.stepRehash(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
                 var prev: ?*Entry = null;
-                const idx = hash & self.ht[i].sizemask;
-                var entry = self.ht[i].table.?[idx];
+                var ht: *HashTable = &self.ht[i];
+                const idx = hash & ht.sizemask;
+                var entry = ht.get(idx);
                 while (entry) |ent| {
                     if (self.ctx.eql(key, ent.key)) {
                         if (prev) |prv| {
                             prv.next = ent.next;
                         } else {
-                            self.ht[i].table[idx] = ent.next;
+                            ht.set(idx, ent.next);
                         }
-                        self.ctx.freeKey(ent.key);
-                        self.ctx.freeVal(ent.val);
-                        allocator.destroy(ent);
-                        self.ht[i].used -= 1;
+                        ent.destroy(allocator, &self.ctx);
+                        ht.used -= 1;
                         return true;
                     }
                     prev = ent;
@@ -235,19 +247,19 @@ pub fn Dict(
 
             const n = try HashTable.create(allocator, realsize);
 
-            // first initialization
-            if (self.ht[0].table == null) {
+            // First initialization.
+            if (self.ht[0].size == 0) {
                 self.ht[0] = n;
                 return true;
             }
 
-            // for incremental rehashing
+            // For incremental rehashing.
             self.ht[1] = n;
             self.rehashidx = 0;
             return true;
         }
 
-        /// rehash between ms and ms+1.
+        /// Rehash between ms and ms+1.
         pub fn rehashMilliseconds(self: *Self, ms: usize) usize {
             const start = std.time.milliTimestamp();
             var rehashes: usize = 0;
@@ -265,24 +277,27 @@ pub fn Dict(
             allocator: Allocator,
             callback: ?yieldCallback,
         ) void {
-            (self.ht[0]).release(allocator, &self.ctx, callback);
-            (self.ht[1]).release(allocator, &self.ctx, callback);
+            self.ht[0].free(allocator, &self.ctx, callback);
+            self.ht[1].free(allocator, &self.ctx, callback);
             self.iterators = 0;
             self.rehashidx = null;
         }
 
-        pub fn release(self: *Self, allocator: Allocator) void {
-            (self.ht[0]).release(allocator, &self.ctx, null);
-            (self.ht[1]).release(allocator, &self.ctx, null);
+        pub fn destroy(self: *Self, allocator: Allocator) void {
+            self.ht[0].free(allocator, &self.ctx, null);
+            self.ht[1].free(allocator, &self.ctx, null);
             self.* = undefined;
         }
 
+        /// Return the index where the key should be inserted, or return null
+        /// if `key` exists.
         fn freeIndexFor(self: *Self, key: Key) ?usize {
             const hash: Hash = self.ctx.hash(key);
             var idx: ?usize = null;
             for (0..self.ht.len) |i| {
-                idx = hash & self.ht[i].sizemask;
-                var entry = self.ht[i].table.?[idx.?];
+                var ht: *HashTable = &self.ht[i];
+                idx = hash & ht.sizemask;
+                var entry = ht.get(idx.?);
                 while (entry) |ent| {
                     if (self.ctx.eql(key, ent.key)) {
                         return null;
@@ -314,12 +329,12 @@ pub fn Dict(
             return true;
         }
 
-        fn rehashStep(self: *Self, allocator: Allocator) void {
+        fn stepRehash(self: *Self, allocator: Allocator) void {
             if (self.iterators != 0) return;
             _ = self.rehash(allocator, 1);
         }
 
-        /// more to rehash if returning true
+        /// More to rehash if returning true.
         fn rehash(self: *Self, allocator: Allocator, n: usize) bool {
             if (!self.isRehashing()) return false;
 
@@ -328,27 +343,27 @@ pub fn Dict(
             var h1: *HashTable = &self.ht[1];
             var limit = n;
             while (limit > 0 and h0.used > 0) : (limit -= 1) {
-                while (h0.table.?[self.rehashidx.?] == null) {
+                while (h0.get(self.rehashidx.?) == null) {
                     empty_visits -= 1;
                     self.rehashidx.? += 1;
                     if (empty_visits == 0) return true;
                 }
-                var entry = h0.table.?[self.rehashidx.?];
+                var entry = h0.get(self.rehashidx.?);
                 while (entry) |ent| {
                     entry = ent.next;
                     const hash: Hash = self.ctx.hash(ent.key);
                     const idx = hash & h1.sizemask;
-                    ent.next = h1.table.?[idx];
-                    h1.table.?[idx] = ent;
+                    ent.next = h1.get(idx);
+                    h1.set(idx, ent);
                     h1.used += 1;
                     h0.used -= 1;
                 }
-                h0.table.?[self.rehashidx.?] = null;
+                h0.set(self.rehashidx.?, null);
                 self.rehashidx.? += 1;
             }
 
             if (h0.used == 0) {
-                h0.releaseTable(allocator);
+                h0.freeTable(allocator);
                 h0.* = h1.*;
                 h1.reset();
                 self.rehashidx = null;
@@ -362,7 +377,7 @@ pub fn Dict(
 
 fn nextPower(size: usize) usize {
     var i: usize = HT_INITIAL_SIZE;
-    const max = std.math.maxInt(i64);
+    const max = std.math.maxInt(isize);
     if (size >= max) return max;
     while (true) {
         if (i >= size) {
@@ -375,7 +390,7 @@ fn nextPower(size: usize) usize {
 test "Dict.add || Dict.find" {
     const allocator = testing.allocator;
     var dict: UnitTestDict = .create(.init(allocator));
-    defer dict.release(allocator);
+    defer dict.destroy(allocator);
 
     const cnt = 100;
     for (0..cnt) |i| {
@@ -391,14 +406,10 @@ test "Dict.add || Dict.find" {
         added = try dict.add(allocator, key, val);
         try testing.expect(!added);
 
-        const found = dict.find(key);
+        const found = dict.find(allocator, key);
         try testing.expect(found != null);
         try testing.expectEqualStrings(key, found.?.key);
         try testing.expectEqualStrings(val, found.?.val);
-
-        if (found.?.next) |next| {
-            std.debug.print("key collision {s} <-> {s}\n", .{ key, next.key });
-        }
     }
 
     try testing.expectEqual(cnt, dict.size());
