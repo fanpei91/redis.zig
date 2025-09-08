@@ -14,6 +14,11 @@ pub fn disableResize() void {
     dict_can_resize = false;
 }
 
+pub const ReplaceResult = enum {
+    replace,
+    add,
+};
+
 /// Context must be a struct type with six member functions:
 ///
 ///     fn eql(self, Key, Key) bool
@@ -65,9 +70,9 @@ pub fn Dict(
                 self: *Entry,
                 ctx: *Context,
                 val: Value,
-            ) void {
+            ) Allocator.Error!void {
                 ctx.freeVal(self.val);
-                self.val = ctx.dupeVal(val);
+                self.val = try ctx.dupeVal(val);
             }
 
             fn destroy(self: *Entry, allocator: Allocator, ctx: *Context) void {
@@ -182,21 +187,21 @@ pub fn Dict(
             return true;
         }
 
-        /// Return true if the key was added from scratch, false if there was
-        /// already an element with such key and `replace` just performed update
-        /// operation and discard the old value.
+        /// Return `.add` if the key was added from scratch, `.replace` if there
+        /// was already an element with such key and `replace()` just performed
+        /// update operation and discard the old value.
         pub fn replace(
             self: *Self,
             allocator: Allocator,
             key: Key,
             val: Value,
-        ) Allocator.Error!bool {
+        ) Allocator.Error!ReplaceResult {
             if (try self.add(allocator, key, val)) {
-                return true;
+                return .add;
             }
             const entry = self.find(allocator, key).?;
-            entry.setVal(&self.ctx, val);
-            return false;
+            try entry.setVal(&self.ctx, val);
+            return .replace;
         }
 
         pub fn find(self: *Self, allocator: Allocator, key: Key) ?*Entry {
@@ -413,17 +418,25 @@ fn nextPower(size: usize) usize {
     }
 }
 
-test "Dict.add || Dict.find" {
+test "Dict.add | Dict.find | Dict.fetchVal" {
     const allocator = testing.allocator;
     var dict: UnitTestDict = .create(.init(allocator));
     defer dict.destroy(allocator);
 
-    const cnt = 100;
+    const cnt = 1024;
     for (0..cnt) |i| {
-        const key = std.fmt.allocPrint(allocator, "key-{}", .{i}) catch unreachable;
+        const key = std.fmt.allocPrint(
+            allocator,
+            "key-{}",
+            .{i},
+        ) catch unreachable;
         defer allocator.free(key);
 
-        const val = std.fmt.allocPrint(allocator, "val-{}", .{i}) catch unreachable;
+        const val = std.fmt.allocPrint(
+            allocator,
+            "val-{}",
+            .{i},
+        ) catch unreachable;
         defer allocator.free(val);
 
         var added = try dict.add(allocator, key, val);
@@ -431,14 +444,85 @@ test "Dict.add || Dict.find" {
 
         added = try dict.add(allocator, key, val);
         try testing.expect(!added);
+    }
+
+    for (0..cnt) |i| {
+        const key = std.fmt.allocPrint(
+            allocator,
+            "key-{}",
+            .{i},
+        ) catch unreachable;
+        defer allocator.free(key);
+
+        const val = std.fmt.allocPrint(
+            allocator,
+            "val-{}",
+            .{i},
+        ) catch unreachable;
+        defer allocator.free(val);
 
         const found = dict.find(allocator, key);
         try testing.expect(found != null);
         try testing.expectEqualStrings(key, found.?.key);
         try testing.expectEqualStrings(val, found.?.val);
+
+        const fetched_val = dict.fetchValue(allocator, key);
+        try testing.expectEqualStrings(val, fetched_val.?);
     }
 
     try testing.expectEqual(cnt, dict.size());
+}
+
+test "Dict.replace" {
+    const allocator = testing.allocator;
+    var dict: UnitTestDict = .create(.init(allocator));
+    defer dict.destroy(allocator);
+
+    _ = try dict.add(allocator, "k1", "v1");
+    const ret = try dict.replace(allocator, "k1", "v2");
+    try testing.expectEqual(ReplaceResult.replace, ret);
+
+    const found = dict.find(allocator, "k1");
+    try testing.expectEqualStrings("v2", found.?.val);
+}
+
+test "Dict.delete" {
+    const allocator = testing.allocator;
+    var dict: UnitTestDict = .create(.init(allocator));
+    defer dict.destroy(allocator);
+
+    _ = try dict.add(allocator, "k1", "v1");
+    const deleted = dict.delete(allocator, "k1");
+
+    try testing.expect(deleted);
+    try testing.expectEqual(0, dict.size());
+}
+
+test "Dict.expand | Dict.rehash" {
+    const allocator = testing.allocator;
+    var dict: UnitTestDict = .create(.init(allocator));
+    defer dict.destroy(allocator);
+
+    var expanded = try dict.expand(allocator, 1023);
+    try testing.expect(expanded);
+    try testing.expectEqual(1024, dict.ht[0].size);
+    try testing.expectEqual(0, dict.ht[1].size);
+
+    _ = try dict.add(allocator, "k1", "v1");
+
+    expanded = try dict.expand(allocator, 2045);
+    try testing.expect(expanded);
+    try testing.expect(dict.isRehashing());
+    try testing.expectEqual(1024, dict.ht[0].size);
+    try testing.expectEqual(2048, dict.ht[1].size);
+
+    const more = dict.rehash(allocator, 1024);
+    try testing.expect(more == false);
+    try testing.expectEqual(2048, dict.ht[0].size);
+    try testing.expectEqual(1, dict.ht[0].used);
+    try testing.expectEqual(0, dict.ht[1].size);
+    try testing.expectEqual(0, dict.ht[1].used);
+    try testing.expectEqual(1, dict.size());
 }
 
 const UnitTestDict = Dict(
