@@ -61,6 +61,15 @@ pub fn Dict(
                 return entry;
             }
 
+            fn setVal(
+                self: *Entry,
+                ctx: *Context,
+                val: Value,
+            ) void {
+                ctx.freeVal(self.val);
+                self.val = ctx.dupeVal(val);
+            }
+
             fn destroy(self: *Entry, allocator: Allocator, ctx: *Context) void {
                 ctx.freeKey(self.key);
                 ctx.freeVal(self.val);
@@ -171,6 +180,23 @@ pub fn Dict(
             ht.set(index, entry);
             ht.used += 1;
             return true;
+        }
+
+        /// Return true if the key was added from scratch, false if there was
+        /// already an element with such key and `replace` just performed update
+        /// operation and discard the old value.
+        pub fn replace(
+            self: *Self,
+            allocator: Allocator,
+            key: Key,
+            val: Value,
+        ) Allocator.Error!bool {
+            if (try self.add(allocator, key, val)) {
+                return true;
+            }
+            const entry = self.find(allocator, key).?;
+            entry.setVal(&self.ctx, val);
+            return false;
         }
 
         pub fn find(self: *Self, allocator: Allocator, key: Key) ?*Entry {
