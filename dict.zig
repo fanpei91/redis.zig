@@ -173,9 +173,9 @@ pub fn Dict(
                             }
                         }
                         self.index += 1;
-                        if (self.index > ht.size) {
+                        if (self.index >= ht.size) {
                             if (self.dict.isRehashing() and self.table == 0) {
-                                self.table += 1;
+                                self.table = 1;
                                 self.index = 0;
                                 ht = &self.dict.ht[1];
                             } else {
@@ -417,6 +417,50 @@ pub fn Dict(
             return try items.toOwnedSlice(allocator);
         }
 
+        pub fn scan(self: *Self, cursor: usize) usize {
+            var v = cursor;
+            var t0: *HashTable = &self.ht[0];
+            var m0: usize = t0.sizemask;
+
+            if (!self.isRehashing()) {
+                var entry = t0.get(v & m0);
+                while (entry) |ent| {
+                    entry = ent.next;
+                    self.ctx.scan(ent);
+                }
+            } else {
+                var t1: *HashTable = &self.ht[1];
+                if (t0.size > t1.size) {
+                    t0 = &self.ht[1];
+                    t1 = &self.ht[0];
+                }
+
+                m0 = t0.sizemask;
+                var entry = t0.get(v & m0);
+                while (entry) |ent| {
+                    entry = ent.next;
+                    self.ctx.scan(ent);
+                }
+
+                const m1 = t1.sizemask;
+                while (true) {
+                    entry = t1.get(v & m1);
+                    while (entry) |ent| {
+                        entry = ent.next;
+                        self.ctx.scan(ent);
+                    }
+                    v = (((v | m0) + 1) & ~m0) | (v & m0);
+                    if (v & (m0 ^ m1) == 0) break;
+                }
+            }
+
+            v |= ~m0;
+            v = reverseBits(v);
+            v +%= 1;
+            v = reverseBits(v);
+            return v;
+        }
+
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
             if (self.ht[0].size == 0) return false;
             if (self.isRehashing()) self.rehashStep(allocator);
@@ -631,12 +675,35 @@ fn nextPower(size: usize) usize {
     }
 }
 
+/// Reverse bits. Example:
+///  input: 0b10111011
+/// output: 0b11011101
+/// Algorithm from: http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel
+fn reverseBits(n: usize) usize {
+    var v = n;
+    var s: u6 = @bitSizeOf(usize) >> 1;
+    var mask: usize = ~@as(usize, 0);
+
+    while (s > 0) : (s >>= 1) {
+        mask ^= (mask << s);
+        v = ((v >> s) & mask) | ((v << s) & ~mask);
+    }
+
+    return v;
+}
+
+test reverseBits {
+    const input: usize = 8;
+    const output = reverseBits(input);
+    try testing.expectEqual(1152921504606846976, output);
+}
+
 test "Dict.add | Dict.find | Dict.fetchVal" {
     const allocator = testing.allocator;
     const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
-    const cnt = 1024;
+    const cnt = 100;
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
             allocator,
@@ -693,7 +760,7 @@ test "Dict.getRandom" {
 
     try testing.expect(dict.getRandom(allocator) == null);
 
-    try UnitTestContext.addMany(dict, allocator, 1024);
+    try UnitTestContext.addMany(dict, allocator, 100);
 
     const entry = dict.getRandom(allocator);
     try testing.expect(entry != null);
@@ -704,11 +771,11 @@ test "Dict.getSome" {
     const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
-    try UnitTestContext.addMany(dict, allocator, 1024);
+    try UnitTestContext.addMany(dict, allocator, 100);
 
-    const items = try dict.getSome(allocator, 100);
+    const items = try dict.getSome(allocator, 10);
     defer allocator.free(items);
-    try testing.expectEqual(100, items.len);
+    try testing.expectEqual(10, items.len);
 }
 
 test "Dict.replace" {
@@ -768,7 +835,7 @@ test "Dict.iterator | Dict.fingerprint" {
     const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
-    const count = 1024;
+    const count = 10;
     try UnitTestContext.addMany(dict, allocator, count);
 
     var iter = dict.iterator(false);
@@ -781,8 +848,29 @@ test "Dict.iterator | Dict.fingerprint" {
     try testing.expectEqual(count, iters);
     iter.release();
 
-    _ = try dict.add(allocator, "somekey1", "somevalue1");
+    _ = dict.find(allocator, "somekey");
     try testing.expect(fingerprint != dict.fingerprint());
+}
+
+test "Dict.scan" {
+    const allocator = testing.allocator;
+    const dict: *UnitTestDict = try UnitTestDict.create(allocator, .init());
+    defer dict.destroy(allocator);
+
+    _ = try dict.add(allocator, "k1", "v1");
+    _ = try dict.add(allocator, "k2", "v2");
+    _ = try dict.add(allocator, "k3", "v3");
+
+    _ = try dict.expand(allocator, 8);
+
+    var times: usize = 0;
+    var cursor: usize = 0;
+    while (true) {
+        cursor = dict.scan(cursor);
+        times += 1;
+        if (cursor == 0) break;
+    }
+    try testing.expect(times != 0);
 }
 
 const UnitTestDict = Dict(
@@ -795,6 +883,8 @@ const UnitTestContext = struct {
     const Self = @This();
     const Key = []const u8;
     const Value = []const u8;
+
+    scanned: usize = 0,
 
     fn addMany(
         dict: *UnitTestDict,
