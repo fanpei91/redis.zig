@@ -152,8 +152,15 @@ pub fn Dict(
             }
         };
 
-        pub fn create(ctx: Context) Self {
-            return .{ .ctx = ctx };
+        pub fn create(
+            allocator: Allocator,
+            ctx: Context,
+        ) Allocator.Error!*Self {
+            const self = try allocator.create(Self);
+            self.* = .{
+                .ctx = ctx,
+            };
+            return self;
         }
 
         pub fn size(self: *Self) usize {
@@ -170,7 +177,7 @@ pub fn Dict(
             key: Key,
             val: Value,
         ) Allocator.Error!bool {
-            if (self.isRehashing()) self.stepRehash(allocator);
+            if (self.isRehashing()) self.rehashStep(allocator);
             if (try self.expandIfNeeded(allocator) == false) {
                 return false;
             }
@@ -209,7 +216,7 @@ pub fn Dict(
 
         pub fn find(self: *Self, allocator: Allocator, key: Key) ?*Entry {
             if (self.ht[0].size == 0) return null;
-            if (self.isRehashing()) self.stepRehash(allocator);
+            if (self.isRehashing()) self.rehashStep(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
@@ -234,7 +241,7 @@ pub fn Dict(
 
         pub fn getRandom(self: *Self, allocator: Allocator) ?*Entry {
             if (self.size() == 0) return null;
-            if (self.isRehashing()) self.stepRehash(allocator);
+            if (self.isRehashing()) self.rehashStep(allocator);
 
             var prng = std.Random.DefaultPrng.init(
                 @intCast(std.time.microTimestamp()),
@@ -338,7 +345,7 @@ pub fn Dict(
 
         pub fn delete(self: *Self, allocator: Allocator, key: Key) bool {
             if (self.ht[0].size == 0) return false;
-            if (self.isRehashing()) self.stepRehash(allocator);
+            if (self.isRehashing()) self.rehashStep(allocator);
 
             const hash: Hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
@@ -421,7 +428,7 @@ pub fn Dict(
         pub fn destroy(self: *Self, allocator: Allocator) void {
             self.ht[0].free(allocator, &self.ctx, null);
             self.ht[1].free(allocator, &self.ctx, null);
-            self.* = undefined;
+            allocator.destroy(self);
         }
 
         /// Return the index where the key should be inserted, or return null
@@ -464,7 +471,7 @@ pub fn Dict(
             return true;
         }
 
-        fn stepRehash(self: *Self, allocator: Allocator) void {
+        fn rehashStep(self: *Self, allocator: Allocator) void {
             if (self.iterators != 0) return;
             _ = self.rehash(allocator, 1);
         }
@@ -524,7 +531,7 @@ fn nextPower(size: usize) usize {
 
 test "Dict.add | Dict.find | Dict.fetchVal" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
     const cnt = 1024;
@@ -579,12 +586,12 @@ test "Dict.add | Dict.find | Dict.fetchVal" {
 
 test "Dict.getRandom" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
     try testing.expect(dict.getRandom(allocator) == null);
 
-    try UnitTestContext.addMany(&dict, allocator, 1024);
+    try UnitTestContext.addMany(dict, allocator, 1024);
 
     const entry = dict.getRandom(allocator);
     try testing.expect(entry != null);
@@ -592,10 +599,10 @@ test "Dict.getRandom" {
 
 test "Dict.getSome" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
-    try UnitTestContext.addMany(&dict, allocator, 1024);
+    try UnitTestContext.addMany(dict, allocator, 1024);
 
     const items = try dict.getSome(allocator, 100);
     defer allocator.free(items);
@@ -604,7 +611,7 @@ test "Dict.getSome" {
 
 test "Dict.replace" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
     _ = try dict.add(allocator, "k1", "v1");
@@ -617,7 +624,7 @@ test "Dict.replace" {
 
 test "Dict.delete" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
     _ = try dict.add(allocator, "k1", "v1");
@@ -629,7 +636,7 @@ test "Dict.delete" {
 
 test "Dict.expand | Dict.rehash" {
     const allocator = testing.allocator;
-    var dict: UnitTestDict = .create(.init());
+    const dict: *UnitTestDict = try .create(allocator, .init());
     defer dict.destroy(allocator);
 
     var expanded = try dict.expand(allocator, 1023);
