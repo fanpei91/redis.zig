@@ -224,7 +224,7 @@ fn upgradeAdd(
     if (prepend == 1) {
         ns.setAt(0, value);
     } else {
-        ns.setAt(littleToNative(u32, old_length), value);
+        ns.setAt(old_length, value);
     }
     return ns;
 }
