@@ -311,7 +311,7 @@ pub fn Dict(
             if (self.isRehashing()) self.rehashStep(allocator);
 
             var prng = std.Random.DefaultPrng.init(
-                @intCast(std.time.microTimestamp()),
+                @bitCast(std.time.microTimestamp()),
             );
             var rand = prng.random();
 
@@ -378,7 +378,7 @@ pub fn Dict(
             }
 
             var prng = std.Random.DefaultPrng.init(
-                @intCast(std.time.microTimestamp()),
+                @bitCast(std.time.microTimestamp()),
             );
             var rand = prng.random();
 
