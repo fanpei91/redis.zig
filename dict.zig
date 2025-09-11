@@ -455,9 +455,9 @@ pub fn Dict(
             }
 
             v |= ~m0;
-            v = reverseBits(v);
+            v = @bitReverse(v);
             v +%= 1;
-            v = reverseBits(v);
+            v = @bitReverse(v);
             return v;
         }
 
@@ -673,29 +673,6 @@ fn nextPower(size: usize) usize {
         }
         i *= 2;
     }
-}
-
-/// Reverse bits. Example:
-///  input: 0b10111011
-/// output: 0b11011101
-/// Algorithm from: http://graphics.stanford.edu/~seander/bithacks.html#ReverseParallel
-fn reverseBits(n: usize) usize {
-    var v = n;
-    var s: u6 = @bitSizeOf(usize) >> 1;
-    var mask: usize = ~@as(usize, 0);
-
-    while (s > 0) : (s >>= 1) {
-        mask ^= (mask << s);
-        v = ((v >> s) & mask) | ((v << s) & ~mask);
-    }
-
-    return v;
-}
-
-test reverseBits {
-    const input: usize = 8;
-    const output = reverseBits(input);
-    try testing.expectEqual(1152921504606846976, output);
 }
 
 test "Dict.add | Dict.find | Dict.fetchVal" {
