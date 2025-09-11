@@ -19,7 +19,7 @@ pub const ReplaceResult = enum {
     add,
 };
 
-/// Context must be a struct type with six member functions:
+/// Context must be a struct type with the following member functions:
 ///
 ///     pub fn eql(self, Key, Key) bool
 ///

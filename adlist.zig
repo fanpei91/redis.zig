@@ -1,4 +1,4 @@
-/// Context must be a struct type with three member functions:
+/// Context must be a struct type with the following member functions:
 ///
 ///     pub fn eql(self, SearchKey, Value) bool
 ///
