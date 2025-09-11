@@ -214,13 +214,13 @@ fn upgradeAdd(
     const new_length = old_length + 1;
     const ns = try s.resize(allocator, new_length, new_enc);
 
-    const prepend: u32 = if (value < 0) 1 else 0;
+    const prepend = value < 0;
     var length = old_length;
     while (length > 0) {
         length -= 1;
-        ns.setAt(length + prepend, ns.getAtEncoded(length, curr_enc));
+        ns.setAt(length + @intFromBool(prepend), ns.getAtEncoded(length, curr_enc));
     }
-    if (prepend == 1) {
+    if (prepend) {
         ns.setAt(0, value);
     } else {
         ns.setAt(old_length, value);
