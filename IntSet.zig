@@ -46,10 +46,7 @@ pub fn add(
     const new_length = cur_len + 1;
     const ns = try s.resize(allocator, new_length, null);
     const pos = res.pos;
-    if (pos < cur_len) {
-        ns.moveTail(pos, pos + 1);
-    }
-
+    if (pos < cur_len) ns.moveTail(pos, pos + 1, cur_len - pos);
     ns.setAt(pos, value);
     return .{
         .set = ns,
@@ -80,7 +77,10 @@ pub fn remove(
 
     const len = s.getLength();
     const pos = res.pos;
-    if (pos < len - 1) s.moveTail(pos + 1, pos);
+    if (pos < len - 1) {
+        const from = pos + 1;
+        s.moveTail(from, pos, len - from);
+    }
     const ns = try s.resize(allocator, len - 1, null);
     return .{
         .set = ns,
@@ -131,9 +131,8 @@ pub fn asBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
     return mem[0..s.blobLen()];
 }
 
-fn moveTail(s: *IntSet, from: u32, to: u32) void {
+fn moveTail(s: *IntSet, from: u32, to: u32, len: usize) void {
     const encoding = s.getEncoding();
-    const len = s.getLength() - from;
     if (encoding == ENC_INT64) {
         const ptr = s.numbersPtr(i64);
         @memmove(ptr[to .. to + len], ptr[from .. from + len]);
@@ -299,35 +298,34 @@ test IntSet {
     defer s.free(allocator);
 
     var res = try s.add(allocator, 1);
-    try testing.expect(res.success);
     s = res.set;
+    try testing.expect(res.success);
 
     res = try s.add(allocator, 1);
-    try testing.expect(res.success == false);
     s = res.set;
-
+    try testing.expect(res.success == false);
     try testing.expect(s.find(1));
 
     const max32 = std.math.maxInt(i32);
     res = try s.add(allocator, max32);
-    try testing.expect(res.success);
     s = res.set;
+    try testing.expect(res.success);
     try testing.expect(s.find(max32));
     try testing.expect(s.find(1));
     try testing.expectEqual(2, s.getLength());
 
     const min64 = std.math.minInt(i64);
     res = try s.add(allocator, min64);
-    try testing.expect(res.success);
     s = res.set;
+    try testing.expect(res.success);
     try testing.expect(s.find(min64));
     try testing.expect(s.find(max32));
     try testing.expect(s.find(1));
     try testing.expectEqual(3, s.getLength());
 
     res = try s.remove(allocator, 1);
-    try testing.expect(res.success);
     s = res.set;
+    try testing.expect(res.success);
     try testing.expectEqual(2, s.getLength());
 
     const first = s.get(0);
@@ -351,6 +349,15 @@ test IntSet {
         &.{ min64, min32, max32, max64 },
         s.numbersPtr(i64)[0..s.getLength()],
     );
+
+    res = try s.remove(allocator, min32);
+    s = res.set;
+    try testing.expect(res.success);
+    try testing.expect(s.find(min32) == false);
+    try testing.expect(s.find(min64));
+    try testing.expect(s.find(max32));
+    try testing.expect(s.find(max64));
+    try testing.expect(s.getLength() == 3);
 }
 
 const std = @import("std");
