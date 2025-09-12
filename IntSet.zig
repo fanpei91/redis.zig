@@ -341,7 +341,12 @@ test IntSet {
     try expectEqual(4, s.length.get());
     try expectEqualSlices(
         i64,
-        &.{ min64, min32, max32, max64 },
+        &.{
+            nativeToLittle(i64, min64),
+            nativeToLittle(i64, min32),
+            nativeToLittle(i64, max32),
+            nativeToLittle(i64, max64),
+        },
         s.numbersPtr(i64)[0..s.length.get()],
     );
     const ptr: [*]u32 = @ptrCast(@alignCast(s));
