@@ -43,10 +43,13 @@ pub fn new(allocator: Allocator) Allocator.Error!ZipList {
     return zl;
 }
 
+pub fn blobLen(zl: ZipList) u32 {
+    return littleToNative(u32, BYTES(zl).*);
+}
+
 pub fn free(allocator: Allocator, zl: ZipList) void {
-    const bytes = littleToNative(u32, BYTES(zl).*);
     const buffer: [*]align(@alignOf(u32)) u8 = @ptrCast(@alignCast(zl));
-    allocator.free(buffer[0..bytes]);
+    allocator.free(buffer[0..blobLen(zl)]);
 }
 
 inline fn INT_IMM_VAL(v: u8) u8 {
