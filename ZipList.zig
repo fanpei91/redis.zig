@@ -97,15 +97,15 @@ const Entry = struct {
 
     encoding: u8,
 
-    /// Hold the number of bytes required to encode the entries length.
+    /// The bytes required to encode the entries length.
     len_size: u32,
-    /// Hold the entries length.
+    /// The entry length.
     len: u32,
 
     /// prev_rawlen_size + len_size
     header_size: u32,
 
-    /// The start of the current entry.
+    /// The start address of the current entry.
     p: [*]u8,
 
     fn decode(ptr: [*]u8) Entry {
@@ -156,18 +156,6 @@ const Entry = struct {
     }
 };
 
-fn intSize(encoding: u8) u32 {
-    switch (encoding) {
-        INT_08B => return 1,
-        INT_16B => return 2,
-        INT_24B => return 3,
-        INT_32B => return 4,
-        INT_64B => return 8,
-        else => return 0, // 4 bit immediate
-    }
-    unreachable;
-}
-
 pub fn new(allocator: Allocator) Allocator.Error!*ZipList {
     const bytes = HEADER_SIZE + 1;
     const ptr = (try allocator.alignedAlloc(u8, .of(ZipList), bytes)).ptr;
@@ -207,13 +195,62 @@ pub fn blobLen(zl: *ZipList) u32 {
     return zl.bytes.get();
 }
 
+pub fn append(
+    zl: *ZipList,
+    allocator: Allocator,
+    s: []u8,
+) Allocator.Error!*ZipList {
+    return zl.insert(allocator, zl.ENTRY_TAIL(), s);
+}
+
+pub fn prepend(
+    zl: ZipList,
+    allocator: Allocator,
+    s: []u8,
+) Allocator.Error!*ZipList {
+    return zl.insert(allocator, zl.ENTRY_HEAD(), s);
+}
+
+pub fn insert(
+    zl: *ZipList,
+    allocator: Allocator,
+    p: [*]u8,
+    s: []u8,
+) Allocator.Error!*ZipList {
+    _ = zl;
+    _ = allocator;
+    _ = p;
+    _ = s;
+}
+
 pub fn free(zl: *ZipList, allocator: Allocator) void {
     allocator.free(zl.asBytes());
+}
+
+inline fn ENTRY_HEAD(zl: *ZipList) [*]u8 {
+    return @ptrFromInt(@intFromPtr(zl) + HEADER_SIZE);
+}
+
+inline fn ENTRY_TAIL(zl: *ZipList) [*]u8 {
+    const offset = zl.bytes.get() - 1;
+    return @ptrFromInt(@intFromPtr(zl) + offset);
 }
 
 fn rawEntryLength(p: [*]u8) u32 {
     const entry = Entry.decode(p);
     return entry.prev_rawlen_size + entry.len_size + entry.len;
+}
+
+fn intSize(encoding: u8) u32 {
+    switch (encoding) {
+        INT_08B => return 1,
+        INT_16B => return 2,
+        INT_24B => return 3,
+        INT_32B => return 4,
+        INT_64B => return 8,
+        else => return 0, // 4 bit immediate
+    }
+    unreachable;
 }
 
 inline fn INT_IMM_VAL(v: u8) u8 {
