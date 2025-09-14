@@ -10,7 +10,6 @@ const STR_06B = 0b00000000;
 const STR_14B = 0b01000000;
 const STR_32B = 0b10000000;
 
-const INT_MSK = 0b00110000;
 const INT_08B = 0b11111110;
 const INT_16B = 0b11000000;
 const INT_24B = 0b11110000;
@@ -148,9 +147,9 @@ pub fn numOfEntries(self: *ZipList) u32 {
     }
 
     cnt = 0;
-    var p: [*]u8 = @ptrFromInt(@intFromPtr(self) + HEADER_SIZE);
-    while (p[0] != END) {
-        p = @ptrFromInt(@intFromPtr(p) + rawEntryLength(p));
+    var entry: [*]u8 = self.addr() + HEADER_SIZE;
+    while (entry[0] != END) {
+        entry += rawEntryLength(entry);
         cnt += 1;
     }
     // Re-store length if small enough.
@@ -292,8 +291,7 @@ pub fn find(_: *const ZipList, entry: [*]u8, str: []const u8, skip: u32) ?[*]u8 
 }
 
 pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
-    const ptr: [*]align(@alignOf(ZipList)) u8 = @ptrCast(@alignCast(@constCast(self)));
-    return ptr[0..self.blobLen()];
+    return self.addr()[0..self.blobLen()];
 }
 
 pub fn blobLen(self: *const ZipList) u32 {
@@ -350,18 +348,18 @@ pub fn insert(
     const nextdiff = if (ptr[0] != END) prevLenByteDiff(ptr, reqlen) else 0;
 
     // Store offset because a realloc may change the address of zl.
-    var offset: u32 = @intCast(@intFromPtr(ptr) - @intFromPtr(zl));
+    var offset = ptr - zl.addr();
     zl = try zl.resize(
         allocator,
         @intCast(@as(i64, curlen + reqlen) + @as(i64, nextdiff)),
     );
 
-    var p: [*]u8 = @ptrFromInt(@intFromPtr(zl) + offset);
+    var p: [*]u8 = zl.addr() + offset;
 
     // Apply memory move when necessary and update tail offset.
     if (p[0] != END) {
         const size: u32 = @intCast(
-            @as(i64, curlen - offset) + @as(i64, nextdiff) - 1,
+            @as(i64, curlen) - @as(i64, @intCast(offset)) + @as(i64, nextdiff) - 1,
         );
         const dest = p + reqlen;
         const src = if (nextdiff > 0) p - @abs(nextdiff) else p + @abs(nextdiff);
@@ -373,15 +371,15 @@ pub fn insert(
         // Update offset for tail.
         zl.tail.set(@intCast(@as(i64, zl.tail.get() + reqlen) + @as(i64, nextdiff)));
     } else {
-        zl.tail.set(@intCast(@intFromPtr(p) - @intFromPtr(zl)));
+        zl.tail.set(@intCast(p - zl.addr()));
     }
 
     // When nextdiff != 0, the raw length of the next entry has changed, so
     // we need to cascade the update throughout the ziplist
     if (nextdiff != 0) {
-        offset = @intCast(@intFromPtr(p) - @intFromPtr(zl));
+        offset = p - zl.addr();
         zl = try cascadeUpdate(zl, allocator, p + reqlen);
-        p = @ptrFromInt(@intFromPtr(zl) + offset);
+        p = zl.addr() + offset;
     }
 
     p += encodePrevLen(p, prevlen);
@@ -402,9 +400,9 @@ pub fn delete(
     ptr: *[*]u8,
 ) Allocator.Error!*ZipList {
     const p = ptr.*;
-    const offset = @intFromPtr(p) - @intFromPtr(self);
+    const offset = p - self.addr();
     const zl = try self.cascadeDelete(allocator, p, 1);
-    ptr.* = @ptrFromInt(@intFromPtr(zl) + offset);
+    ptr.* = zl.addr() + offset;
     return zl;
 }
 
@@ -464,22 +462,22 @@ fn cascadeDelete(
             }
 
             // Move the tail to the first deleted position.
-            const offset: u32 = @intCast(@intFromPtr(p) - @intFromPtr(zl));
+            const offset: u32 = @intCast(p - zl.addr());
             const size = zl.bytes.get() - offset - 1;
             @memmove(first.ptr[0..size], p[0..size]);
         } else {
             // The entire tail was deleted. No need to move memory.
-            const offset = @intFromPtr(first.ptr - first.prev_rawlen) - @intFromPtr(zl);
+            const offset = first.ptr - first.prev_rawlen - zl.addr();
             zl.tail.set(@intCast(offset));
         }
 
-        const offset: u32 = @intCast(@intFromPtr(first.ptr) - @intFromPtr(zl));
+        const offset = first.ptr - zl.addr();
         var new_len = zl.bytes.get() - totlen;
         new_len = if (nextdiff > 0) new_len + @abs(nextdiff) else new_len - @abs(nextdiff);
         zl = try zl.resize(allocator, new_len);
         zl.decrLength(deleted);
 
-        p = @ptrFromInt(@intFromPtr(zl) + offset);
+        p = zl.addr() + offset;
         if (nextdiff != 0) {
             zl = try cascadeUpdate(zl, allocator, p);
         }
@@ -507,17 +505,17 @@ fn cascadeUpdate(
 
         const cur_rawlen_size = encodePrevLen(null, cur_rawlen);
         if (next_entry.prev_rawlen_size < cur_rawlen_size) {
-            const offset = @intFromPtr(p) - @intFromPtr(zl);
+            const offset = p - zl.addr();
             const extra = cur_rawlen_size - next_entry.prev_rawlen_size;
             zl = try zl.resize(allocator, curlen + extra);
-            p = @ptrFromInt(@intFromPtr(zl) + offset);
+            p = zl.addr() + offset;
 
             // Next element.
             const np = p + cur_rawlen;
-            const noffset: u32 = @intCast(@intFromPtr(np) - @intFromPtr(zl));
+            const noffset: u32 = @intCast(np - zl.addr());
 
             // Update tail offset when next element is not the tail element.
-            const tail: [*]u8 = @ptrFromInt(@intFromPtr(zl) + zl.tail.get());
+            const tail: [*]u8 = zl.addr() + zl.tail.get();
             if (tail != np) {
                 zl.tail.set(zl.tail.get() + extra);
             }
@@ -551,7 +549,7 @@ fn cascadeUpdate(
 fn incrLength(self: *ZipList) void {
     var curlen = self.len.get();
     if (curlen < maxInt(u16)) {
-        curlen +|= 1;
+        curlen += 1;
         self.len.set(curlen);
     }
 }
@@ -606,16 +604,19 @@ fn resize(
 }
 
 inline fn entryHead(self: *const ZipList) [*]u8 {
-    return @ptrFromInt(@intFromPtr(self) + HEADER_SIZE);
+    return self.addr() + HEADER_SIZE;
 }
 
 inline fn entryTail(self: *const ZipList) [*]u8 {
-    return @ptrFromInt(@intFromPtr(self) + self.tail.get());
+    return self.addr() + self.tail.get();
 }
 
 inline fn entryEnd(self: *const ZipList) [*]u8 {
-    const offset = self.bytes.get() - 1;
-    return @ptrFromInt(@intFromPtr(self) + offset);
+    return self.addr() + self.bytes.get() - 1;
+}
+
+inline fn addr(self: *const ZipList) [*]align(@alignOf(ZipList)) u8 {
+    return @ptrCast(@alignCast(@constCast(self)));
 }
 
 fn encodePrevLenForceLarge(ptr: [*]u8, len: u32) void {
