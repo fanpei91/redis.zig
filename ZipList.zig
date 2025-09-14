@@ -205,7 +205,7 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
-pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
+pub fn index(self: *const ZipList, idx: i32) ?[*]const u8 {
     var i = idx;
     var p: [*]u8 = undefined;
     if (i < 0) {
@@ -225,6 +225,30 @@ pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
         }
     }
     return if (p[0] == END or i > 0) null else p;
+}
+
+pub fn next(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
+    _ = self;
+    if (p[0] == END) return null;
+    const n = p + rawEntryLength(p);
+    if (n[0] == END) return null;
+    return n;
+}
+
+pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
+    if (p[0] == END) {
+        const tail_ptr = self.entryTail();
+        if (tail_ptr[0] == END) {
+            return null;
+        }
+        return tail_ptr;
+    }
+    if (p == self.entryHead()) {
+        return null;
+    }
+    const prevlen = Entry.decodePrevLen(p);
+    std.debug.assert(prevlen.len > 0);
+    return p - prevlen.len;
 }
 
 pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
@@ -255,19 +279,20 @@ pub fn prepend(
 pub fn insert(
     self: *ZipList,
     allocator: Allocator,
-    ptr: [*]u8,
+    ptr: [*]const u8,
     str: []const u8,
 ) Allocator.Error!*ZipList {
     var zl = self;
-    var p = ptr;
 
     const curlen: u32 = zl.bytes.get();
     var prevlen: u32 = 0;
-    if (p[0] != END) {
-        prevlen = (Entry.decodePrevLen(p)).len;
+    if (ptr[0] != END) {
+        prevlen = (Entry.decodePrevLen(ptr)).len;
     } else {
         const tail = zl.entryTail();
-        prevlen = rawEntryLength(tail);
+        if (tail[0] != END) {
+            prevlen = rawEntryLength(tail);
+        }
     }
 
     var value: i64 = undefined;
@@ -282,15 +307,16 @@ pub fn insert(
     // When the insert position is not equal to the tail, we need to
     // make sure that the next entry can hold this entry's length in
     // its prevlen field.
-    const nextdiff = if (p[0] != END) prevLenByteDiff(p, reqlen) else 0;
+    const nextdiff = if (ptr[0] != END) prevLenByteDiff(ptr, reqlen) else 0;
 
     // Store offset because a realloc may change the address of zl.
-    var offset: u32 = @intCast(@intFromPtr(p) - @intFromPtr(zl));
+    var offset: u32 = @intCast(@intFromPtr(ptr) - @intFromPtr(zl));
     zl = try zl.resize(
         allocator,
         @intCast(@as(i64, curlen + reqlen) + @as(i64, nextdiff)),
     );
-    p = @ptrFromInt(@intFromPtr(zl) + offset);
+
+    var p: [*]u8 = @ptrFromInt(@intFromPtr(zl) + offset);
 
     // Apply memory move when necessary and update tail offset.
     if (p[0] != END) {
@@ -370,14 +396,14 @@ fn cascadeUpdate(
         // Abort if there is no next entry.
         if (p[cur_rawlen] == END) break;
 
-        const next = Entry.decode(p + cur_rawlen);
+        const next_entry = Entry.decode(p + cur_rawlen);
         // Abort when "prevlen" has not changed.
-        if (next.prev_rawlen == cur_rawlen) break;
+        if (next_entry.prev_rawlen == cur_rawlen) break;
 
         const cur_rawlen_size = encodePrevLength(null, cur_rawlen);
-        if (next.prev_rawlen_size < cur_rawlen_size) {
+        if (next_entry.prev_rawlen_size < cur_rawlen_size) {
             const offset = @intFromPtr(p) - @intFromPtr(zl);
-            const extra = cur_rawlen_size - next.prev_rawlen_size;
+            const extra = cur_rawlen_size - next_entry.prev_rawlen_size;
             zl = try zl.resize(allocator, curlen + extra);
             p = @ptrFromInt(@intFromPtr(zl) + offset);
 
@@ -392,10 +418,10 @@ fn cascadeUpdate(
             }
 
             // Move the tail to the back.
-            const nsize = curlen - noffset - next.prev_rawlen_size - 1;
+            const nsize = curlen - noffset - next_entry.prev_rawlen_size - 1;
             @memmove(
                 (np + cur_rawlen_size)[0..nsize],
-                (np + next.prev_rawlen_size)[0..nsize],
+                (np + next_entry.prev_rawlen_size)[0..nsize],
             );
             _ = encodePrevLength(np, cur_rawlen);
 
@@ -404,7 +430,7 @@ fn cascadeUpdate(
         } else {
             // Next element.
             const np = p + cur_rawlen;
-            if (next.prev_rawlen_size > cur_rawlen_size) {
+            if (next_entry.prev_rawlen_size > cur_rawlen_size) {
                 // This would result in shrinking, which we want to avoid.
                 // So, set "cur_rawlen" in the available bytes.
                 encodePrevLengthForceLarge(np, cur_rawlen);
@@ -621,6 +647,29 @@ test ZipList {
             "last",
             last.?[last_entry.header_size .. last_entry.header_size + last_entry.len],
         );
+    }
+
+    {
+        var next_ptr = zl.next(zl.entryTail());
+        try expectEqual(null, next_ptr);
+
+        next_ptr = zl.next(zl.entryHead());
+        try expect(next_ptr != null);
+
+        next_ptr = zl.next(zl.entryEnd());
+        try expectEqual(null, next_ptr);
+    }
+
+    {
+        var prev_ptr = zl.prev(zl.entryEnd());
+        try expect(prev_ptr != null);
+        try expectEqual(zl.entryTail(), prev_ptr.?);
+
+        prev_ptr = zl.prev(zl.entryHead());
+        try expectEqual(null, prev_ptr);
+
+        prev_ptr = zl.prev(zl.entryTail());
+        try expect(prev_ptr != null);
     }
 }
 
