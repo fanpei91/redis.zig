@@ -205,6 +205,28 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
+pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
+    var i = idx;
+    var p: [*]u8 = undefined;
+    if (i < 0) {
+        i = (-i) - 1;
+        p = self.entryTail();
+        if (p[0] != END) {
+            var prevlen = Entry.decodePrevLen(p);
+            while (prevlen.len > 0 and i > 0) : (i -= 1) {
+                p -= prevlen.len;
+                prevlen = Entry.decodePrevLen(p);
+            }
+        }
+    } else {
+        p = self.entryHead();
+        while (p[0] != END and i > 0) : (i -= 1) {
+            p += rawEntryLength(p);
+        }
+    }
+    return if (p[0] == END or i > 0) null else p;
+}
+
 pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
     const ptr: [*]align(@alignOf(ZipList)) u8 = @ptrCast(@alignCast(@constCast(self)));
     return ptr[0..self.blobLen()];
@@ -531,33 +553,75 @@ test ZipList {
     var zl = try new(allocator);
     defer zl.free(allocator);
 
-    const bytes = zl.bytes.get();
-    try expectEqual(HEADER_SIZE + 1, bytes);
-    try expectEqual(HEADER_SIZE, zl.tail.get());
-    try expectEqual(0, zl.numOfEntries());
-    try expectEqual(END, zl.asBytes()[bytes - 1]);
+    {
+        const bytes = zl.bytes.get();
+        try expectEqual(HEADER_SIZE + 1, bytes);
+        try expectEqual(HEADER_SIZE, zl.tail.get());
+        try expectEqual(0, zl.numOfEntries());
+        try expectEqual(END, zl.asBytes()[bytes - 1]);
+    }
 
     const hello = "hello";
-    zl = try zl.prepend(allocator, hello);
-    try expectEqual(1, zl.numOfEntries());
-    try expectEqual(@sizeOf(ZipList) + 1 + 1 + hello.len + 1, zl.bytes.get());
-    try expectEqual(@sizeOf(ZipList), zl.tail.get());
-
-    zl = try zl.prepend(allocator, hello);
-    try expectEqual(2, zl.numOfEntries());
-
-    zl = try zl.append(allocator, hello);
-    try expectEqual(3, zl.numOfEntries());
-
-    const large_str: [255]u8 = @splat(0);
-    zl = try zl.prepend(allocator, &large_str);
-    try expectEqual(4, zl.numOfEntries());
-
-    for (0..maxInt(u16)) |_| {
-        zl = try zl.append(allocator, hello);
+    {
+        zl = try zl.prepend(allocator, hello);
+        try expectEqual(1, zl.numOfEntries());
+        try expectEqual(@sizeOf(ZipList) + 1 + 1 + hello.len + 1, zl.bytes.get());
+        try expectEqual(@sizeOf(ZipList), zl.tail.get());
     }
-    try expectEqual(@as(u32, maxInt(u16)) + 4, zl.numOfEntries());
-    try expectEqual(maxInt(u16), zl.len.get());
+
+    {
+        zl = try zl.prepend(allocator, hello);
+        try expectEqual(2, zl.numOfEntries());
+
+        zl = try zl.append(allocator, hello);
+        try expectEqual(3, zl.numOfEntries());
+
+        const large_str: [255]u8 = @splat(0);
+        zl = try zl.prepend(allocator, &large_str);
+        try expectEqual(4, zl.numOfEntries());
+    }
+
+    {
+        for (0..maxInt(u16)) |_| {
+            zl = try zl.append(allocator, hello);
+        }
+        try expectEqual(@as(u32, maxInt(u16)) + 4, zl.numOfEntries());
+        try expectEqual(maxInt(u16), zl.len.get());
+    }
+
+    {
+        zl = try zl.prepend(allocator, "4294967295");
+        const first = Entry.decode(zl.index(0).?);
+        const ptr = first.ptr + first.header_size;
+        const buf = ptr[0..4];
+        try expectEqual(
+            4294967295,
+            readInt(u32, buf, .little),
+        );
+    }
+
+    {
+        zl = try zl.prepend(allocator, "first");
+        const first = zl.index(0);
+        try expect(first != null);
+        const first_entry = Entry.decode(first.?);
+        try expectEqualStrings(
+            "first",
+            first.?[first_entry.header_size .. first_entry.header_size + first_entry.len],
+        );
+    }
+
+    {
+        zl = try zl.append(allocator, "last");
+        const last = zl.index(-1);
+        try expect(last != null);
+        try expect(last != null);
+        const last_entry = Entry.decode(last.?);
+        try expectEqualStrings(
+            "last",
+            last.?[last_entry.header_size .. last_entry.header_size + last_entry.len],
+        );
+    }
 }
 
 const std = @import("std");
@@ -566,6 +630,8 @@ const nativeToLittle = std.mem.nativeToLittle;
 const littleToNative = std.mem.littleToNative;
 const testing = std.testing;
 const expectEqual = testing.expectEqual;
+const expectEqualStrings = testing.expectEqualStrings;
+const expect = testing.expect;
 const LittleEndian = @import("endian.zig").LittleEndian;
 const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
