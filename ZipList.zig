@@ -89,7 +89,7 @@ entries: [0]u8, // entries
 ///      1 to 13 because 0000 and 1111 can not be used, so 1 should be
 ///      subtracted from the encoded 4 bit value to obtain the right value.
 /// |11111111| - End of ziplist.
-const Entry = struct {
+pub const Entry = struct {
     /// The number of bytes required to store the length of the previous
     /// element. 1 or 5.
     prev_rawlen_size: u8,
@@ -107,6 +107,42 @@ const Entry = struct {
 
     /// The start address of the current entry.
     ptr: [*]const u8,
+
+    pub fn val(entry_ptr: [*]const u8) ?union(enum) { int: i64, str: []const u8 } {
+        if (entry_ptr[0] == END) return null;
+        const entry = Entry.decode(entry_ptr);
+        if (isStr(entry.encoding)) {
+            const start = entry.header_size;
+            const end = start + entry.len;
+            return .{ .str = entry.ptr[start..end] };
+        }
+        return .{
+            .int = loadInteger(
+                entry_ptr + entry.header_size,
+                entry.encoding,
+            ),
+        };
+    }
+
+    pub fn eql(entry_ptr: [*]const u8, str: []const u8) bool {
+        if (entry_ptr[0] == END) return false;
+        const entry = Entry.decode(entry_ptr);
+        if (isStr(entry.encoding)) {
+            if (entry.len == str.len) {
+                const start = entry.header_size;
+                const end = start + entry.len;
+                return std.mem.eql(u8, entry_ptr[start..end], str);
+            }
+            return false;
+        }
+        var value: i64 = undefined;
+        var encoding: u8 = undefined;
+        if (tryEncoding(str, &value, &encoding)) {
+            const zval = loadInteger(entry_ptr + entry.header_size, encoding);
+            return value == zval;
+        }
+        return false;
+    }
 
     fn decodePrevLen(ptr: [*]const u8) struct { size: u8, len: u32 } {
         if (ptr[0] < BIG_LEN) {
@@ -228,20 +264,20 @@ pub fn index(self: *const ZipList, idx: i32) ?[*]const u8 {
 }
 
 pub fn next(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
-    _ = self;
     if (p[0] == END) return null;
-    const n = p + rawEntryLength(p);
-    if (n[0] == END) return null;
-    return n;
+    if (p == self.entryTail()) {
+        return null;
+    }
+    return p + rawEntryLength(p);
 }
 
 pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     if (p[0] == END) {
-        const tail_ptr = self.entryTail();
-        if (tail_ptr[0] == END) {
+        const tail = self.entryTail();
+        if (tail[0] == END) {
             return null;
         }
-        return tail_ptr;
+        return tail;
     }
     if (p == self.entryHead()) {
         return null;
@@ -249,23 +285,6 @@ pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     const prevlen = Entry.decodePrevLen(p);
     std.debug.assert(prevlen.len > 0);
     return p - prevlen.len;
-}
-
-pub fn get(
-    self: *const ZipList,
-    p: [*]const u8,
-) ?union(enum) { int: i64, str: []const u8 } {
-    if (p[0] == END) return null;
-    _ = self;
-    const entry = Entry.decode(p);
-    if (isStr(entry.encoding)) {
-        const start = entry.header_size;
-        const end = start + entry.len;
-        return .{ .str = entry.ptr[start..end] };
-    }
-    return .{
-        .int = loadInteger(p + entry.header_size, entry.encoding),
-    };
 }
 
 pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
@@ -553,24 +572,32 @@ fn encodeLength(ptr: ?[*]u8, encoding: u8, len: u32) u8 {
 /// Stores the integer value in `out_int` and its encoding in `out_encoding`.
 fn tryEncoding(str: []const u8, out_int: *i64, out_encoding: *u8) bool {
     if (str.len >= 32 or str.len == 0) return false;
-
     const value = std.fmt.parseInt(i64, str, 10) catch {
         return false;
     };
+
+    out_int.* = value;
     if (value >= 0 and value <= 12) {
         out_encoding.* = INT_IMM_MIN + @as(u8, @intCast(value));
-    } else if (value >= minInt(i8) and value <= maxInt(i8)) {
-        out_encoding.* = INT_08B;
-    } else if (value >= minInt(i16) and value <= maxInt(i16)) {
-        out_encoding.* = INT_16B;
-    } else if (value >= maxInt(i24) and value <= maxInt(i24)) {
-        out_encoding.* = INT_24B;
-    } else if (value >= maxInt(i32) and value <= maxInt(i32)) {
-        out_encoding.* = INT_32B;
-    } else {
-        out_encoding.* = INT_64B;
+        return true;
     }
-    out_int.* = value;
+    if (value >= minInt(i8) and value <= maxInt(i8)) {
+        out_encoding.* = INT_08B;
+        return true;
+    }
+    if (value >= minInt(i16) and value <= maxInt(i16)) {
+        out_encoding.* = INT_16B;
+        return true;
+    }
+    if (value >= maxInt(i24) and value <= maxInt(i24)) {
+        out_encoding.* = INT_24B;
+        return true;
+    }
+    if (value >= maxInt(i32) and value <= maxInt(i32)) {
+        out_encoding.* = INT_32B;
+        return true;
+    }
+    out_encoding.* = INT_64B;
     return true;
 }
 
@@ -648,9 +675,11 @@ test ZipList {
 
     {
         zl = try zl.prepend(allocator, "4294967295");
-        const ret = zl.get(zl.index(0).?);
+        const ptr = zl.index(0).?;
+        const ret = Entry.val(ptr);
         try expect(ret != null);
         try expect(ret.?.int == 4294967295);
+        try expect(Entry.eql(ptr, "4294967295"));
     }
 
     {
@@ -659,8 +688,9 @@ test ZipList {
         try expect(first != null);
         try expectEqualStrings(
             "first",
-            zl.get(first.?).?.str,
+            Entry.val(first.?).?.str,
         );
+        try expect(Entry.eql(first.?, "first"));
     }
 
     {
@@ -669,7 +699,7 @@ test ZipList {
         try expect(last != null);
         try expectEqualStrings(
             "last",
-            zl.get(last.?).?.str,
+            Entry.val(last.?).?.str,
         );
     }
 
