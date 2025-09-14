@@ -106,9 +106,9 @@ pub const Entry = struct {
     header_size: u8,
 
     /// The start address of the current entry.
-    ptr: [*]const u8,
+    ptr: [*]u8,
 
-    pub fn val(entry_ptr: [*]const u8) ?union(enum) { int: i64, str: []const u8 } {
+    pub fn val(entry_ptr: [*]u8) ?union(enum) { int: i64, str: []const u8 } {
         if (entry_ptr[0] == END) return null;
         const entry = Entry.decode(entry_ptr);
         if (isStr(entry.encoding)) {
@@ -124,7 +124,7 @@ pub const Entry = struct {
         };
     }
 
-    pub fn eql(entry_ptr: [*]const u8, str: []const u8) bool {
+    pub fn eql(entry_ptr: [*]u8, str: []const u8) bool {
         if (entry_ptr[0] == END) return false;
         const entry = Entry.decode(entry_ptr);
         if (isStr(entry.encoding)) {
@@ -144,7 +144,7 @@ pub const Entry = struct {
         return false;
     }
 
-    fn decodePrevLen(ptr: [*]const u8) struct { size: u8, len: u32 } {
+    fn decodePrevLen(ptr: [*]u8) struct { size: u8, len: u32 } {
         if (ptr[0] < BIG_LEN) {
             return .{ .size = 1, .len = ptr[0] };
         }
@@ -154,7 +154,7 @@ pub const Entry = struct {
         };
     }
 
-    fn decodeLength(ptr: [*]const u8) struct { encoding: u8, size: u8, len: u32 } {
+    fn decodeLength(ptr: [*]u8) struct { encoding: u8, size: u8, len: u32 } {
         var encoding = ptr[0];
         if (encoding < STR_MSK) {
             encoding &= STR_MSK;
@@ -189,7 +189,7 @@ pub const Entry = struct {
         };
     }
 
-    fn decode(ptr: [*]const u8) Entry {
+    fn decode(ptr: [*]u8) Entry {
         var entry: Entry = undefined;
         entry.ptr = ptr;
         var p = ptr;
@@ -241,7 +241,7 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
-pub fn index(self: *const ZipList, idx: i32) ?[*]const u8 {
+pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
     var i = idx;
     var p: [*]u8 = undefined;
     if (i < 0) {
@@ -263,7 +263,7 @@ pub fn index(self: *const ZipList, idx: i32) ?[*]const u8 {
     return if (p[0] == END or i > 0) null else p;
 }
 
-pub fn next(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
+pub fn next(self: *const ZipList, p: [*]u8) ?[*]u8 {
     if (p[0] == END) return null;
     if (p == self.entryTail()) {
         return null;
@@ -271,7 +271,7 @@ pub fn next(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     return p + rawEntryLength(p);
 }
 
-pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
+pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
     if (p[0] == END) {
         const tail = self.entryTail();
         if (tail[0] == END) {
@@ -287,8 +287,8 @@ pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     return p - prevlen.len;
 }
 
-pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) const u8 {
-    const ptr: [*]align(@alignOf(ZipList)) const u8 = @ptrCast(@alignCast(self));
+pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
+    const ptr: [*]align(@alignOf(ZipList)) u8 = @ptrCast(@alignCast(@constCast(self)));
     return ptr[0..self.blobLen()];
 }
 
@@ -315,7 +315,7 @@ pub fn prepend(
 pub fn insert(
     self: *ZipList,
     allocator: Allocator,
-    ptr: [*]const u8,
+    ptr: [*]u8,
     str: []const u8,
 ) Allocator.Error!*ZipList {
     var zl = self;
@@ -387,19 +387,114 @@ pub fn insert(
     } else {
         saveInteger(p, value, encoding);
     }
-    zl.incrLength(1);
+    zl.incrLength();
 
     return zl;
 }
 
-pub fn free(self: *ZipList, allocator: Allocator) void {
-    allocator.free(@constCast(self.asBytes()));
+pub fn deleteEntry(
+    self: *ZipList,
+    allocator: Allocator,
+    ptr: *[*]u8,
+) Allocator.Error!*ZipList {
+    const p = ptr.*;
+    const offset = @intFromPtr(p) - @intFromPtr(self);
+    const zl = try self.delete(allocator, p, 1);
+    ptr.* = @ptrFromInt(@intFromPtr(zl) + offset);
+    return zl;
 }
 
-fn incrLength(self: *ZipList, incr: u16) void {
+pub fn deleteRange(
+    self: *ZipList,
+    allocator: Allocator,
+    idx: u32,
+    num: u32,
+) Allocator.Error!*ZipList {
+    if (self.index(@intCast(idx))) |ptr| {
+        return try self.delete(allocator, ptr, num);
+    }
+    return self;
+}
+
+fn delete(
+    self: *ZipList,
+    allocator: Allocator,
+    ptr: [*]u8,
+    num: u32,
+) Allocator.Error!*ZipList {
+    var p = ptr;
+    var zl = self;
+    const first = Entry.decode(p);
+
+    var deleted: u32 = 0;
+    var i: i8 = 0;
+    while (p[0] != END and i < num) : (i += 1) {
+        p += rawEntryLength(p);
+        deleted += 1;
+    }
+    const totlen: u32 = @intCast(p - first.ptr);
+    if (totlen > 0) {
+        var nextdiff: i32 = 0;
+        if (p[0] != END) {
+            // Storing `prev_rawlen` in this entry may increase or decrease the
+            // number of bytes required compare to the current `prev_rawlen`.
+            // There always is room to store this, because it was previously
+            // stored by an entry that is now being deleted.
+            nextdiff = prevLenByteDiff(p, first.prev_rawlen);
+            p = if (nextdiff > 0) p - @abs(nextdiff) else p + @abs(nextdiff);
+            _ = encodePrevLength(p, first.prev_rawlen);
+
+            // When the tail contains more than one entry, we need to take
+            // "nextdiff" in account as well. Otherwise, a change in the
+            // size of prevlen doesn't have an effect on the *tail* offset.
+            zl.tail.set(zl.tail.get() - totlen);
+            const tail = Entry.decode(p);
+            if (p[tail.header_size + tail.len] != END) {
+                var t = zl.tail.get();
+                t = if (nextdiff > 0) t + @abs(nextdiff) else t - @abs(nextdiff);
+                zl.tail.set(t);
+            }
+
+            // Move the tail to the first deleted position.
+            const offset: u32 = @intCast(@intFromPtr(p) - @intFromPtr(zl));
+            const size = zl.bytes.get() - offset - 1;
+            @memmove(first.ptr[0..size], p[0..size]);
+        } else {
+            // The entire tail was deleted. No need to move memory.
+            const offset = @intFromPtr(first.ptr - first.prev_rawlen) - @intFromPtr(zl);
+            zl.tail.set(@intCast(offset));
+        }
+
+        const offset: u32 = @intCast(@intFromPtr(first.ptr) - @intFromPtr(zl));
+        var new_len = zl.bytes.get() - totlen;
+        new_len = if (nextdiff > 0) new_len + @abs(nextdiff) else new_len - @abs(nextdiff);
+        zl = try zl.resize(allocator, new_len);
+        zl.decrLength(deleted);
+
+        p = @ptrFromInt(@intFromPtr(zl) + offset);
+        if (nextdiff != 0) {
+            zl = try cascadeUpdate(zl, allocator, p);
+        }
+    }
+    return zl;
+}
+
+pub fn free(self: *ZipList, allocator: Allocator) void {
+    allocator.free(self.asBytes());
+}
+
+fn incrLength(self: *ZipList) void {
     var curlen = self.len.get();
     if (curlen < maxInt(u16)) {
-        curlen +|= incr;
+        curlen +|= 1;
+        self.len.set(curlen);
+    }
+}
+
+fn decrLength(self: *ZipList, decr: u32) void {
+    var curlen = self.len.get();
+    if (curlen < maxInt(u16)) {
+        curlen -= @intCast(decr);
         self.len.set(curlen);
     }
 }
@@ -418,7 +513,7 @@ fn saveInteger(p: [*]u8, value: i64, encoding: u8) void {
     }
 }
 
-fn loadInteger(p: [*]const u8, encoding: u8) i64 {
+fn loadInteger(p: [*]u8, encoding: u8) i64 {
     return switch (encoding) {
         INT_08B => p[0],
         INT_16B => readInt(i16, p[0..2], .little),
@@ -498,7 +593,7 @@ fn resize(
     allocator: Allocator,
     len: u32,
 ) Allocator.Error!*ZipList {
-    const old_mem = @constCast(self.asBytes());
+    const old_mem = self.asBytes();
     const new_mem = try allocator.realloc(old_mem, len);
     const zl: *ZipList = @ptrCast(@alignCast(new_mem));
     zl.bytes.set(len);
@@ -603,15 +698,14 @@ fn tryEncoding(str: []const u8, out_int: *i64, out_encoding: *u8) bool {
 
 /// Return the difference in number of bytes needed to store the length of the
 /// previous element `len`, in the entry pointed to by `ptr`.
-fn prevLenByteDiff(ptr: [*]const u8, len: u32) i8 {
-    const prevlen = Entry.decodePrevLen(ptr);
-    const a: i8 = @intCast(encodePrevLength(null, len));
-    const b: i8 = @intCast(prevlen.size);
-    return a - b;
+fn prevLenByteDiff(ptr: [*]u8, prev_len: u32) i8 {
+    const prev_len_size: i8 = @intCast(encodePrevLength(null, prev_len));
+    const ptr_prev_len_size: i8 = @intCast(Entry.decodePrevLen(ptr).size);
+    return prev_len_size - ptr_prev_len_size;
 }
 
 /// Return the total number of bytes used by the entry pointed to by `ptr`.
-fn rawEntryLength(ptr: [*]const u8) u32 {
+fn rawEntryLength(ptr: [*]u8) u32 {
     const entry = Entry.decode(ptr);
     return entry.prev_rawlen_size + entry.len_size + entry.len;
 }
@@ -671,6 +765,11 @@ test ZipList {
         }
         try expectEqual(@as(u32, maxInt(u16)) + 4, zl.numOfEntries());
         try expectEqual(maxInt(u16), zl.len.get());
+        const large: [255]u8 = @splat('a');
+        zl = try zl.prepend(allocator, &large);
+        try expectEqual(maxInt(u16) + 5, zl.numOfEntries());
+        const head = zl.entryHead();
+        try expect(Entry.eql(head, &large));
     }
 
     {
@@ -724,6 +823,24 @@ test ZipList {
 
         prev_ptr = zl.prev(zl.entryTail());
         try expect(prev_ptr != null);
+    }
+
+    {
+        var entry = zl.index(3).?;
+        const len = zl.numOfEntries();
+        zl = try zl.deleteEntry(allocator, &entry);
+        try expectEqual(len - 1, zl.numOfEntries());
+
+        entry = zl.entryHead();
+        zl = try zl.deleteEntry(allocator, &entry);
+        try expectEqual(len - 2, zl.numOfEntries());
+
+        entry = zl.entryTail();
+        zl = try zl.deleteEntry(allocator, &entry);
+        try expectEqual(len - 3, zl.numOfEntries());
+
+        zl = try zl.deleteRange(allocator, 3, 4);
+        try expectEqual(len - 7, zl.numOfEntries());
     }
 }
 
