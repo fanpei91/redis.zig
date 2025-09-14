@@ -2,7 +2,7 @@ pub fn LittleEndian(comptime T: type) type {
     return struct {
         val: T,
 
-        pub fn get(self: *@This()) T {
+        pub fn get(self: *const @This()) T {
             return littleToNative(T, self.val);
         }
 
