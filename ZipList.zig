@@ -287,8 +287,8 @@ pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     return p - prevlen.len;
 }
 
-pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
-    const ptr: [*]align(@alignOf(ZipList)) u8 = @ptrCast(@alignCast(@constCast(self)));
+pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) const u8 {
+    const ptr: [*]align(@alignOf(ZipList)) const u8 = @ptrCast(@alignCast(self));
     return ptr[0..self.blobLen()];
 }
 
@@ -393,7 +393,7 @@ pub fn insert(
 }
 
 pub fn free(self: *ZipList, allocator: Allocator) void {
-    allocator.free(self.asBytes());
+    allocator.free(@constCast(self.asBytes()));
 }
 
 fn incrLength(self: *ZipList, incr: u16) void {
@@ -498,7 +498,7 @@ fn resize(
     allocator: Allocator,
     len: u32,
 ) Allocator.Error!*ZipList {
-    const old_mem = self.asBytes();
+    const old_mem = @constCast(self.asBytes());
     const new_mem = try allocator.realloc(old_mem, len);
     const zl: *ZipList = @ptrCast(@alignCast(new_mem));
     zl.bytes.set(len);
