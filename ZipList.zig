@@ -251,6 +251,23 @@ pub fn prev(self: *const ZipList, p: [*]const u8) ?[*]const u8 {
     return p - prevlen.len;
 }
 
+pub fn get(
+    self: *const ZipList,
+    p: [*]const u8,
+) ?union(enum) { int: i64, str: []const u8 } {
+    if (p[0] == END) return null;
+    _ = self;
+    const entry = Entry.decode(p);
+    if (isStr(entry.encoding)) {
+        const start = entry.header_size;
+        const end = start + entry.len;
+        return .{ .str = entry.ptr[start..end] };
+    }
+    return .{
+        .int = loadInteger(p + entry.header_size, entry.encoding),
+    };
+}
+
 pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
     const ptr: [*]align(@alignOf(ZipList)) u8 = @ptrCast(@alignCast(@constCast(self)));
     return ptr[0..self.blobLen()];
@@ -349,7 +366,7 @@ pub fn insert(
     if (isStr(encoding)) {
         @memcpy(p[0..str.len], str);
     } else {
-        encodeInteger(p, value, encoding);
+        saveInteger(p, value, encoding);
     }
     zl.incrLength(1);
 
@@ -368,7 +385,7 @@ fn incrLength(self: *ZipList, incr: u16) void {
     }
 }
 
-fn encodeInteger(p: [*]u8, value: i64, encoding: u8) void {
+fn saveInteger(p: [*]u8, value: i64, encoding: u8) void {
     switch (encoding) {
         INT_08B => p[0] = @intCast(value),
         INT_16B => writeInt(i16, p[0..2], @intCast(value), .little),
@@ -380,6 +397,20 @@ fn encodeInteger(p: [*]u8, value: i64, encoding: u8) void {
         },
         else => unreachable,
     }
+}
+
+fn loadInteger(p: [*]const u8, encoding: u8) i64 {
+    return switch (encoding) {
+        INT_08B => p[0],
+        INT_16B => readInt(i16, p[0..2], .little),
+        INT_24B => readInt(i24, p[0..3], .little),
+        INT_32B => readInt(i32, p[0..4], .little),
+        INT_64B => readInt(i64, p[0..8], .little),
+        INT_IMM_MIN...INT_IMM_MAX => blk: {
+            break :blk (encoding & INT_IMM_MSK) - 1;
+        },
+        else => unreachable,
+    };
 }
 
 fn cascadeUpdate(
@@ -617,23 +648,18 @@ test ZipList {
 
     {
         zl = try zl.prepend(allocator, "4294967295");
-        const first = Entry.decode(zl.index(0).?);
-        const ptr = first.ptr + first.header_size;
-        const buf = ptr[0..4];
-        try expectEqual(
-            4294967295,
-            readInt(u32, buf, .little),
-        );
+        const ret = zl.get(zl.index(0).?);
+        try expect(ret != null);
+        try expect(ret.?.int == 4294967295);
     }
 
     {
         zl = try zl.prepend(allocator, "first");
         const first = zl.index(0);
         try expect(first != null);
-        const first_entry = Entry.decode(first.?);
         try expectEqualStrings(
             "first",
-            first.?[first_entry.header_size .. first_entry.header_size + first_entry.len],
+            zl.get(first.?).?.str,
         );
     }
 
@@ -641,11 +667,9 @@ test ZipList {
         zl = try zl.append(allocator, "last");
         const last = zl.index(-1);
         try expect(last != null);
-        try expect(last != null);
-        const last_entry = Entry.decode(last.?);
         try expectEqualStrings(
             "last",
-            last.?[last_entry.header_size .. last_entry.header_size + last_entry.len],
+            zl.get(last.?).?.str,
         );
     }
 
