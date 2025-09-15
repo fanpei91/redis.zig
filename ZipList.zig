@@ -396,14 +396,14 @@ pub fn insert(
     return zl;
 }
 
-pub fn deleteEntry(
+pub fn delete(
     self: *ZipList,
     allocator: Allocator,
     ptr: *[*]u8,
 ) Allocator.Error!*ZipList {
     const p = ptr.*;
     const offset = @intFromPtr(p) - @intFromPtr(self);
-    const zl = try self.delete(allocator, p, 1);
+    const zl = try self.cascadeDelete(allocator, p, 1);
     ptr.* = @ptrFromInt(@intFromPtr(zl) + offset);
     return zl;
 }
@@ -415,7 +415,7 @@ pub fn deleteRange(
     num: u32,
 ) Allocator.Error!*ZipList {
     if (self.index(@intCast(idx))) |ptr| {
-        return try self.delete(allocator, ptr, num);
+        return try self.cascadeDelete(allocator, ptr, num);
     }
     return self;
 }
@@ -424,7 +424,7 @@ pub fn free(self: *ZipList, allocator: Allocator) void {
     allocator.free(self.asBytes());
 }
 
-fn delete(
+fn cascadeDelete(
     self: *ZipList,
     allocator: Allocator,
     ptr: [*]u8,
@@ -487,50 +487,6 @@ fn delete(
     return zl;
 }
 
-fn incrLength(self: *ZipList) void {
-    var curlen = self.len.get();
-    if (curlen < maxInt(u16)) {
-        curlen +|= 1;
-        self.len.set(curlen);
-    }
-}
-
-fn decrLength(self: *ZipList, decr: u32) void {
-    var curlen = self.len.get();
-    if (curlen < maxInt(u16)) {
-        curlen -= @intCast(decr);
-        self.len.set(curlen);
-    }
-}
-
-fn saveInteger(p: [*]u8, value: i64, encoding: u8) void {
-    switch (encoding) {
-        INT_08B => p[0] = @intCast(value),
-        INT_16B => writeInt(i16, p[0..2], @intCast(value), .little),
-        INT_24B => writeInt(i24, p[0..3], @intCast(value), .little),
-        INT_32B => writeInt(i32, p[0..4], @intCast(value), .little),
-        INT_64B => writeInt(i64, p[0..8], value, .little),
-        INT_IMM_MIN...INT_IMM_MAX => {
-            // Nothing to do, the value is stored in the encoding itself.
-        },
-        else => unreachable,
-    }
-}
-
-fn loadInteger(p: [*]u8, encoding: u8) i64 {
-    return switch (encoding) {
-        INT_08B => p[0],
-        INT_16B => readInt(i16, p[0..2], .little),
-        INT_24B => readInt(i24, p[0..3], .little),
-        INT_32B => readInt(i32, p[0..4], .little),
-        INT_64B => readInt(i64, p[0..8], .little),
-        INT_IMM_MIN...INT_IMM_MAX => blk: {
-            break :blk (encoding & INT_IMM_MSK) - 1;
-        },
-        else => unreachable,
-    };
-}
-
 fn cascadeUpdate(
     self: *ZipList,
     allocator: Allocator,
@@ -590,6 +546,50 @@ fn cascadeUpdate(
         }
     }
     return zl;
+}
+
+fn incrLength(self: *ZipList) void {
+    var curlen = self.len.get();
+    if (curlen < maxInt(u16)) {
+        curlen +|= 1;
+        self.len.set(curlen);
+    }
+}
+
+fn decrLength(self: *ZipList, decr: u32) void {
+    var curlen = self.len.get();
+    if (curlen < maxInt(u16)) {
+        curlen -= @intCast(decr);
+        self.len.set(curlen);
+    }
+}
+
+fn saveInteger(p: [*]u8, value: i64, encoding: u8) void {
+    switch (encoding) {
+        INT_08B => p[0] = @intCast(value),
+        INT_16B => writeInt(i16, p[0..2], @intCast(value), .little),
+        INT_24B => writeInt(i24, p[0..3], @intCast(value), .little),
+        INT_32B => writeInt(i32, p[0..4], @intCast(value), .little),
+        INT_64B => writeInt(i64, p[0..8], value, .little),
+        INT_IMM_MIN...INT_IMM_MAX => {
+            // Nothing to do, the value is stored in the encoding itself.
+        },
+        else => unreachable,
+    }
+}
+
+fn loadInteger(p: [*]u8, encoding: u8) i64 {
+    return switch (encoding) {
+        INT_08B => p[0],
+        INT_16B => readInt(i16, p[0..2], .little),
+        INT_24B => readInt(i24, p[0..3], .little),
+        INT_32B => readInt(i32, p[0..4], .little),
+        INT_64B => readInt(i64, p[0..8], .little),
+        INT_IMM_MIN...INT_IMM_MAX => blk: {
+            break :blk (encoding & INT_IMM_MSK) - 1;
+        },
+        else => unreachable,
+    };
 }
 
 fn resize(
@@ -884,15 +884,15 @@ test ZipList {
     {
         var entry = zl.index(3).?;
         const len = zl.numOfEntries();
-        zl = try zl.deleteEntry(allocator, &entry);
+        zl = try zl.delete(allocator, &entry);
         try expectEqual(len - 1, zl.numOfEntries());
 
         entry = zl.entryHead();
-        zl = try zl.deleteEntry(allocator, &entry);
+        zl = try zl.delete(allocator, &entry);
         try expectEqual(len - 2, zl.numOfEntries());
 
         entry = zl.entryTail();
-        zl = try zl.deleteEntry(allocator, &entry);
+        zl = try zl.delete(allocator, &entry);
         try expectEqual(len - 3, zl.numOfEntries());
 
         zl = try zl.deleteRange(allocator, 3, 4);
