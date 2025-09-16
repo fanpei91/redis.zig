@@ -310,11 +310,6 @@ pub fn Dict(
             if (self.size() == 0) return null;
             if (self.isRehashing()) self.rehashStep(allocator);
 
-            var prng = std.Random.DefaultPrng.init(
-                @bitCast(std.time.microTimestamp()),
-            );
-            var rand = prng.random();
-
             const h0 = &self.ht[0];
             const h1 = &self.ht[1];
             var entry: ?*Entry = null;
@@ -376,11 +371,6 @@ pub fn Dict(
             if (tables > 1 and max_sizemask < h1.sizemask) {
                 max_sizemask = h1.sizemask;
             }
-
-            var prng = std.Random.DefaultPrng.init(
-                @bitCast(std.time.microTimestamp()),
-            );
-            var rand = prng.random();
 
             var i = rand.int(u32) & max_sizemask;
             var empty_visits: usize = 0;
@@ -924,3 +914,4 @@ const UnitTestContext = struct {
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const rand = @import("random.zig");

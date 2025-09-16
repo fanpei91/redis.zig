@@ -105,9 +105,6 @@ pub fn get(s: *IntSet, pos: u32) ?Value {
 }
 
 pub fn random(s: *IntSet) Value {
-    const seed = std.time.microTimestamp();
-    var prng = std.Random.DefaultPrng.init(@bitCast(seed));
-    const rand = prng.random();
     const pos = rand.int(u32) % s.length.get();
     return s.getAt(pos);
 }
@@ -288,6 +285,8 @@ fn valueEncoding(value: Value) u32 {
 }
 
 test IntSet {
+    rand.seed(@bitCast(std.time.microTimestamp()));
+
     const allocator = testing.allocator;
     var s = try new(allocator);
     defer s.free(allocator);
@@ -374,3 +373,4 @@ const LittleEndian = @import("endian.zig").LittleEndian;
 const expectEqualSlices = testing.expectEqualSlices;
 const expectEqual = testing.expectEqual;
 const expect = testing.expect;
+const rand = @import("random.zig");
