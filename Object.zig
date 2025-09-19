@@ -64,6 +64,16 @@ pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     return a.cmp(b);
 }
 
+pub fn equalStrings(self: *Object, other: *Object) bool {
+    if (self.encoding == .int and other.encoding == .int) {
+        // How does it store int in pointer address? Example:
+        // self.ptr  = @ptrFrontInt(100);
+        // other.ptr = @ptrFrontInt(100);
+        return self.ptr == other.ptr;
+    }
+    return self.compareStrings(other) == .eq;
+}
+
 pub fn decrRefCount(self: *Object, allocator: Allocator) void {
     if (self.refcount <= 0) @panic("Object.decrRefCount against refcount <= 0");
     if (self.refcount == 1) {

@@ -42,6 +42,7 @@ pub const Node = struct {
         }
         const mem: [*]align(@alignOf(Node)) u8 = @ptrCast(@alignCast(self));
         const memsize = @sizeOf(Node) + self.level.len * @sizeOf(Level);
+
         allocator.free(mem[0..memsize]);
     }
 };
@@ -79,11 +80,10 @@ pub fn insert(
     obj: *Object,
 ) Allocator.Error!*Node {
     assert(!isNan(score));
+    const zsl = self;
 
     var rank: [MAX_LEVEL]u32 = undefined;
     var update: [MAX_LEVEL]*Node = undefined;
-
-    const zsl = self;
     var x = zsl.header;
     var i = zsl.level - 1;
     while (i >= 0) {
@@ -137,6 +137,69 @@ pub fn insert(
     return x;
 }
 
+pub fn delete(
+    self: *SkipList,
+    allocator: Allocator,
+    score: f64,
+    obj: *Object,
+) bool {
+    const zsl = self;
+
+    var update: [MAX_LEVEL]*Node = undefined;
+    var x = zsl.header;
+    var i = zsl.level - 1;
+    while (i >= 0) {
+        while (x.level[i].forward != null and
+            (x.level[i].forward.?.score < score or
+                x.level[i].forward.?.score == score and
+                    x.level[i].forward.?.obj.?.compareStrings(obj) == .lt))
+        {
+            x = x.level[i].forward.?;
+        }
+        update[i] = x;
+        if (i == 0) break;
+        i -= 1;
+    }
+
+    // We may have multiple elements with the same score, what we need
+    // is to find the element with both the right score and object.
+    if (x.level[0].forward) |f| {
+        if (score == f.score and f.obj.?.equalStrings(obj)) {
+            self.deleteNode(f, &update);
+            f.free(allocator);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn deleteNode(self: *SkipList, x: *Node, update: []*Node) void {
+    const zsl = self;
+    var i: u32 = 0;
+    while (i < zsl.level) : (i += 1) {
+        if (update[i].level[i].forward == x) {
+            // Don't use update[i].level[i].span += x.level[i].span - 1.
+            // This is for avoiding integer overflow because `x` maybe is the
+            // last node with 0 span.
+            update[i].level[i].span += x.level[i].span;
+            update[i].level[i].span -= 1;
+            update[i].level[i].forward = x.level[i].forward;
+        } else {
+            update[i].level[i].span -= 1;
+        }
+    }
+    if (x.level[0].forward) |forward| {
+        forward.backward = x.backward;
+    } else {
+        zsl.tail = x.backward;
+    }
+
+    while (zsl.level > 1 and zsl.header.level[zsl.level - 1].forward == null) {
+        zsl.level -= 1;
+    }
+    zsl.length -= 1;
+}
+
 pub fn free(self: *SkipList, allocator: Allocator) void {
     var node = self.header.level[0].forward;
     while (node) |n| {
@@ -167,31 +230,42 @@ test SkipList {
     defer sl.free(allocator);
 
     {
-        const score01 = try sl.insert(
+        const score1 = try sl.insert(
             allocator,
-            0.1,
-            try Object.createRawString(allocator, "score 0.1"),
+            1,
+            try Object.createRawString(allocator, "score 1"),
         );
-        try expect(score01.backward == null);
+        try expect(score1.backward == null);
         try expect(sl.length == 1);
-        try expect(sl.level == score01.level.len);
+        try expect(sl.level == score1.level.len);
 
-        var score02 = try sl.insert(
+        var score2 = try sl.insert(
             allocator,
-            0.2,
-            try Object.createRawString(allocator, "score 0.2"),
+            2,
+            try Object.createRawString(allocator, "score 2"),
         );
-        try expect(sl.header.level[0].forward.? == score01);
-        try expect(sl.tail == score02);
+        try expect(sl.header.level[0].forward.? == score1);
+        try expect(sl.tail == score2);
         try expect(sl.length == 2);
-        try expect(sl.level == @max(score01.level.len, score02.level.len));
+        try expect(sl.level == @max(score1.level.len, score2.level.len));
 
-        score02 = try sl.insert(
+        score2 = try sl.insert(
             allocator,
-            0.2,
-            try Object.createRawString(allocator, "score 0.20"),
+            2,
+            try Object.createRawString(allocator, "score 2.0"),
         );
-        try expect(sl.tail == score02);
+        try expect(sl.tail == score2);
+        try expect(sl.length == 3);
+    }
+
+    {
+        const obj = try Object.createRawString(allocator, "deleted");
+        _ = try sl.insert(allocator, 3, obj);
+        try expect(sl.length == 4);
+        const deleted = sl.delete(allocator, 3, obj);
+        try expect(deleted);
+        try expect(sl.length == 3);
+        try expect(sl.tail.?.score == 2);
     }
 }
 
