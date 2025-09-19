@@ -244,6 +244,25 @@ pub fn firstInRange(self: *const SkipList, range: *const Range) ?*Node {
     return x;
 }
 
+pub fn lastInRange(self: *const SkipList, range: *const Range) ?*Node {
+    if (!self.isInRange(range)) return null;
+
+    var x = self.header;
+    var i = self.level - 1;
+    while (i >= 0) {
+        while (x.level(i).forward != null and
+            range.maxGte(x.level(i).forward.?.score))
+        {
+            x = x.level(i).forward.?;
+        }
+        if (i == 0) break;
+        i -= 1;
+    }
+
+    if (!range.minLte(x.score)) return null;
+    return x;
+}
+
 pub fn free(self: *SkipList, allocator: Allocator) void {
     var node = self.header.level(0).forward;
     while (node) |n| {
@@ -334,7 +353,7 @@ test SkipList {
     try expect(sl.tail == score2);
     try expect(sl.length == 2);
 
-    const range = Range{
+    var range = Range{
         .min = 1,
         .max = 2,
         .minex = false,
@@ -343,6 +362,13 @@ test SkipList {
     const first = sl.firstInRange(&range);
     try expect(first != null);
     try expect(first.? == score1);
+    var last = sl.lastInRange(&range);
+    try expect(last != null);
+    try expect(last.? == score2);
+    range.maxex = true;
+    last = sl.lastInRange(&range);
+    try expect(last != null);
+    try expect(last.? == score1);
 
     score2 = try sl.insert(
         allocator,
