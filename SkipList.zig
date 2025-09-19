@@ -177,6 +177,42 @@ pub fn delete(
     return false;
 }
 
+pub fn getRank(self: *SkipList, score: f64, obj: *Object) usize {
+    const zsl = self;
+    var rank: usize = 0;
+    var x = zsl.header;
+    var i = zsl.level - 1;
+    while (i >= 0) {
+        while (x.level(i).forward != null and
+            (x.level(i).forward.?.score < score or
+                x.level(i).forward.?.score == score and
+                    x.level(i).forward.?.obj.?.compareStrings(obj).compare(.lte)))
+        {
+            rank += x.level(i).span;
+            x = x.level(i).forward.?;
+        }
+
+        // x might be equal to zsl.header, so test if obj is non-NULL
+        if (x.obj != null and x.obj.?.equalStrings(obj)) {
+            return rank;
+        }
+
+        if (i == 0) break;
+        i -= 1;
+    }
+    return rank;
+}
+
+pub fn free(self: *SkipList, allocator: Allocator) void {
+    var node = self.header.level(0).forward;
+    while (node) |n| {
+        node = n.level(0).forward;
+        n.free(allocator);
+    }
+    self.header.free(allocator);
+    allocator.destroy(self);
+}
+
 fn deleteNode(self: *SkipList, x: *Node, update: []*Node) void {
     const zsl = self;
     var i: u32 = 0;
@@ -204,16 +240,6 @@ fn deleteNode(self: *SkipList, x: *Node, update: []*Node) void {
     zsl.length -= 1;
 }
 
-pub fn free(self: *SkipList, allocator: Allocator) void {
-    var node = self.header.level(0).forward;
-    while (node) |n| {
-        node = n.level(0).forward;
-        n.free(allocator);
-    }
-    self.header.free(allocator);
-    allocator.destroy(self);
-}
-
 fn randomLevel() u32 {
     const P = 0.25;
     var level: u32 = 1;
@@ -233,18 +259,22 @@ test SkipList {
     var sl = try create(allocator);
     defer sl.free(allocator);
 
+    var obj = try Object.createRawString(allocator, "score 1");
+    try expect(sl.getRank(1, obj) == 0);
     const score1 = try sl.insert(
         allocator,
         1,
-        try Object.createRawString(allocator, "score 1"),
+        obj,
     );
     try expect(score1.backward == null);
     try expect(sl.length == 1);
+    try expect(sl.getRank(1, obj) == 1);
 
+    obj = try Object.createRawString(allocator, "score 2");
     var score2 = try sl.insert(
         allocator,
         2,
-        try Object.createRawString(allocator, "score 2"),
+        obj,
     );
     try expect(sl.header.level(0).forward.? == score1);
     try expect(sl.tail == score2);
@@ -258,7 +288,7 @@ test SkipList {
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
 
-    const obj = try Object.createRawString(allocator, "deleted");
+    obj = try Object.createRawString(allocator, "deleted");
     _ = try sl.insert(allocator, 3, obj);
     try expect(sl.length == 4);
     const deleted = sl.delete(allocator, 3, obj);
