@@ -53,6 +53,30 @@ pub const Node = struct {
     }
 };
 
+/// Hold a inclusive/exclusive range by score comparison.
+pub const Range = struct {
+    min: f64,
+    max: f64,
+
+    // are min or max exclusive?
+    minex: bool,
+    maxex: bool,
+
+    pub fn minLte(
+        range: *const Range,
+        value: f64,
+    ) bool {
+        return if (range.minex) range.min < value else range.min <= value;
+    }
+
+    pub fn maxGte(
+        range: *const Range,
+        value: f64,
+    ) bool {
+        return if (range.maxex) range.max > value else range.max >= value;
+    }
+};
+
 header: *Node,
 tail: ?*Node,
 length: usize,
@@ -84,14 +108,13 @@ pub fn insert(
     obj: *Object,
 ) Allocator.Error!*Node {
     assert(!isNan(score));
-    const zsl = self;
 
     var rank: [MAX_LEVEL]u32 = undefined;
     var update: [MAX_LEVEL]*Node = undefined;
-    var x = zsl.header;
-    var i = zsl.level - 1;
+    var x = self.header;
+    var i = self.level - 1;
     while (i >= 0) {
-        rank[i] = if (i == zsl.level - 1) 0 else rank[i + 1];
+        rank[i] = if (i == self.level - 1) 0 else rank[i + 1];
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
                 x.level(i).forward.?.score == score and
@@ -106,14 +129,14 @@ pub fn insert(
     }
 
     const level = randomLevel();
-    if (level > zsl.level) {
-        i = zsl.level;
+    if (level > self.level) {
+        i = self.level;
         while (i < level) : (i += 1) {
             rank[i] = 0;
-            update[i] = zsl.header;
-            update[i].level(i).span = @intCast(zsl.length);
+            update[i] = self.header;
+            update[i].level(i).span = @intCast(self.length);
         }
-        zsl.level = level;
+        self.level = level;
     }
 
     x = try Node.create(allocator, level, score, obj);
@@ -127,17 +150,17 @@ pub fn insert(
     }
 
     i = level;
-    while (i < zsl.level) : (i += 1) {
+    while (i < self.level) : (i += 1) {
         update[i].level(i).span += 1;
     }
 
-    x.backward = if (update[0] == zsl.header) null else update[0];
+    x.backward = if (update[0] == self.header) null else update[0];
     if (x.level(0).forward) |forward| {
         forward.backward = x;
     } else {
-        zsl.tail = x;
+        self.tail = x;
     }
-    zsl.length += 1;
+    self.length += 1;
     return x;
 }
 
@@ -147,11 +170,9 @@ pub fn delete(
     score: f64,
     obj: *Object,
 ) bool {
-    const zsl = self;
-
     var update: [MAX_LEVEL]*Node = undefined;
-    var x = zsl.header;
-    var i = zsl.level - 1;
+    var x = self.header;
+    var i = self.level - 1;
     while (i >= 0) {
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
@@ -177,11 +198,10 @@ pub fn delete(
     return false;
 }
 
-pub fn getRank(self: *SkipList, score: f64, obj: *Object) usize {
-    const zsl = self;
+pub fn getRank(self: *const SkipList, score: f64, obj: *Object) usize {
     var rank: usize = 0;
-    var x = zsl.header;
-    var i = zsl.level - 1;
+    var x = self.header;
+    var i = self.level - 1;
     while (i >= 0) {
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
@@ -192,7 +212,7 @@ pub fn getRank(self: *SkipList, score: f64, obj: *Object) usize {
             x = x.level(i).forward.?;
         }
 
-        // x might be equal to zsl.header, so test if obj is non-NULL
+        // x might be equal to self.header, so test if obj is non-NULL
         if (x.obj != null and x.obj.?.equalStrings(obj)) {
             return rank;
         }
@@ -201,6 +221,27 @@ pub fn getRank(self: *SkipList, score: f64, obj: *Object) usize {
         i -= 1;
     }
     return rank;
+}
+
+pub fn firstInRange(self: *const SkipList, range: *const Range) ?*Node {
+    if (!self.isInRange(range)) return null;
+
+    var x = self.header;
+    var i = self.level - 1;
+    while (i >= 0) {
+        while (x.level(i).forward != null and
+            !range.minLte(x.level(i).forward.?.score))
+        {
+            x = x.level(i).forward.?;
+        }
+        if (i == 0) break;
+        i -= 1;
+    }
+
+    // This is an inner range, so the next node cannot be NULL.
+    x = x.level(0).forward.?;
+    if (!range.maxGte(x.score)) return null;
+    return x;
 }
 
 pub fn free(self: *SkipList, allocator: Allocator) void {
@@ -213,10 +254,23 @@ pub fn free(self: *SkipList, allocator: Allocator) void {
     allocator.destroy(self);
 }
 
+/// Returns if there is a part of the skiplist is in range.
+fn isInRange(self: *const SkipList, range: *const Range) bool {
+    if (range.min > range.max) return false;
+    if (range.min == range.max and (range.minex or range.maxex)) return false;
+
+    const tail = self.tail;
+    if (tail == null or !range.minLte(tail.?.score)) return false;
+
+    const head = self.header.level(0).forward;
+    if (head == null or !range.maxGte(head.?.score)) return false;
+
+    return true;
+}
+
 fn deleteNode(self: *SkipList, x: *Node, update: []*Node) void {
-    const zsl = self;
     var i: u32 = 0;
-    while (i < zsl.level) : (i += 1) {
+    while (i < self.level) : (i += 1) {
         if (update[i].level(i).forward == x) {
             // update[i].level(i).span += x.level(i).span - 1;
             // This is for avoiding integer overflow because `x` maybe is the
@@ -231,13 +285,13 @@ fn deleteNode(self: *SkipList, x: *Node, update: []*Node) void {
     if (x.level(0).forward) |forward| {
         forward.backward = x.backward;
     } else {
-        zsl.tail = x.backward;
+        self.tail = x.backward;
     }
 
-    while (zsl.level > 1 and zsl.header.level(zsl.level - 1).forward == null) {
-        zsl.level -= 1;
+    while (self.level > 1 and self.header.level(self.level - 1).forward == null) {
+        self.level -= 1;
     }
-    zsl.length -= 1;
+    self.length -= 1;
 }
 
 fn randomLevel() u32 {
@@ -279,6 +333,16 @@ test SkipList {
     try expect(sl.header.level(0).forward.? == score1);
     try expect(sl.tail == score2);
     try expect(sl.length == 2);
+
+    const range = Range{
+        .min = 1,
+        .max = 2,
+        .minex = false,
+        .maxex = false,
+    };
+    const first = sl.firstInRange(&range);
+    try expect(first != null);
+    try expect(first.? == score1);
 
     score2 = try sl.insert(
         allocator,
