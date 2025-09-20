@@ -121,6 +121,10 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
     self.refcount -= 1;
 }
 
+pub fn incrRefCount(self: *Object) void {
+    self.refcount += 1;
+}
+
 fn free(self: *Object, allocator: Allocator) void {
     if (self.type == .string and self.encoding == .embstr) {
         const sh: *Sds = @ptrCast(@alignCast(self.ptr));
