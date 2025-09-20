@@ -42,6 +42,17 @@ pub fn create(
     return obj;
 }
 
+const ENCODING_EMBSTR_SIZE_LIMIT = 39;
+pub fn createString(
+    allocator: Allocator,
+    str: []const u8,
+) Allocator.Error!*Object {
+    if (str.len <= ENCODING_EMBSTR_SIZE_LIMIT) {
+        return createEmbeddedString(allocator, str);
+    }
+    return createRawString(allocator, str);
+}
+
 pub fn createRawString(
     allocator: Allocator,
     str: []const u8,
