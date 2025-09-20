@@ -38,7 +38,7 @@ pub const Node = struct {
         return &sno.node;
     }
 
-    pub inline fn level(self: *Node, i: usize) *Level {
+    pub inline fn level(self: *const Node, i: usize) *Level {
         const offset = @sizeOf(Node) + @sizeOf(Level) * i;
         return @ptrFromInt(@intFromPtr(self) + offset);
     }
@@ -58,7 +58,7 @@ pub const Range = struct {
     min: f64,
     max: f64,
 
-    // are min or max exclusive?
+    // Are min or max exclusive?
     minex: bool,
     maxex: bool,
 
@@ -77,12 +77,12 @@ pub const Range = struct {
     }
 };
 
+pub const SkipList = @This();
+
 header: *Node,
 tail: ?*Node,
 length: usize,
 level: u32,
-
-pub const SkipList = @This();
 
 pub fn create(allocator: Allocator) Allocator.Error!*SkipList {
     const sl = try allocator.create(SkipList);
@@ -278,11 +278,11 @@ fn isInRange(self: *const SkipList, range: *const Range) bool {
     if (range.min > range.max) return false;
     if (range.min == range.max and (range.minex or range.maxex)) return false;
 
-    const tail = self.tail;
-    if (tail == null or !range.minLte(tail.?.score)) return false;
+    const last = self.tail;
+    if (last == null or !range.minLte(last.?.score)) return false;
 
-    const head = self.header.level(0).forward;
-    if (head == null or !range.maxGte(head.?.score)) return false;
+    const first = self.header.level(0).forward;
+    if (first == null or !range.maxGte(first.?.score)) return false;
 
     return true;
 }
