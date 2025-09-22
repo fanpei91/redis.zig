@@ -6,6 +6,12 @@ const MemSizedHdr5 = extern struct {
 const Hdr5 = extern struct {
     flags: u8 align(1), // 3 lsb of type, and 5 msb of string length
     buf: [0]u8,
+
+    fn alloc(s: Sds) *u8 {
+        const hdr: *Hdr5 = @ptrCast(s - @sizeOf(Hdr5));
+        const parent: *MemSizedHdr5 = @fieldParentPtr("hdr", hdr);
+        return &parent.alloc;
+    }
 };
 
 const Hdr8 = extern struct {
@@ -226,15 +232,10 @@ pub fn removeAvailSpace(allocator: Allocator, s: Sds) Allocator.Error!Sds {
 
 pub fn incrLen(s: Sds, incr: isize) void {
     const len = getLen(s);
+    const alloc = getAlloc(s);
     const abs_incr: usize = @abs(incr);
 
-    if (getType(s) == TYPE_5) {
-        assert((incr > 0 and len + abs_incr < 32) or (incr < 0 and len >= abs_incr));
-    } else {
-        const alloc = getAlloc(s);
-        assert((incr > 0 and alloc - len >= abs_incr) or (incr < 0 and len >= abs_incr));
-    }
-
+    assert((incr > 0 and alloc - len >= abs_incr) or (incr < 0 and len >= abs_incr));
     const new_len = if (incr > 0) len + abs_incr else len - abs_incr;
     setLength(s, new_len);
 }
@@ -345,38 +346,13 @@ pub fn getLen(s: Sds) usize {
 }
 
 pub fn getAvail(s: Sds) usize {
-    switch (getType(s)) {
-        TYPE_5 => {
-            return 0;
-        },
-        TYPE_8 => {
-            const hdr: *Hdr8 = @ptrCast(s - @sizeOf(Hdr8));
-            return hdr.alloc - hdr.len;
-        },
-        TYPE_16 => {
-            const hdr: *Hdr16 = @ptrCast(s - @sizeOf(Hdr16));
-            return hdr.alloc - hdr.len;
-        },
-        TYPE_32 => {
-            const hdr: *Hdr32 = @ptrCast(s - @sizeOf(Hdr32));
-            return hdr.alloc - hdr.len;
-        },
-        TYPE_64 => {
-            const hdr: *Hdr64 = @ptrCast(s - @sizeOf(Hdr64));
-            return hdr.alloc - hdr.len;
-        },
-        else => return 0,
-    }
+    return getAlloc(s) - getLen(s);
 }
 
 pub fn getAlloc(s: Sds) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
-        TYPE_5 => {
-            const hdr: *Hdr5 = @ptrCast(s - @sizeOf(Hdr5));
-            const parent: *MemSizedHdr5 = @fieldParentPtr("hdr", hdr);
-            return parent.alloc;
-        },
+        TYPE_5 => Hdr5.alloc(s).*,
         TYPE_8 => @as(*Hdr8, @ptrCast(s - @sizeOf(Hdr8))).alloc,
         TYPE_16 => @as(*Hdr16, @ptrCast(s - @sizeOf(Hdr16))).alloc,
         TYPE_32 => @as(*Hdr32, @ptrCast(s - @sizeOf(Hdr32))).alloc,
@@ -450,9 +426,7 @@ inline fn memSlice(s: Sds) []u8 {
 fn setAlloc(s: Sds, new_alloc: usize) void {
     switch (getType(s)) {
         TYPE_5 => {
-            const hdr: *Hdr5 = @ptrCast(s - @sizeOf(Hdr5));
-            const parent: *MemSizedHdr5 = @fieldParentPtr("hdr", hdr);
-            parent.alloc = @intCast(new_alloc);
+            Hdr5.alloc(s).* = @intCast(new_alloc);
         },
         TYPE_8 => {
             const hdr: *Hdr8 = @ptrCast(s - @sizeOf(Hdr8));
@@ -504,14 +478,14 @@ test new {
     const s = try new(allocator, init);
     defer free(allocator, s);
 
-    try testing.expectEqual(init.len, getLen(s));
-    try testing.expectEqualStrings(init, bufSlice(s));
+    try expectEqual(init.len, getLen(s));
+    try expectEqualStrings(init, bufSlice(s));
 
     const long_str = "hello" ** 100;
     const long_s = try new(allocator, long_str);
     defer free(allocator, long_s);
-    try testing.expectEqual(long_str.len, getLen(long_s));
-    try testing.expectEqualStrings(long_str, bufSlice(long_s));
+    try expectEqual(long_str.len, getLen(long_s));
+    try expectEqualStrings(long_str, bufSlice(long_s));
 }
 
 test empty {
@@ -519,8 +493,8 @@ test empty {
     const s = try empty(allocator);
     defer free(allocator, s);
 
-    try testing.expectEqual(0, getLen(s));
-    try testing.expectStringEndsWith("", bufSlice(s));
+    try expectEqual(0, getLen(s));
+    try expectStringEndsWith("", bufSlice(s));
 }
 
 test fromLonglong {
@@ -528,11 +502,11 @@ test fromLonglong {
 
     const min = try fromLonglong(allocator, std.math.minInt(longlong));
     defer free(allocator, min);
-    try testing.expectEqualStrings("-9223372036854775808", bufSlice(min));
+    try expectEqualStrings("-9223372036854775808", bufSlice(min));
 
     const max = try fromLonglong(allocator, std.math.maxInt(longlong));
     defer free(allocator, max);
-    try testing.expectEqualStrings("9223372036854775807", bufSlice(max));
+    try expectEqualStrings("9223372036854775807", bufSlice(max));
 }
 
 test dupe {
@@ -544,7 +518,7 @@ test dupe {
     const dup = try dupe(allocator, s);
     defer free(allocator, dup);
 
-    try testing.expectEqualStrings(bufSlice(s), bufSlice(dup));
+    try expectEqualStrings(bufSlice(s), bufSlice(dup));
 }
 
 test clear {
@@ -553,8 +527,8 @@ test clear {
     defer free(allocator, s);
 
     clear(s);
-    try testing.expectEqual(0, getLen(s));
-    try testing.expectEqualStrings("", bufSlice(s));
+    try expectEqual(0, getLen(s));
+    try expectEqualStrings("", bufSlice(s));
 }
 
 test makeRoomFor {
@@ -563,8 +537,20 @@ test makeRoomFor {
     const s1 = try makeRoomFor(allocator, s, 500);
     defer free(allocator, s1);
 
-    try testing.expectEqual(5, getLen(s1));
-    try testing.expectEqualStrings("hello", bufSlice(s1));
+    try expectEqual(5, getLen(s1));
+    try expectEqualStrings("hello", bufSlice(s1));
+}
+
+test removeAvailSpace {
+    const allocator = testing.allocator;
+    var s = try new(allocator, "hello");
+    defer free(allocator, s);
+
+    s = try makeRoomFor(allocator, s, 5);
+    s = try removeAvailSpace(allocator, s);
+    try expect(getLen(s) == 5);
+    try expect(getAlloc(s) == 5);
+    try expect(getAvail(s) == 0);
 }
 
 test cat {
@@ -573,8 +559,8 @@ test cat {
     const ns = try cat(allocator, s, "world");
     defer free(allocator, ns);
 
-    try testing.expectEqual(10, getLen(ns));
-    try testing.expectEqualStrings("helloworld", bufSlice(ns));
+    try expectEqual(10, getLen(ns));
+    try expectEqualStrings("helloworld", bufSlice(ns));
 }
 
 test catPrintf {
@@ -582,7 +568,7 @@ test catPrintf {
     const s = try new(allocator, "hello");
     const ns = try catPrintf(allocator, s, " {s} {d}", .{ "world", 2025 });
     defer free(allocator, ns);
-    try testing.expectEqualStrings("hello world 2025", bufSlice(ns));
+    try expectEqualStrings("hello world 2025", bufSlice(ns));
 }
 
 test catRepr {
@@ -592,14 +578,14 @@ test catRepr {
     const ns = try catRepr(allocator, s, input);
     defer free(allocator, ns);
 
-    try testing.expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", bufSlice(ns));
+    try expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", bufSlice(ns));
 }
 
 test getAllocMemSize {
     const allocator = testing.allocator;
     const s = try new(allocator, "hello");
     defer free(allocator, s);
-    try testing.expectEqual(@sizeOf(MemSizedHdr5) + 5, getAllocMemSize(s));
+    try expectEqual(@sizeOf(MemSizedHdr5) + 5, getAllocMemSize(s));
 }
 
 test "incrLen-" {
@@ -608,15 +594,16 @@ test "incrLen-" {
     defer free(allocator, s);
     incrLen(s, -3);
 
-    try testing.expectEqual(2, getLen(s));
+    try expectEqual(2, getLen(s));
 }
 
 test "incrLen+" {
     const allocator = testing.allocator;
-    const s = try new(allocator, "hello");
+    var s = try new(allocator, "hello");
     defer free(allocator, s);
+    s = try makeRoomFor(allocator, s, 3);
     incrLen(s, 3);
-    try testing.expectEqual(8, getLen(s));
+    try expectEqual(8, getLen(s));
 }
 
 test growZero {
@@ -626,8 +613,8 @@ test growZero {
     const ns = try growZero(allocator, s, 10);
     defer free(allocator, ns);
 
-    try testing.expectEqual(10, getLen(ns));
-    try testing.expectEqualSlices(
+    try expectEqual(10, getLen(ns));
+    try expectEqualSlices(
         u8,
         &.{ 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0, 0 },
         bufSlice(ns),
@@ -639,15 +626,15 @@ test copy {
     const s = try new(allocator, "hello");
 
     var cp = try copy(allocator, s, "world");
-    try testing.expectEqual(getLen(cp), 5);
-    try testing.expectEqualStrings("world", bufSlice(cp));
-    try testing.expectEqual(s, cp);
+    try expectEqual(getLen(cp), 5);
+    try expectEqualStrings("world", bufSlice(cp));
+    try expectEqual(s, cp);
 
     cp = try copy(allocator, cp, "world!");
     defer free(allocator, cp);
-    try testing.expectEqual(getLen(cp), 6);
-    try testing.expectEqualStrings("world!", bufSlice(cp));
-    try testing.expect(s != cp);
+    try expectEqual(getLen(cp), 6);
+    try expectEqualStrings("world!", bufSlice(cp));
+    try expect(s != cp);
 }
 
 test trim {
@@ -656,10 +643,10 @@ test trim {
     defer free(allocator, s);
 
     trim(s, "Aa. :");
-    try testing.expectEqualStrings("HelloWorld", bufSlice(s));
+    try expectEqualStrings("HelloWorld", bufSlice(s));
 
     trim(s, "d");
-    try testing.expectEqualStrings("HelloWorl", bufSlice(s));
+    try expectEqualStrings("HelloWorl", bufSlice(s));
 }
 
 test "range(1, 1)" {
@@ -668,7 +655,7 @@ test "range(1, 1)" {
     defer free(allocator, s);
     range(s, 1, 1);
 
-    try testing.expectEqualStrings("h", bufSlice(s));
+    try expectEqualStrings("h", bufSlice(s));
 }
 
 test "range(1, -1)" {
@@ -677,7 +664,7 @@ test "range(1, -1)" {
     defer free(allocator, s);
     range(s, 1, -1);
 
-    try testing.expectEqualStrings("hello!", bufSlice(s));
+    try expectEqualStrings("hello!", bufSlice(s));
 }
 
 test "range(-2, -1)" {
@@ -686,7 +673,7 @@ test "range(-2, -1)" {
     defer free(allocator, s);
     range(s, -2, -1);
 
-    try testing.expectEqualStrings("o!", bufSlice(s));
+    try expectEqualStrings("o!", bufSlice(s));
 }
 
 test "range(2, 1)" {
@@ -695,7 +682,7 @@ test "range(2, 1)" {
     defer free(allocator, s);
     range(s, 2, 1);
 
-    try testing.expectEqualStrings("", bufSlice(s));
+    try expectEqualStrings("", bufSlice(s));
 }
 
 test "range(1, 100)" {
@@ -704,7 +691,7 @@ test "range(1, 100)" {
     defer free(allocator, s);
     range(s, 1, 100);
 
-    try testing.expectEqualStrings("hello!", bufSlice(s));
+    try expectEqualStrings("hello!", bufSlice(s));
 }
 
 test "range(100, 100)" {
@@ -713,7 +700,7 @@ test "range(100, 100)" {
     defer free(allocator, s);
     range(s, 100, 100);
 
-    try testing.expectEqualStrings("", bufSlice(s));
+    try expectEqualStrings("", bufSlice(s));
 }
 
 test "range(0, 1)" {
@@ -722,7 +709,7 @@ test "range(0, 1)" {
     defer free(allocator, s);
     range(s, 0, 1);
 
-    try testing.expectEqualStrings("!h", bufSlice(s));
+    try expectEqualStrings("!h", bufSlice(s));
 }
 
 test toLower {
@@ -731,7 +718,7 @@ test toLower {
     defer free(allocator, s);
     toLower(s);
 
-    try testing.expectEqualStrings("hello1", bufSlice(s));
+    try expectEqualStrings("hello1", bufSlice(s));
 }
 
 test "cmp.gt" {
@@ -742,7 +729,7 @@ test "cmp.gt" {
     const s2 = try new(allocator, "foa");
     defer free(allocator, s2);
 
-    try testing.expectEqual(std.math.Order.gt, cmp(s1, s2));
+    try expectEqual(std.math.Order.gt, cmp(s1, s2));
 }
 
 test "cmp.eq" {
@@ -753,7 +740,7 @@ test "cmp.eq" {
     const s2 = try new(allocator, "bar");
     defer free(allocator, s2);
 
-    try testing.expectEqual(std.math.Order.eq, cmp(s1, s2));
+    try expectEqual(std.math.Order.eq, cmp(s1, s2));
 }
 
 test "cmp.lt" {
@@ -764,11 +751,10 @@ test "cmp.lt" {
     const s2 = try new(allocator, "bar");
     defer free(allocator, s2);
 
-    try testing.expectEqual(std.math.Order.lt, cmp(s1, s2));
+    try expectEqual(std.math.Order.lt, cmp(s1, s2));
 }
 
 const std = @import("std");
-const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const debug = std.debug;
 const ctypes = @import("ctypes.zig");
@@ -777,3 +763,9 @@ const uint = ctypes.uint;
 const longlong = ctypes.longlong;
 const builtin = @import("builtin");
 const assert = std.debug.assert;
+const testing = std.testing;
+const expect = testing.expect;
+const expectEqualStrings = testing.expectEqualStrings;
+const expectEqual = testing.expectEqual;
+const expectEqualSlices = testing.expectEqualSlices;
+const expectStringEndsWith = testing.expectStringEndsWith;
