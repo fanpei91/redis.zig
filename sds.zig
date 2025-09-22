@@ -267,6 +267,21 @@ pub fn copy(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
     return ns;
 }
 
+pub fn mapChars(s: Sds, from: []const u8, to: []const u8) Sds {
+    assert(from.len == to.len);
+
+    const len = getLen(s);
+    for (0..len) |j| {
+        for (0..from.len) |i| {
+            if (s[j] == from[i]) {
+                s[j] = to[i];
+                break;
+            }
+        }
+    }
+    return s;
+}
+
 pub fn join(
     allocator: Allocator,
     slices: []const []const u8,
@@ -685,6 +700,15 @@ test copy {
     try expectEqual(getLen(cp), 6);
     try expectEqualStrings("world!", bufSlice(cp));
     try expect(s != cp);
+}
+
+test mapChars {
+    const allocator = testing.allocator;
+    var s = try new(allocator, "hello\r\nzig");
+    defer free(allocator, s);
+
+    s = mapChars(s, "eoi\r\n", "EOI  ");
+    try expectEqualSlices(u8, "hEllO  zIg", bufSlice(s));
 }
 
 test join {
