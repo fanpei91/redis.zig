@@ -347,6 +347,13 @@ pub fn toLower(s: Sds) void {
     }
 }
 
+pub fn toUpper(s: Sds) void {
+    const slice = bufSlice(s);
+    for (slice, 0..) |c, i| {
+        slice[i] = std.ascii.toUpper(c);
+    }
+}
+
 pub fn cmp(s1: Sds, s2: Sds) std.math.Order {
     const lhs = bufSlice(s1);
     const rhs = bufSlice(s2);
@@ -759,6 +766,15 @@ test toLower {
     toLower(s);
 
     try expectEqualStrings("hello1", bufSlice(s));
+}
+
+test toUpper {
+    const allocator = testing.allocator;
+    const s = try new(allocator, "Hello1");
+    defer free(allocator, s);
+    toUpper(s);
+
+    try expectEqualStrings("HELLO1", bufSlice(s));
 }
 
 test "cmp.gt" {
