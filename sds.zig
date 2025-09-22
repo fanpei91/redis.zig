@@ -33,7 +33,7 @@ const Hdr32 = packed struct {
 
 const Hdr64 = packed struct {
     len: u64,
-    alloc: u64,
+    alloc: u64, // excluding the header
     flags: u8, // 3 lsb of type, 5 unused bits
 };
 
@@ -309,6 +309,119 @@ pub fn split(
         try tokens.append(allocator, try new(allocator, token));
     }
     return tokens.toOwnedSlice(allocator);
+}
+
+pub fn splitArgs(
+    allocator: Allocator,
+    line: []const u8,
+) Allocator.Error!?[]Sds {
+    var vector = std.ArrayList(Sds).empty;
+    var current: ?Sds = null;
+    errdefer {
+        if (current) |cur| {
+            free(allocator, cur);
+        }
+        vector.deinit(allocator);
+    }
+
+    biz: {
+        var i: usize = 0;
+        while (true) {
+            while (i < line.len and isWhitespace(line[i])) i += 1;
+            if (i < line.len) {
+                var inq = false; // set to true if we are in "quotes"
+                var insq = false; // set to true if we are in 'single quotes'
+                var done = false;
+                var p = line[i];
+                if (current == null) current = try empty(allocator);
+                while (!done) {
+                    if (inq) {
+                        if (p == '\\' and
+                            i + 1 < line.len and line[i + 1] == 'x' and
+                            i + 2 < line.len and isHex(line[i + 2]) and
+                            i + 3 < line.len and isHex(line[i + 3]))
+                        {
+                            const byte = parseInt(u8, line[i + 2 .. i + 4], 16) catch unreachable;
+                            current = try cat(allocator, current.?, &.{byte});
+                            i += 3;
+                            p = line[i];
+                        } else if (p == '\\' and i + 1 < line.len) {
+                            i += 1;
+                            p = line[i];
+                            var c: u8 = undefined;
+                            switch (p) {
+                                'n' => c = '\n',
+                                'r' => c = '\r',
+                                't' => c = '\t',
+                                'b' => c = 0x08,
+                                'a' => c = 0x07,
+                                else => c = p,
+                            }
+                            current = try cat(allocator, current.?, &.{c});
+                        } else if (p == '"') {
+                            // closing quote must be followed by a space or
+                            // nothing at all.
+                            if (i + 1 < line.len and !isWhitespace(line[i + 1])) {
+                                break :biz;
+                            }
+                            done = true;
+                        } else if (i + 1 == line.len) {
+                            // unterminated quotes
+                            break :biz;
+                        } else {
+                            current = try cat(allocator, current.?, &.{p});
+                        }
+                    } else if (insq) {
+                        if (p == '\\' and i + 1 < line.len and line[i + 1] == '\'') {
+                            i += 1;
+                            p = line[i];
+                            current = try cat(allocator, current.?, &.{'\''});
+                        } else if (p == '\'') {
+                            // closing quote must be followed by a space or
+                            // nothing at all.
+                            if (i + 1 < line.len and !isWhitespace(line[i + 1])) {
+                                break :biz;
+                            }
+                            done = true;
+                        } else if (i + 1 == line.len) {
+                            // unterminated quotes
+                            break :biz;
+                        } else {
+                            current = try cat(allocator, current.?, &.{p});
+                        }
+                    } else {
+                        switch (p) {
+                            ' ', '\n', '\r', '\t' => done = true,
+                            '"' => inq = true,
+                            '\'' => insq = true,
+                            else => current = try cat(allocator, current.?, &.{p}),
+                        }
+                    }
+                    i += 1;
+                    if (i == line.len) {
+                        done = true;
+                    } else {
+                        p = line[i];
+                    }
+                }
+                try vector.append(allocator, current.?);
+                current = null;
+                continue;
+            }
+            return try vector.toOwnedSlice(allocator);
+        }
+    }
+
+    // Equivalent to `goto err` in C.
+    if (current) |cur| {
+        free(allocator, cur);
+    }
+    for (vector.items) |item| {
+        free(allocator, item);
+    }
+    vector.deinit(allocator);
+
+    return null;
 }
 
 pub fn freeSplitRes(allocator: Allocator, tokens: []Sds) void {
@@ -756,6 +869,80 @@ test split {
     try expectEqualStrings("zig", bufSlice(tokens[2]));
 }
 
+test splitArgs {
+    const allocator = testing.allocator;
+
+    var tokens = (try splitArgs(allocator, "  SET key 1")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("1", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key \"1\"")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("1", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key \"line1\\nline2\"")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("line1\nline2", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key \"ABC\\x41XYZ\"")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("ABCAXYZ", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key 'abc'")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("abc", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key 'I\\'m here'")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("I'm here", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key \"a\\tb\"")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("a\tb", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "  SET key \"abc\\xGZ\"")).?;
+    try expect(tokens.len == 3);
+    try expectEqualStrings("SET", bufSlice(tokens[0]));
+    try expectEqualStrings("key", bufSlice(tokens[1]));
+    try expectEqualStrings("abcxGZ", bufSlice(tokens[2]));
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "")).?;
+    try expect(tokens.len == 0);
+    freeSplitRes(allocator, tokens);
+
+    tokens = (try splitArgs(allocator, "   ")).?;
+    try expect(tokens.len == 0);
+    freeSplitRes(allocator, tokens);
+
+    var null_tokens: ?[]Sds = try splitArgs(allocator, "  SET key 'abc");
+    try expect(null_tokens == null);
+
+    null_tokens = try splitArgs(allocator, "  SET key \"foo\"bar");
+    try expect(null_tokens == null);
+}
+
 test trim {
     const allocator = testing.allocator;
     const s = try new(allocator, "AA...AA.a.aa.aHelloWorld     :::");
@@ -897,3 +1084,6 @@ const expectEqualStrings = testing.expectEqualStrings;
 const expectEqual = testing.expectEqual;
 const expectEqualSlices = testing.expectEqualSlices;
 const expectStringEndsWith = testing.expectStringEndsWith;
+const isWhitespace = std.ascii.isWhitespace;
+const isHex = std.ascii.isHex;
+const parseInt = std.fmt.parseInt;
