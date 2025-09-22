@@ -173,6 +173,8 @@ pub fn catRepr(
     raw: []const u8,
 ) Allocator.Error!Sds {
     var ns = try cat(allocator, s, "\"");
+    errdefer free(allocator, ns);
+
     for (raw) |b| {
         switch (b) {
             '\\', '"' => ns = try catPrintf(allocator, ns, "\\{c}", .{b}),
@@ -263,6 +265,33 @@ pub fn copy(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
     setLength(ns, src.len);
     setBuf(ns, src);
     return ns;
+}
+
+pub fn split(
+    allocator: Allocator,
+    str: []const u8,
+    sep: []const u8,
+) Allocator.Error![]Sds {
+    var tokens = std.ArrayList(Sds).empty;
+    errdefer {
+        for (tokens.items) |token| {
+            free(allocator, token);
+        }
+        tokens.deinit(allocator);
+    }
+
+    var it = std.mem.splitSequence(u8, str, sep);
+    while (it.next()) |token| {
+        try tokens.append(allocator, try new(allocator, token));
+    }
+    return tokens.toOwnedSlice(allocator);
+}
+
+pub fn freeSplitRes(allocator: Allocator, tokens: []Sds) void {
+    for (tokens) |token| {
+        free(allocator, token);
+    }
+    allocator.free(tokens);
 }
 
 pub fn trim(s: Sds, values_to_strip: []const u8) void {
@@ -635,6 +664,17 @@ test copy {
     try expectEqual(getLen(cp), 6);
     try expectEqualStrings("world!", bufSlice(cp));
     try expect(s != cp);
+}
+
+test split {
+    const allocator = testing.allocator;
+    const tokens = try split(allocator, "hello|world|zig", "|");
+    defer freeSplitRes(allocator, tokens);
+
+    try expect(tokens.len == 3);
+    try expectEqualStrings("hello", bufSlice(tokens[0]));
+    try expectEqualStrings("world", bufSlice(tokens[1]));
+    try expectEqualStrings("zig", bufSlice(tokens[2]));
 }
 
 test trim {
