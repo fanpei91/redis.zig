@@ -1,0 +1,11 @@
+pub const short = c_short;
+pub const ushort = c_ushort;
+pub const int = c_int;
+pub const uint = c_uint;
+pub const long = c_long;
+pub const ulong = c_ulong;
+pub const longlong = c_longlong;
+pub const ulonglong = c_ulonglong;
+pub const longdouble = c_longdouble;
+pub const float = f32;
+pub const double = f64;
