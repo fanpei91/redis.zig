@@ -1,45 +1,40 @@
-const MemSizedHdr5 = extern struct {
-    alloc: u8 align(1),
-    hdr: Hdr5 align(1),
+const MemSizedHdr5 = packed struct {
+    alloc: u8,
+    hdr: Hdr5,
 };
 
-const Hdr5 = extern struct {
-    flags: u8 align(1), // 3 lsb of type, and 5 msb of string length
-    buf: [0]u8,
+const Hdr5 = packed struct {
+    flags: u8, // 3 lsb of type, and 5 msb of string length
 
     fn alloc(s: Sds) *u8 {
-        const hdr: *Hdr5 = @ptrCast(s - @sizeOf(Hdr5));
-        const parent: *MemSizedHdr5 = @fieldParentPtr("hdr", hdr);
+        const hdr: *Hdr5 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr5));
+        const parent: *MemSizedHdr5 = @alignCast(@fieldParentPtr("hdr", hdr));
         return &parent.alloc;
     }
 };
 
-const Hdr8 = extern struct {
-    len: u8 align(1),
-    alloc: u8 align(1), // excluding the header
-    flags: u8 align(1), // 3 lsb of type, 5 unused bits
-    buf: [0]u8,
+const Hdr8 = packed struct {
+    len: u8,
+    alloc: u8, // excluding the header
+    flags: u8, // 3 lsb of type, 5 unused bits
 };
 
-const Hdr16 = extern struct {
-    len: u16 align(1),
-    alloc: u16 align(1), // excluding the header
-    flags: u8 align(1), // 3 lsb of type, 5 unused bits
-    buf: [0]u8,
+const Hdr16 = packed struct {
+    len: u16,
+    alloc: u16, // excluding the header
+    flags: u8, // 3 lsb of type, 5 unused bits
 };
 
-const Hdr32 = extern struct {
-    len: u32 align(1),
-    alloc: u32 align(1), // excluding the header
-    flags: u8 align(1), // 3 lsb of type, 5 unused bits
-    buf: [0]u8,
+const Hdr32 = packed struct {
+    len: u32,
+    alloc: u32, // excluding the header
+    flags: u8, // 3 lsb of type, 5 unused bits
 };
 
-const Hdr64 = extern struct {
-    len: u64 align(1),
-    alloc: u64 align(1),
-    flags: u8 align(1), // 3 lsb of type, 5 unused bits
-    buf: [0]u8,
+const Hdr64 = packed struct {
+    len: u64,
+    alloc: u64,
+    flags: u8, // 3 lsb of type, 5 unused bits
 };
 
 const MAX_PREALLOC = 1024 * 1024;
@@ -402,10 +397,22 @@ pub fn getLen(s: Sds) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
         TYPE_5 => flags >> TYPE_BITS,
-        TYPE_8 => @as(*Hdr8, @ptrCast(s - @sizeOf(Hdr8))).len,
-        TYPE_16 => @as(*Hdr16, @ptrCast(s - @sizeOf(Hdr16))).len,
-        TYPE_32 => @as(*Hdr32, @ptrCast(s - @sizeOf(Hdr32))).len,
-        TYPE_64 => @as(*Hdr64, @ptrCast(s - @sizeOf(Hdr64))).len,
+        TYPE_8 => {
+            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
+            return hdr.len;
+        },
+        TYPE_16 => {
+            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
+            return hdr.len;
+        },
+        TYPE_32 => {
+            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
+            return hdr.len;
+        },
+        TYPE_64 => {
+            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
+            return hdr.len;
+        },
         else => 0,
     };
 }
@@ -418,10 +425,22 @@ pub fn getAlloc(s: Sds) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
         TYPE_5 => Hdr5.alloc(s).*,
-        TYPE_8 => @as(*Hdr8, @ptrCast(s - @sizeOf(Hdr8))).alloc,
-        TYPE_16 => @as(*Hdr16, @ptrCast(s - @sizeOf(Hdr16))).alloc,
-        TYPE_32 => @as(*Hdr32, @ptrCast(s - @sizeOf(Hdr32))).alloc,
-        TYPE_64 => @as(*Hdr64, @ptrCast(s - @sizeOf(Hdr64))).alloc,
+        TYPE_8 => {
+            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
+            return hdr.alloc;
+        },
+        TYPE_16 => {
+            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
+            return hdr.alloc;
+        },
+        TYPE_32 => {
+            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
+            return hdr.alloc;
+        },
+        TYPE_64 => {
+            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
+            return hdr.alloc;
+        },
         else => 0,
     };
 }
@@ -441,19 +460,19 @@ pub fn setLength(s: Sds, new_len: usize) void {
             setType(s, TYPE_5 | (@as(u8, @intCast(new_len)) << TYPE_BITS));
         },
         TYPE_8 => {
-            const hdr: *Hdr8 = @ptrCast(s - @sizeOf(Hdr8));
+            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
             hdr.len = @intCast(new_len);
         },
         TYPE_16 => {
-            const hdr: *Hdr16 = @ptrCast(s - @sizeOf(Hdr16));
+            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
             hdr.len = @intCast(new_len);
         },
         TYPE_32 => {
-            const hdr: *Hdr32 = @ptrCast(s - @sizeOf(Hdr32));
+            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
             hdr.len = @intCast(new_len);
         },
         TYPE_64 => {
-            const hdr: *Hdr64 = @ptrCast(s - @sizeOf(Hdr64));
+            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
             hdr.len = @intCast(new_len);
         },
         else => {},
@@ -494,19 +513,19 @@ fn setAlloc(s: Sds, new_alloc: usize) void {
             Hdr5.alloc(s).* = @intCast(new_alloc);
         },
         TYPE_8 => {
-            const hdr: *Hdr8 = @ptrCast(s - @sizeOf(Hdr8));
+            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
             hdr.alloc = @intCast(new_alloc);
         },
         TYPE_16 => {
-            const hdr: *Hdr16 = @ptrCast(s - @sizeOf(Hdr16));
+            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
             hdr.alloc = @intCast(new_alloc);
         },
         TYPE_32 => {
-            const hdr: *Hdr32 = @ptrCast(s - @sizeOf(Hdr32));
+            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
             hdr.alloc = @intCast(new_alloc);
         },
         TYPE_64 => {
-            const hdr: *Hdr64 = @ptrCast(s - @sizeOf(Hdr64));
+            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
             hdr.alloc = @intCast(new_alloc);
         },
         else => {},
