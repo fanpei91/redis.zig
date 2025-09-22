@@ -267,6 +267,20 @@ pub fn copy(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
     return ns;
 }
 
+pub fn join(
+    allocator: Allocator,
+    slices: []const []const u8,
+    sep: []const u8,
+) Allocator.Error!Sds {
+    var joined = try empty(allocator);
+    errdefer free(allocator, joined);
+    for (slices, 0..) |slice, i| {
+        joined = try cat(allocator, joined, slice);
+        if (i != slices.len - 1) joined = try cat(allocator, joined, sep);
+    }
+    return joined;
+}
+
 pub fn split(
     allocator: Allocator,
     str: []const u8,
@@ -671,6 +685,21 @@ test copy {
     try expectEqual(getLen(cp), 6);
     try expectEqualStrings("world!", bufSlice(cp));
     try expect(s != cp);
+}
+
+test join {
+    const allocator = testing.allocator;
+    var tokens = std.ArrayList([]const u8).empty;
+    defer tokens.deinit(allocator);
+
+    try tokens.append(allocator, "hello");
+    try tokens.append(allocator, "world");
+    try tokens.append(allocator, "zig");
+
+    const joined = try join(allocator, tokens.items, "|");
+    defer free(allocator, joined);
+
+    try expectEqualSlices(u8, "hello|world|zig", bufSlice(joined));
 }
 
 test split {
