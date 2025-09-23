@@ -80,7 +80,7 @@ pub fn DoublyLinkedList(
 
         first: ?*Node = null,
         last: ?*Node = null,
-        len: usize = 0,
+        len: ulong = 0,
         ctx: Context,
 
         pub fn create(
@@ -186,7 +186,25 @@ pub fn DoublyLinkedList(
             self.len -= 1;
         }
 
-        pub fn rotate(self: *List) void {
+        pub fn join(self: *List, other: *List) void {
+            if (other.len == 0) return;
+            assert(self != other);
+
+            other.first.?.prev = self.last;
+            if (self.last) |last| {
+                last.next = other.first;
+            } else {
+                self.first = other.first;
+            }
+            self.last = other.last;
+            self.len += other.len;
+
+            other.first = null;
+            other.last = null;
+            other.len = 0;
+        }
+
+        pub fn rotateTailToHead(self: *List) void {
             if (self.len <= 1) return;
 
             const tail = self.last.?;
@@ -199,6 +217,19 @@ pub fn DoublyLinkedList(
             self.first = tail;
         }
 
+        pub fn rotateHeadToTail(self: *List) void {
+            if (self.len <= 1) return;
+
+            const head = self.first.?;
+            self.first = head.next;
+            self.first.?.prev = null;
+
+            self.last.?.next = head;
+            head.prev = self.last;
+            head.next = null;
+            self.last = head;
+        }
+
         pub fn iterator(self: *List, direction: Iterator.Direction) Iterator {
             return .init(self, direction);
         }
@@ -208,7 +239,7 @@ pub fn DoublyLinkedList(
             allocator: Allocator,
         ) Allocator.Error!*List {
             var dup_list = try List.create(allocator, self.ctx);
-            errdefer dup_list.destroy(allocator);
+            errdefer dup_list.release(allocator);
 
             var it = self.iterator(.forward);
             while (it.next()) |node| {
@@ -229,7 +260,7 @@ pub fn DoublyLinkedList(
             return null;
         }
 
-        pub fn index(self: *List, idx: isize) ?*Node {
+        pub fn index(self: *List, idx: long) ?*Node {
             var node: ?*Node = null;
             if (idx < 0) {
                 var i = (-idx) - 1;
@@ -247,13 +278,20 @@ pub fn DoublyLinkedList(
             return node;
         }
 
-        pub fn destroy(self: *List, allocator: Allocator) void {
+        pub fn empty(self: *List, allocator: Allocator) void {
             var curr = self.first;
             while (curr) |node| {
                 curr = node.next;
                 self.ctx.free(allocator, node.value);
                 node.destroy(allocator);
             }
+            self.len = 0;
+            self.first = null;
+            self.last = null;
+        }
+
+        pub fn release(self: *List, allocator: Allocator) void {
+            self.empty(allocator);
             allocator.destroy(self);
         }
     };
@@ -262,145 +300,148 @@ pub fn DoublyLinkedList(
 test "prepend/insertBefore" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.prepend(allocator, v1);
+    try ll.prepend(allocator, 1);
+    try ll.prepend(allocator, 2);
 
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.prepend(allocator, v2);
+    try expectEqual(2, ll.len);
+    try expectEqual(2, ll.first.?.value);
 
-    try testing.expectEqual(2, ll.len);
-    try testing.expectEqual(v2, ll.first.?.value);
+    try ll.insertBefore(allocator, 3, ll.last.?);
+    try expectEqual(ll.first.?.next.?.value, 3);
 }
 
 test "append/insertAfter" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
 
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
+    try expectEqual(2, ll.len);
+    try expectEqual(2, ll.last.?.value);
 
-    try testing.expectEqual(2, ll.len);
-    try testing.expectEqual(v2, ll.last.?.value);
+    try ll.insertAfter(allocator, 3, ll.first.?);
+    try expectEqual(3, ll.first.?.next.?.value);
 }
 
 test "removeNode" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
+    const node2 = ll.first.?.next.?;
+    ll.removeNode(allocator, node2);
 
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
-
-    const v2_node = ll.first.?.next.?;
-    ll.removeNode(allocator, v2_node);
-
-    try testing.expectEqual(2, ll.len);
-    try testing.expectEqual(v1, ll.first.?.value);
-    try testing.expectEqual(v3, ll.last.?.value);
+    try expectEqual(2, ll.len);
+    try expectEqual(1, ll.first.?.value);
+    try expectEqual(3, ll.last.?.value);
 }
 
-test "rotate" {
+test "rotateTailToHead" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
+    ll.rotateTailToHead();
 
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
-
-    ll.rotate();
-
-    try testing.expectEqual(3, ll.len);
-    try testing.expectEqual(v3, ll.first.?.value);
-    try testing.expectEqual(v2, ll.last.?.value);
+    try expectEqual(3, ll.len);
+    try expectEqual(3, ll.first.?.value);
+    try expectEqual(2, ll.last.?.value);
 
     var it = ll.iterator(.forward);
-    try testing.expectEqual(v3, it.next().?.value);
-    try testing.expectEqual(v1, it.next().?.value);
-    try testing.expectEqual(v2, it.next().?.value);
-    try testing.expectEqual(null, it.next());
+    try expectEqual(3, it.next().?.value);
+    try expectEqual(1, it.next().?.value);
+    try expectEqual(2, it.next().?.value);
+    try expectEqual(null, it.next());
+}
+
+test "rotateHeadToTail" {
+    const allocator = testing.allocator;
+
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
+
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
+
+    ll.rotateHeadToTail();
+
+    try expectEqual(3, ll.len);
+    try expectEqual(2, ll.first.?.value);
+    try expectEqual(1, ll.last.?.value);
+
+    var it = ll.iterator(.forward);
+    try expectEqual(2, it.next().?.value);
+    try expectEqual(3, it.next().?.value);
+    try expectEqual(1, it.next().?.value);
+    try expectEqual(null, it.next());
 }
 
 test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
-
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
-
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
     var forward = ll.iterator(.forward);
-    try testing.expectEqual(v1, forward.next().?.value);
-    try testing.expectEqual(v2, forward.next().?.value);
-    try testing.expectEqual(v3, forward.next().?.value);
-    try testing.expectEqual(null, forward.next());
+    try expectEqual(1, forward.next().?.value);
+    try expectEqual(2, forward.next().?.value);
+    try expectEqual(3, forward.next().?.value);
+    try expectEqual(null, forward.next());
 
     forward.rewind(.backward);
-    try testing.expectEqual(v3, forward.next().?.value);
-    try testing.expectEqual(v2, forward.next().?.value);
-    try testing.expectEqual(v1, forward.next().?.value);
-    try testing.expectEqual(null, forward.next());
+    try expectEqual(3, forward.next().?.value);
+    try expectEqual(2, forward.next().?.value);
+    try expectEqual(1, forward.next().?.value);
+    try expectEqual(null, forward.next());
 
     var backward = ll.iterator(.backward);
-    try testing.expectEqual(v3, backward.next().?.value);
-    try testing.expectEqual(v2, backward.next().?.value);
-    try testing.expectEqual(v1, backward.next().?.value);
-    try testing.expectEqual(null, backward.next());
+    try expectEqual(3, backward.next().?.value);
+    try expectEqual(2, backward.next().?.value);
+    try expectEqual(1, backward.next().?.value);
+    try expectEqual(null, backward.next());
 
     backward.rewind(.forward);
-    try testing.expectEqual(v1, backward.next().?.value);
-    try testing.expectEqual(v2, backward.next().?.value);
-    try testing.expectEqual(v3, backward.next().?.value);
-    try testing.expectEqual(null, backward.next());
+    try expectEqual(1, backward.next().?.value);
+    try expectEqual(2, backward.next().?.value);
+    try expectEqual(3, backward.next().?.value);
+    try expectEqual(null, backward.next());
 }
 
 test "dupe" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
-
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
-
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
     var dup = try ll.dupe(allocator);
-    defer dup.destroy(allocator);
+    defer dup.release(allocator);
 
-    try testing.expectEqual(3, dup.len);
+    try expectEqual(3, dup.len);
 
     var it1 = ll.iterator(.forward);
     var it2 = dup.iterator(.forward);
@@ -409,106 +450,115 @@ test "dupe" {
         const n1 = it1.next();
         const n2 = it2.next();
 
-        try testing.expect(n1 != n2);
-        try testing.expect(n1.?.value != n2.?.value);
-        try testing.expectEqual(n1.?.value.*, n2.?.value.*);
+        try expect(n1 != n2);
+        try expectEqual(n1.?.value, n2.?.value);
     }
 }
 
 test "search" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
-
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
-
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
     const found = ll.search(3);
-    try testing.expect(found != null);
-    try testing.expectEqual(v3, found.?.value);
-    try testing.expectEqual(3, found.?.value.*);
+    try expect(found != null);
+    try expectEqual(3, found.?.value);
+    try expectEqual(3, found.?.value);
 }
 
 test "index" {
     const allocator = testing.allocator;
 
-    var ll: *UnitTestList = try .create(allocator, .init());
-    defer ll.destroy(allocator);
+    var ll: *TestList = try .create(allocator, .init());
+    defer ll.release(allocator);
 
-    const v1 = UnitTestContext.allocNum(allocator, 1);
-    try ll.append(allocator, v1);
-
-    const v2 = UnitTestContext.allocNum(allocator, 2);
-    try ll.append(allocator, v2);
-
-    const v3 = UnitTestContext.allocNum(allocator, 3);
-    try ll.append(allocator, v3);
+    try ll.append(allocator, 1);
+    try ll.append(allocator, 2);
+    try ll.append(allocator, 3);
 
     var found = ll.index(0);
-    try testing.expect(found != null and found.?.value == v1);
+    try expect(found != null and found.?.value == 1);
 
     found = ll.index(-1);
-    try testing.expect(found != null and found.?.value == v3);
+    try expect(found != null and found.?.value == 3);
 
     found = ll.index(-2);
-    try testing.expect(found != null and found.?.value == v2);
+    try expect(found != null and found.?.value == 2);
 
     found = ll.index(1000);
-    try testing.expect(found == null);
+    try expect(found == null);
 
     found = ll.index(-1000);
-    try testing.expect(found == null);
+    try expect(found == null);
 }
 
-const UnitTestList = DoublyLinkedList(
+test "join" {
+    const allocator = testing.allocator;
+
+    var l1: *TestList = try .create(allocator, .init());
+    defer l1.release(allocator);
+
+    var l2: *TestList = try .create(allocator, .init());
+    defer l2.release(allocator);
+
+    try l1.append(allocator, 1);
+    try l1.append(allocator, 2);
+    try l2.append(allocator, 3);
+    try l2.append(allocator, 4);
+
+    l1.join(l2);
+
+    try expectEqual(4, l1.len);
+    try expectEqual(0, l2.len);
+    try expectEqual(null, l2.first);
+    try expectEqual(null, l2.last);
+    try expectEqual(1, l1.first.?.value);
+    try expectEqual(4, l1.last.?.value);
+
+    var it = l1.iterator(.forward);
+    try expectEqual(1, it.next().?.value);
+    try expectEqual(2, it.next().?.value);
+    try expectEqual(3, it.next().?.value);
+    try expectEqual(4, it.next().?.value);
+    try expectEqual(null, it.next());
+}
+
+const TestList = DoublyLinkedList(
     u32,
-    *u32,
-    UnitTestContext,
+    u32,
+    TestContext,
 );
 
-const UnitTestContext = struct {
+const TestContext = struct {
     const Self = @This();
 
     fn init() Self {
         return .{};
     }
 
-    fn allocNum(allocator: Allocator, v: u32) *u32 {
-        const ptr = allocator.create(u32) catch |err| {
-            @branchHint(.unlikely);
-            std.debug.panic("Allocation Error: {}", .{err});
-        };
-        ptr.* = v;
-        return ptr;
-    }
-
-    fn eql(self: Self, key: u32, value: *u32) bool {
+    fn eql(self: Self, key: u32, value: u32) bool {
         _ = self;
-        return key == value.*;
+        return key == value;
     }
 
-    fn dupe(
-        _: Self,
-        allocator: Allocator,
-        value: *u32,
-    ) Allocator.Error!*u32 {
-        const ptr = try allocator.create(u32);
-        ptr.* = value.*;
-        return ptr;
+    fn dupe(_: Self, _: Allocator, value: u32) Allocator.Error!u32 {
+        return value;
     }
 
-    fn free(_: Self, allocator: Allocator, value: *u32) void {
-        allocator.destroy(value);
-    }
+    fn free(_: Self, _: Allocator, _: u32) void {}
 };
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const ctypes = @import("ctypes.zig");
+const ulong = ctypes.ulong;
+const long = ctypes.long;
+const assert = std.debug.assert;
+const expect = testing.expect;
+const expectEqual = testing.expectEqual;
