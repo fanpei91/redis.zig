@@ -1,55 +1,60 @@
-const MemSizedHdr5 = packed struct {
+const MemSizedHdr5 = struct {
     alloc: u8,
     hdr: Hdr5,
 };
 
-const Hdr5 = packed struct {
-    flags: u8, // 3 lsb of type, and 5 msb of string length
+pub const Hdr5 = extern struct {
+    flags: u8 align(1), // 3 lsb of type, and 5 msb of string length
+    buf: [0]u8,
 
-    fn alloc(s: Sds) *u8 {
+    fn alloc(s: String) *u8 {
         const hdr: *Hdr5 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr5));
         const parent: *MemSizedHdr5 = @alignCast(@fieldParentPtr("hdr", hdr));
         return &parent.alloc;
     }
 };
 
-const Hdr8 = packed struct {
-    len: u8,
-    alloc: u8, // excluding the header
-    flags: u8, // 3 lsb of type, 5 unused bits
+pub const Hdr8 = extern struct {
+    len: u8 align(1),
+    alloc: u8 align(1), // excluding the header
+    flags: u8 align(1), // 3 lsb of type, 5 unused bits
+    buf: [0]u8,
 };
 
-const Hdr16 = packed struct {
-    len: u16,
-    alloc: u16, // excluding the header
-    flags: u8, // 3 lsb of type, 5 unused bits
+pub const Hdr16 = extern struct {
+    len: u16 align(1),
+    alloc: u16 align(1), // excluding the header
+    flags: u8 align(1), // 3 lsb of type, 5 unused bits
+    buf: [0]u8,
 };
 
-const Hdr32 = packed struct {
-    len: u32,
-    alloc: u32, // excluding the header
-    flags: u8, // 3 lsb of type, 5 unused bits
+pub const Hdr32 = extern struct {
+    len: u32 align(1),
+    alloc: u32 align(1), // excluding the header
+    flags: u8 align(1), // 3 lsb of type, 5 unused bits
+    buf: [0]u8,
 };
 
-const Hdr64 = packed struct {
-    len: u64,
-    alloc: u64, // excluding the header
-    flags: u8, // 3 lsb of type, 5 unused bits
+pub const Hdr64 = extern struct {
+    len: u64 align(1),
+    alloc: u64 align(1), // excluding the header
+    flags: u8 align(1), // 3 lsb of type, 5 unused bits
+    buf: [0]u8,
 };
 
 const MAX_PREALLOC = 1024 * 1024;
 
-const TYPE_MASK = 0b00000111;
-const TYPE_BITS = 3;
-const TYPE_5 = 0;
-const TYPE_8 = 1;
-const TYPE_16 = 2;
-const TYPE_32 = 3;
-const TYPE_64 = 4;
+pub const TYPE_MASK = 0b00000111;
+pub const TYPE_BITS = 3;
+pub const TYPE_5 = 0;
+pub const TYPE_8 = 1;
+pub const TYPE_16 = 2;
+pub const TYPE_32 = 3;
+pub const TYPE_64 = 4;
 
-pub const Sds = [*]u8;
+pub const String = [*]u8;
 
-pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!Sds {
+pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!String {
     // Empty strings are usually created in order to append. Use type 8
     // since type 5 is not good at this.
     var typ = reqType(init.len);
@@ -69,32 +74,32 @@ pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!Sds {
     return s;
 }
 
-pub fn empty(allocator: Allocator) Allocator.Error!Sds {
+pub fn empty(allocator: Allocator) Allocator.Error!String {
     return new(allocator, "");
 }
 
 pub fn fromLonglong(
     allocator: Allocator,
     num: longlong,
-) Allocator.Error!Sds {
+) Allocator.Error!String {
     var buf: [20]u8 = undefined;
     const digits = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
     return new(allocator, digits);
 }
 
-pub fn dupe(allocator: Allocator, s: Sds) Allocator.Error!Sds {
+pub fn dupe(allocator: Allocator, s: String) Allocator.Error!String {
     return new(allocator, s[0..getLen(s)]);
 }
 
-pub fn clear(s: Sds) void {
+pub fn clear(s: String) void {
     setLength(s, 0);
 }
 
 pub fn makeRoomFor(
     allocator: Allocator,
-    s: Sds,
+    s: String,
     add_len: usize,
-) Allocator.Error!Sds {
+) Allocator.Error!String {
     if (getAvail(s) >= add_len) return s;
 
     const old_len = getLen(s);
@@ -138,7 +143,11 @@ pub fn makeRoomFor(
     return ns;
 }
 
-pub fn cat(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
+pub fn cat(
+    allocator: Allocator,
+    s: String,
+    src: []const u8,
+) Allocator.Error!String {
     const cur_len = getLen(s);
     const ns = try makeRoomFor(allocator, s, src.len);
     @memcpy(ns[cur_len .. cur_len + src.len], src);
@@ -148,10 +157,10 @@ pub fn cat(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
 
 pub fn catPrintf(
     allocator: Allocator,
-    s: Sds,
+    s: String,
     comptime fmt: []const u8,
     args: anytype,
-) (Allocator.Error)!Sds {
+) (Allocator.Error)!String {
     var static_buf: [1024]u8 = undefined;
     const buf = std.fmt.bufPrint(&static_buf, fmt, args) catch {
         @branchHint(.unlikely);
@@ -164,9 +173,9 @@ pub fn catPrintf(
 
 pub fn catRepr(
     allocator: Allocator,
-    s: Sds,
+    s: String,
     raw: []const u8,
-) Allocator.Error!Sds {
+) Allocator.Error!String {
     var ns = try cat(allocator, s, "\"");
     errdefer free(allocator, ns);
 
@@ -193,7 +202,10 @@ pub fn catRepr(
     return ns;
 }
 
-pub fn removeAvailSpace(allocator: Allocator, s: Sds) Allocator.Error!Sds {
+pub fn removeAvailSpace(
+    allocator: Allocator,
+    s: String,
+) Allocator.Error!String {
     if (getAvail(s) == 0) return s;
 
     const len = getLen(s);
@@ -227,7 +239,7 @@ pub fn removeAvailSpace(allocator: Allocator, s: Sds) Allocator.Error!Sds {
     return ns;
 }
 
-pub fn incrLen(s: Sds, incr: isize) void {
+pub fn incrLen(s: String, incr: isize) void {
     const len = getLen(s);
     const alloc = getAlloc(s);
     const abs_incr: usize = @abs(incr);
@@ -239,9 +251,9 @@ pub fn incrLen(s: Sds, incr: isize) void {
 
 pub fn growZero(
     allocator: Allocator,
-    s: Sds,
+    s: String,
     new_len: usize,
-) Allocator.Error!Sds {
+) Allocator.Error!String {
     const curr_len = getLen(s);
     if (new_len <= curr_len) return s;
 
@@ -252,7 +264,11 @@ pub fn growZero(
     return ns;
 }
 
-pub fn copy(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
+pub fn copy(
+    allocator: Allocator,
+    s: String,
+    src: []const u8,
+) Allocator.Error!String {
     var ns = s;
     if (getAlloc(s) < src.len) {
         ns = try makeRoomFor(allocator, s, src.len - getLen(s));
@@ -262,7 +278,7 @@ pub fn copy(allocator: Allocator, s: Sds, src: []const u8) Allocator.Error!Sds {
     return ns;
 }
 
-pub fn mapChars(s: Sds, from: []const u8, to: []const u8) Sds {
+pub fn mapChars(s: String, from: []const u8, to: []const u8) String {
     assert(from.len == to.len);
 
     const len = getLen(s);
@@ -281,7 +297,7 @@ pub fn join(
     allocator: Allocator,
     slices: []const []const u8,
     sep: []const u8,
-) Allocator.Error!Sds {
+) Allocator.Error!String {
     var joined = try empty(allocator);
     errdefer free(allocator, joined);
     for (slices, 0..) |slice, i| {
@@ -295,8 +311,8 @@ pub fn split(
     allocator: Allocator,
     str: []const u8,
     sep: []const u8,
-) Allocator.Error![]Sds {
-    var tokens = std.ArrayList(Sds).empty;
+) Allocator.Error![]String {
+    var tokens = std.ArrayList(String).empty;
     errdefer {
         for (tokens.items) |token| {
             free(allocator, token);
@@ -314,9 +330,9 @@ pub fn split(
 pub fn splitArgs(
     allocator: Allocator,
     line: []const u8,
-) Allocator.Error!?[]Sds {
-    var vector = std.ArrayList(Sds).empty;
-    var current: ?Sds = null;
+) Allocator.Error!?[]String {
+    var vector = std.ArrayList(String).empty;
+    var current: ?String = null;
     errdefer {
         if (current) |cur| {
             free(allocator, cur);
@@ -424,20 +440,20 @@ pub fn splitArgs(
     return null;
 }
 
-pub fn freeSplitRes(allocator: Allocator, tokens: []Sds) void {
+pub fn freeSplitRes(allocator: Allocator, tokens: []String) void {
     for (tokens) |token| {
         free(allocator, token);
     }
     allocator.free(tokens);
 }
 
-pub fn trim(s: Sds, values_to_strip: []const u8) void {
+pub fn trim(s: String, values_to_strip: []const u8) void {
     const trimed = std.mem.trim(u8, bufSlice(s), values_to_strip);
     @memmove(s[0..trimed.len], trimed);
     setLength(s, trimed.len);
 }
 
-pub fn range(s: Sds, start: isize, endinc: isize) void {
+pub fn range(s: String, start: isize, endinc: isize) void {
     const len = getLen(s);
     if (len == 0) return;
 
@@ -477,21 +493,21 @@ pub fn range(s: Sds, start: isize, endinc: isize) void {
     setLength(s, new_len);
 }
 
-pub fn toLower(s: Sds) void {
+pub fn toLower(s: String) void {
     const slice = bufSlice(s);
     for (slice, 0..) |c, i| {
         slice[i] = std.ascii.toLower(c);
     }
 }
 
-pub fn toUpper(s: Sds) void {
+pub fn toUpper(s: String) void {
     const slice = bufSlice(s);
     for (slice, 0..) |c, i| {
         slice[i] = std.ascii.toUpper(c);
     }
 }
 
-pub fn cmp(s1: Sds, s2: Sds) std.math.Order {
+pub fn cmp(s1: String, s2: String) std.math.Order {
     const lhs = bufSlice(s1);
     const rhs = bufSlice(s2);
     const n = @min(lhs.len, rhs.len);
@@ -506,7 +522,7 @@ pub fn cmp(s1: Sds, s2: Sds) std.math.Order {
     return std.math.order(lhs.len, rhs.len);
 }
 
-pub fn getLen(s: Sds) usize {
+pub fn getLen(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
         TYPE_5 => flags >> TYPE_BITS,
@@ -530,11 +546,11 @@ pub fn getLen(s: Sds) usize {
     };
 }
 
-pub fn getAvail(s: Sds) usize {
+pub fn getAvail(s: String) usize {
     return getAlloc(s) - getLen(s);
 }
 
-pub fn getAlloc(s: Sds) usize {
+pub fn getAlloc(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
         TYPE_5 => Hdr5.alloc(s).*,
@@ -563,11 +579,15 @@ pub fn getAlloc(s: Sds) usize {
 /// 1) The sds header before the pointer.
 /// 2) The string.
 /// 3) The free buffer at the end if any.
-pub fn getAllocMemSize(s: Sds) usize {
+pub fn getAllocMemSize(s: String) usize {
     return hdrSize(getType(s)) + getAlloc(s);
 }
 
-pub fn setLength(s: Sds, new_len: usize) void {
+pub inline fn bufSlice(s: String) []u8 {
+    return s[0..getLen(s)];
+}
+
+pub fn setLength(s: String, new_len: usize) void {
     switch (getType(s)) {
         TYPE_5 => {
             setType(s, TYPE_5 | (@as(u8, @intCast(new_len)) << TYPE_BITS));
@@ -592,35 +612,31 @@ pub fn setLength(s: Sds, new_len: usize) void {
     }
 }
 
-pub fn free(allocator: Allocator, s: Sds) void {
+pub fn free(allocator: Allocator, s: String) void {
     const hdr_len = hdrSize(getType(s));
     const mem: [*]u8 = s - hdr_len;
     const mem_size = getAllocMemSize(s);
     allocator.free(mem[0..mem_size]);
 }
 
-inline fn getType(s: Sds) u8 {
+inline fn getType(s: String) u8 {
     return (s - 1)[0] & TYPE_MASK;
 }
 
-inline fn setType(s: Sds, typ: u8) void {
+inline fn setType(s: String, typ: u8) void {
     (s - 1)[0] = typ;
 }
 
-inline fn setBuf(s: Sds, buf: []const u8) void {
+inline fn setBuf(s: String, buf: []const u8) void {
     @memcpy(s[0..buf.len], buf);
 }
 
-inline fn bufSlice(s: Sds) []u8 {
-    return s[0..getLen(s)];
-}
-
-inline fn memSlice(s: Sds) []u8 {
+inline fn memSlice(s: String) []u8 {
     const mem: [*]u8 = s - hdrSize(getType(s));
     return mem[0..getAllocMemSize(s)];
 }
 
-fn setAlloc(s: Sds, new_alloc: usize) void {
+fn setAlloc(s: String, new_alloc: usize) void {
     switch (getType(s)) {
         TYPE_5 => {
             Hdr5.alloc(s).* = @intCast(new_alloc);
@@ -936,7 +952,7 @@ test splitArgs {
     try expect(tokens.len == 0);
     freeSplitRes(allocator, tokens);
 
-    var null_tokens: ?[]Sds = try splitArgs(allocator, "  SET key 'abc");
+    var null_tokens: ?[]String = try splitArgs(allocator, "  SET key 'abc");
     try expect(null_tokens == null);
 
     null_tokens = try splitArgs(allocator, "  SET key \"foo\"bar");
