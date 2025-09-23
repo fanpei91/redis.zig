@@ -140,8 +140,8 @@ pub fn new(allocator: Allocator) Allocator.Error!*ZipList {
     return zl;
 }
 
-pub fn numOfEntries(self: *ZipList) u32 {
-    var cnt: u32 = self.len.get();
+pub fn numOfEntries(self: *ZipList) uint {
+    var cnt: uint = self.len.get();
     if (cnt < maxInt(u16)) {
         return cnt;
     }
@@ -159,7 +159,7 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
-pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
+pub fn index(self: *const ZipList, idx: int) ?[*]u8 {
     var i = idx;
     var p: [*]u8 = undefined;
     if (i < 0) {
@@ -253,9 +253,9 @@ pub fn eql(_: *const ZipList, entry: [*]u8, str: []const u8) bool {
 /// skipping over the alternating entries.
 ///
 /// Returns null when the field could not be found.
-pub fn find(_: *const ZipList, entry: [*]u8, str: []const u8, skip: u32) ?[*]u8 {
+pub fn find(_: *const ZipList, entry: [*]u8, str: []const u8, skip: uint) ?[*]u8 {
     var p = entry;
-    var skipcnt: u32 = 0;
+    var skipcnt: uint = 0;
     var value: i64 = 0;
     var encoding: u8 = 0;
     while (p[0] != END) {
@@ -290,28 +290,20 @@ pub fn find(_: *const ZipList, entry: [*]u8, str: []const u8, skip: u32) ?[*]u8 
     return null;
 }
 
-pub fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
-    return self.addr()[0..self.blobLen()];
-}
-
-pub fn blobLen(self: *const ZipList) u32 {
+pub inline fn blobLen(self: *const ZipList) u32 {
     return self.bytes.get();
 }
 
-pub fn append(
+pub fn push(
     self: *ZipList,
     allocator: Allocator,
     str: []const u8,
+    where: enum { head, tail },
 ) Allocator.Error!*ZipList {
+    if (where == .head) {
+        return self.insert(allocator, self.entryHead(), str);
+    }
     return self.insert(allocator, self.entryEnd(), str);
-}
-
-pub fn prepend(
-    self: *ZipList,
-    allocator: Allocator,
-    str: []const u8,
-) Allocator.Error!*ZipList {
-    return self.insert(allocator, self.entryHead(), str);
 }
 
 pub fn insert(
@@ -409,24 +401,41 @@ pub fn delete(
 pub fn deleteRange(
     self: *ZipList,
     allocator: Allocator,
-    idx: u32,
-    num: u32,
+    idx: int,
+    num: uint,
 ) Allocator.Error!*ZipList {
-    if (self.index(@intCast(idx))) |ptr| {
+    if (self.index(idx)) |ptr| {
         return try self.cascadeDelete(allocator, ptr, num);
     }
     return self;
+}
+
+/// Don't let ziplists grow over 1GB in any case, don't wanna risk overflow in
+/// zlbytes.
+const MAX_SAFETY_SIZE = 1 << 30; // 1GB
+pub fn safeToAdd(
+    self: ?*ZipList,
+    add: usize,
+) Allocator.Error!bool {
+    const length: usize = if (self) |zl| {
+        zl.blobLen();
+    } else 0;
+    return (length + add) <= MAX_SAFETY_SIZE;
 }
 
 pub fn free(self: *ZipList, allocator: Allocator) void {
     allocator.free(self.asBytes());
 }
 
+fn asBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
+    return self.addr()[0..self.blobLen()];
+}
+
 fn cascadeDelete(
     self: *ZipList,
     allocator: Allocator,
     ptr: [*]u8,
-    num: u32,
+    num: uint,
 ) Allocator.Error!*ZipList {
     var p = ptr;
     var zl = self;
@@ -791,46 +800,46 @@ test ZipList {
 
     const hello = "hello";
     {
-        zl = try zl.prepend(allocator, hello);
+        zl = try zl.push(allocator, hello, .head);
         try expectEqual(1, zl.numOfEntries());
         try expectEqual(@sizeOf(ZipList) + 1 + 1 + hello.len + 1, zl.bytes.get());
         try expectEqual(@sizeOf(ZipList), zl.tail.get());
     }
 
     {
-        zl = try zl.prepend(allocator, hello);
+        zl = try zl.push(allocator, hello, .head);
         try expectEqual(2, zl.numOfEntries());
 
-        zl = try zl.append(allocator, hello);
+        zl = try zl.push(allocator, hello, .tail);
         try expectEqual(3, zl.numOfEntries());
 
         const large_str: [255]u8 = @splat(0);
-        zl = try zl.prepend(allocator, &large_str);
+        zl = try zl.push(allocator, &large_str, .head);
         try expectEqual(4, zl.numOfEntries());
     }
 
     {
         for (0..maxInt(u16)) |_| {
-            zl = try zl.append(allocator, hello);
+            zl = try zl.push(allocator, hello, .tail);
         }
         try expectEqual(@as(u32, maxInt(u16)) + 4, zl.numOfEntries());
         try expectEqual(maxInt(u16), zl.len.get());
         const large: [255]u8 = @splat('a');
-        zl = try zl.prepend(allocator, &large);
+        zl = try zl.push(allocator, &large, .head);
         try expectEqual(maxInt(u16) + 5, zl.numOfEntries());
         const head = zl.entryHead();
         try expect(zl.eql(head, &large));
     }
 
     {
-        zl = try zl.append(allocator, "4294967295");
+        zl = try zl.push(allocator, "4294967295", .tail);
         const head = zl.entryHead();
         const found = zl.find(head, "4294967295", 0);
         try expect(found != null);
     }
 
     {
-        zl = try zl.prepend(allocator, "4294967295");
+        zl = try zl.push(allocator, "4294967295", .head);
         const ptr = zl.index(0).?;
         const ret = zl.get(ptr);
         try expect(ret != null);
@@ -839,7 +848,7 @@ test ZipList {
     }
 
     {
-        zl = try zl.prepend(allocator, "first");
+        zl = try zl.push(allocator, "first", .head);
         const first = zl.index(0);
         try expect(first != null);
         try expectEqualStrings(
@@ -850,7 +859,7 @@ test ZipList {
     }
 
     {
-        zl = try zl.append(allocator, "last");
+        zl = try zl.push(allocator, "last", .tail);
         const last = zl.index(-1);
         try expect(last != null);
         try expectEqualStrings(
@@ -914,3 +923,6 @@ const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
 const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
+const ctypes = @import("ctypes.zig");
+const int = ctypes.int;
+const uint = ctypes.uint;
