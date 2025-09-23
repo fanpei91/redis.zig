@@ -16,15 +16,11 @@ pub fn new(allocator: Allocator) Allocator.Error!*IntSet {
     return s;
 }
 
-pub const Result = struct {
-    set: *IntSet,
-    success: bool,
-};
 pub fn add(
     s: *IntSet,
     allocator: Allocator,
     value: Value,
-) Allocator.Error!Result {
+) Allocator.Error!struct { set: *IntSet, success: bool } {
     const enc = valueEncoding(value);
     if (enc > s.encoding.get()) {
         const ns = try s.upgradeAdd(allocator, value);
@@ -58,7 +54,7 @@ pub fn remove(
     s: *IntSet,
     allocator: Allocator,
     value: Value,
-) Allocator.Error!Result {
+) Allocator.Error!struct { set: *IntSet, success: bool } {
     const enc = valueEncoding(value);
     if (enc > s.encoding.get()) {
         return .{
@@ -119,11 +115,6 @@ pub fn free(s: *IntSet, allocator: Allocator) void {
     allocator.free(s.asBytes());
 }
 
-pub fn asBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
-    const mem: [*]align(@alignOf(IntSet)) u8 = @ptrCast(s);
-    return mem[0..s.blobLen()];
-}
-
 fn moveTail(s: *IntSet, from: u32, to: u32, len: usize) void {
     const encoding = s.encoding.get();
     if (encoding == ENC_INT64) {
@@ -140,13 +131,9 @@ fn moveTail(s: *IntSet, from: u32, to: u32, len: usize) void {
     @memmove(ptr[to .. to + len], ptr[from .. from + len]);
 }
 
-const SearchResult = struct {
-    /// The position of the value in the list if found, or the potision where
-    /// the value can be inserted if not found.
-    pos: u32,
-    found: bool,
-};
-fn search(s: *IntSet, value: Value) SearchResult {
+/// The position of the value in the list if found, or the potision where
+/// the value can be inserted if not found.
+fn search(s: *IntSet, value: Value) struct { pos: u32, found: bool } {
     if (s.length.get() == 0) {
         return .{
             .found = false,
@@ -251,11 +238,6 @@ fn getAtEncoded(s: *IntSet, pos: u32, encoding: u32) Value {
     return littleToNative(i16, s.numbersPtr(i16)[pos]);
 }
 
-fn numbersPtr(s: *IntSet, comptime T: type) [*]T {
-    const ptr: [*]u8 = @ptrFromInt(@intFromPtr(s) + @sizeOf(IntSet));
-    return @ptrCast(@alignCast(ptr));
-}
-
 fn resize(
     s: *IntSet,
     allocator: Allocator,
@@ -284,6 +266,16 @@ fn valueEncoding(value: Value) u32 {
     return ENC_INT16;
 }
 
+inline fn numbersPtr(s: *IntSet, comptime T: type) [*]T {
+    const ptr: [*]u8 = @ptrFromInt(@intFromPtr(s) + @sizeOf(IntSet));
+    return @ptrCast(@alignCast(ptr));
+}
+
+inline fn asBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
+    const mem: [*]align(@alignOf(IntSet)) u8 = @ptrCast(s);
+    return mem[0..s.blobLen()];
+}
+
 test IntSet {
     rand.seed(@bitCast(std.time.microTimestamp()));
 
@@ -291,35 +283,35 @@ test IntSet {
     var s = try new(allocator);
     defer s.free(allocator);
 
-    var res = try s.add(allocator, 1);
-    s = res.set;
-    try expect(res.success);
+    var add_res = try s.add(allocator, 1);
+    s = add_res.set;
+    try expect(add_res.success);
 
-    res = try s.add(allocator, 1);
-    s = res.set;
-    try expect(res.success == false);
+    add_res = try s.add(allocator, 1);
+    s = add_res.set;
+    try expect(add_res.success == false);
     try expect(s.find(1));
 
     const max32 = std.math.maxInt(i32);
-    res = try s.add(allocator, max32);
-    s = res.set;
-    try expect(res.success);
+    add_res = try s.add(allocator, max32);
+    s = add_res.set;
+    try expect(add_res.success);
     try expect(s.find(max32));
     try expect(s.find(1));
     try expectEqual(2, s.length.get());
 
     const min64 = std.math.minInt(i64);
-    res = try s.add(allocator, min64);
-    s = res.set;
-    try expect(res.success);
+    add_res = try s.add(allocator, min64);
+    s = add_res.set;
+    try expect(add_res.success);
     try expect(s.find(min64));
     try expect(s.find(max32));
     try expect(s.find(1));
     try expectEqual(3, s.length.get());
 
-    res = try s.remove(allocator, 1);
-    s = res.set;
-    try expect(res.success);
+    var remove_res = try s.remove(allocator, 1);
+    s = remove_res.set;
+    try expect(remove_res.success);
     try expectEqual(2, s.length.get());
 
     const first = s.get(0);
@@ -332,11 +324,11 @@ test IntSet {
     try expectEqual(24, bytes);
 
     const max64 = std.math.maxInt(i64);
-    res = try s.add(allocator, max64);
-    s = res.set;
+    add_res = try s.add(allocator, max64);
+    s = add_res.set;
     const min32 = std.math.minInt(i32);
-    res = try s.add(allocator, min32);
-    s = res.set;
+    add_res = try s.add(allocator, min32);
+    s = add_res.set;
     try expectEqual(4, s.length.get());
     try expectEqualSlices(
         i64,
@@ -352,9 +344,9 @@ test IntSet {
     try expectEqual(s.encoding.val, ptr[0]);
     try expectEqual(s.length.val, ptr[1]);
 
-    res = try s.remove(allocator, min32);
-    s = res.set;
-    try expect(res.success);
+    remove_res = try s.remove(allocator, min32);
+    s = remove_res.set;
+    try expect(remove_res.success);
     try expect(s.find(min32) == false);
     try expect(s.find(min64));
     try expect(s.find(max32));
