@@ -150,7 +150,7 @@ pub fn cat(
 ) Allocator.Error!String {
     const cur_len = getLen(s);
     const ns = try makeRoomFor(allocator, s, src.len);
-    @memcpy(ns[cur_len .. cur_len + src.len], src);
+    memcpy(ns + cur_len, src, src.len);
     setLength(ns, cur_len + src.len);
     return ns;
 }
@@ -259,7 +259,7 @@ pub fn growZero(
 
     const add_len = new_len - curr_len;
     const ns = try makeRoomFor(allocator, s, add_len);
-    @memset(ns[curr_len..new_len], 0);
+    memset(ns + curr_len, 0, new_len);
     setLength(ns, new_len);
     return ns;
 }
@@ -449,7 +449,7 @@ pub fn freeSplitRes(allocator: Allocator, tokens: []String) void {
 
 pub fn trim(s: String, values_to_strip: []const u8) void {
     const trimed = std.mem.trim(u8, bufSlice(s), values_to_strip);
-    @memmove(s[0..trimed.len], trimed);
+    memmove(s, trimed, trimed.len);
     setLength(s, trimed.len);
 }
 
@@ -488,7 +488,7 @@ pub fn range(s: String, start: isize, endinc: isize) void {
     }
 
     if (from != 0 and new_len != 0) {
-        @memmove(s[0..new_len], s[from .. from + new_len]);
+        memmove(s, s + from, new_len);
     }
     setLength(s, new_len);
 }
@@ -628,7 +628,7 @@ inline fn setType(s: String, typ: u8) void {
 }
 
 inline fn setBuf(s: String, buf: []const u8) void {
-    @memcpy(s[0..buf.len], buf);
+    memcpy(s, buf, buf.len);
 }
 
 inline fn memSlice(s: String) []u8 {
@@ -1103,3 +1103,7 @@ const expectStringEndsWith = testing.expectStringEndsWith;
 const isWhitespace = std.ascii.isWhitespace;
 const isHex = std.ascii.isHex;
 const parseInt = std.fmt.parseInt;
+const memzig = @import("mem.zig");
+const memcpy = memzig.memcpy;
+const memset = memzig.memset;
+const memmove = memzig.memmove;
