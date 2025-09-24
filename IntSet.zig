@@ -112,7 +112,7 @@ pub fn blobLen(s: *IntSet) usize {
 }
 
 pub fn free(s: *IntSet, allocator: Allocator) void {
-    allocator.free(s.asBytes());
+    allocator.free(s.toBytes());
 }
 
 fn moveTail(s: *IntSet, from: u32, to: u32, len: usize) void {
@@ -247,7 +247,7 @@ fn resize(
     const encoding = new_enc orelse s.encoding.get();
     const new_mem_size = @sizeOf(IntSet) + new_len * encoding;
     const new_mem = try allocator.realloc(
-        s.asBytes(),
+        s.toBytes(),
         new_mem_size,
     );
     const ns: *IntSet = @ptrCast(@alignCast(new_mem.ptr));
@@ -271,7 +271,7 @@ inline fn numbersPtr(s: *IntSet, comptime T: type) [*]T {
     return @ptrCast(@alignCast(ptr));
 }
 
-inline fn asBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
+inline fn toBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
     const mem: [*]align(@alignOf(IntSet)) u8 = @ptrCast(s);
     return mem[0..s.blobLen()];
 }
