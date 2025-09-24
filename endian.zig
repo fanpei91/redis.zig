@@ -1,6 +1,6 @@
-pub fn LittleEndian(comptime T: type) type {
+pub fn LittleEndian(comptime T: type, alignment: comptime_int) type {
     return struct {
-        val: T,
+        val: T align(alignment),
 
         pub fn get(self: *const @This()) T {
             return littleToNative(T, self.val);

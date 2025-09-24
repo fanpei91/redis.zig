@@ -2,8 +2,8 @@ const ENC_INT16 = @sizeOf(i16);
 const ENC_INT32 = @sizeOf(i32);
 const ENC_INT64 = @sizeOf(i64);
 
-encoding: LittleEndian(u32),
-length: LittleEndian(u32),
+encoding: LittleEndian(u32, @alignOf(u32)),
+length: LittleEndian(u32, @alignOf(u32)),
 numbers: [0]u8, // Little Endian.
 
 const IntSet = @This();
@@ -119,16 +119,16 @@ fn moveTail(s: *IntSet, from: u32, to: u32, len: usize) void {
     const encoding = s.encoding.get();
     if (encoding == ENC_INT64) {
         const ptr = s.numbersPtr(i64);
-        @memmove(ptr[to .. to + len], ptr[from .. from + len]);
+        memmove(ptr + to, ptr + from, len);
         return;
     }
     if (encoding == ENC_INT32) {
         const ptr = s.numbersPtr(i32);
-        @memmove(ptr[to .. to + len], ptr[from .. from + len]);
+        memmove(ptr + to, ptr + from, len);
         return;
     }
     const ptr = s.numbersPtr(i16);
-    @memmove(ptr[to .. to + len], ptr[from .. from + len]);
+    memmove(ptr + to, ptr + from, len);
 }
 
 /// The position of the value in the list if found, or the potision where
@@ -366,3 +366,5 @@ const expectEqualSlices = testing.expectEqualSlices;
 const expectEqual = testing.expectEqual;
 const expect = testing.expect;
 const rand = @import("random.zig");
+const memzig = @import("mem.zig");
+const memmove = memzig.memmove;
