@@ -3,7 +3,7 @@ const MemSizedHdr5 = struct {
     hdr: Hdr5,
 };
 
-pub const Hdr5 = extern struct {
+pub const Hdr5 = struct {
     flags: u8 align(1), // 3 lsb of type, and 5 msb of string length
     buf: [0]u8,
 
@@ -14,28 +14,28 @@ pub const Hdr5 = extern struct {
     }
 };
 
-pub const Hdr8 = extern struct {
+pub const Hdr8 = struct {
     len: u8 align(1),
     alloc: u8 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 };
 
-pub const Hdr16 = extern struct {
+pub const Hdr16 = struct {
     len: u16 align(1),
     alloc: u16 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 };
 
-pub const Hdr32 = extern struct {
+pub const Hdr32 = struct {
     len: u32 align(1),
     alloc: u32 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 };
 
-pub const Hdr64 = extern struct {
+pub const Hdr64 = struct {
     len: u64 align(1),
     alloc: u64 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
