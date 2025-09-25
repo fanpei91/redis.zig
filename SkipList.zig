@@ -1,5 +1,5 @@
-// Should be enough for 2^32 elements.
-pub const MAX_LEVEL = 32;
+// Should be enough for 2^64 elements.
+pub const MAX_LEVEL = 64;
 
 const SizedNode = struct {
     size: usize,
@@ -7,31 +7,31 @@ const SizedNode = struct {
 };
 
 pub const Node = struct {
-    obj: ?*Object,
+    ele: ?sds.String,
     score: f64,
     backward: ?*Node,
 
     const Level = struct {
         forward: ?*Node,
-        span: u32,
+        span: ulong,
     };
 
     pub fn create(
         allocator: Allocator,
-        num_level: u32,
+        num_level: uint,
         score: f64,
-        obj: ?*Object,
+        ele: ?sds.String,
     ) Allocator.Error!*Node {
-        const memsize: usize = @sizeOf(SizedNode) + num_level * @sizeOf(Level);
+        const mem_size: usize = @sizeOf(SizedNode) + num_level * @sizeOf(Level);
         const mem = try allocator.alignedAlloc(
             u8,
             .of(SizedNode),
-            memsize,
+            mem_size,
         );
         const sno: *SizedNode = @ptrCast(@alignCast(mem));
-        sno.size = memsize;
+        sno.size = mem_size;
         sno.node = .{
-            .obj = obj,
+            .ele = ele,
             .score = score,
             .backward = null,
         };
@@ -44,8 +44,8 @@ pub const Node = struct {
     }
 
     pub fn free(self: *Node, allocator: Allocator) void {
-        if (self.obj) |obj| {
-            obj.decrRefCount(allocator);
+        if (self.ele) |ele| {
+            sds.free(allocator, ele);
         }
         const parent: *SizedNode = @fieldParentPtr("node", self);
         const mem: [*]align(@alignOf(SizedNode)) u8 = @ptrCast(@alignCast(parent));
@@ -81,8 +81,8 @@ pub const SkipList = @This();
 
 header: *Node,
 tail: ?*Node,
-length: usize,
-level: u32,
+length: ulong,
+level: uint,
 
 pub fn create(allocator: Allocator) Allocator.Error!*SkipList {
     const sl = try allocator.create(SkipList);
@@ -105,11 +105,11 @@ pub fn insert(
     self: *SkipList,
     allocator: Allocator,
     score: f64,
-    obj: *Object,
+    ele: sds.String,
 ) Allocator.Error!*Node {
     assert(!isNan(score));
 
-    var rank: [MAX_LEVEL]u32 = undefined;
+    var rank: [MAX_LEVEL]ulong = undefined;
     var update: [MAX_LEVEL]*Node = undefined;
     var x = self.header;
     var i = self.level - 1;
@@ -118,7 +118,7 @@ pub fn insert(
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
                 x.level(i).forward.?.score == score and
-                    x.level(i).forward.?.obj.?.compareStrings(obj) == .lt))
+                    sds.cmp(x.level(i).forward.?.ele.?, ele) == .lt))
         {
             rank[i] += x.level(i).span;
             x = x.level(i).forward.?;
@@ -139,7 +139,7 @@ pub fn insert(
         self.level = level;
     }
 
-    x = try Node.create(allocator, level, score, obj);
+    x = try Node.create(allocator, level, score, ele);
     i = 0;
     while (i < level) : (i += 1) {
         x.level(i).forward = update[i].level(i).forward;
@@ -168,7 +168,7 @@ pub fn delete(
     self: *SkipList,
     allocator: Allocator,
     score: f64,
-    obj: *Object,
+    ele: sds.String,
 ) bool {
     var update: [MAX_LEVEL]*Node = undefined;
     var x = self.header;
@@ -177,7 +177,7 @@ pub fn delete(
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
                 x.level(i).forward.?.score == score and
-                    x.level(i).forward.?.obj.?.compareStrings(obj) == .lt))
+                    sds.cmp(x.level(i).forward.?.ele.?, ele) == .lt))
         {
             x = x.level(i).forward.?;
         }
@@ -187,9 +187,9 @@ pub fn delete(
     }
 
     // We may have multiple elements with the same score, what we need
-    // is to find the element with both the right score and object.
+    // is to find the element with both the right score and sds.
     if (x.level(0).forward) |f| {
-        if (score == f.score and f.obj.?.equalStrings(obj)) {
+        if (score == f.score and sds.cmp(f.ele.?, ele) == .eq) {
             self.deleteNode(f, &update);
             f.free(allocator);
             return true;
@@ -198,22 +198,22 @@ pub fn delete(
     return false;
 }
 
-pub fn getRank(self: *const SkipList, score: f64, obj: *Object) usize {
-    var rank: usize = 0;
+pub fn getRank(self: *const SkipList, score: f64, ele: sds.String) usize {
+    var rank: ulong = 0;
     var x = self.header;
     var i = self.level - 1;
     while (i >= 0) {
         while (x.level(i).forward != null and
             (x.level(i).forward.?.score < score or
                 x.level(i).forward.?.score == score and
-                    x.level(i).forward.?.obj.?.compareStrings(obj).compare(.lte)))
+                    sds.cmp(x.level(i).forward.?.ele.?, ele).compare(.lte)))
         {
             rank += x.level(i).span;
             x = x.level(i).forward.?;
         }
 
-        // x might be equal to self.header, so test if obj is non-NULL
-        if (x.obj != null and x.obj.?.equalStrings(obj)) {
+        // x might be equal to self.header, so test if ele is non-NULL
+        if (x.ele != null and sds.cmp(x.ele.?, ele) == .eq) {
             return rank;
         }
 
@@ -265,11 +265,11 @@ pub fn lastInRange(self: *const SkipList, range: *const Range) ?*Node {
 
 pub fn free(self: *SkipList, allocator: Allocator) void {
     var node = self.header.level(0).forward;
+    self.header.free(allocator);
     while (node) |n| {
         node = n.level(0).forward;
         n.free(allocator);
     }
-    self.header.free(allocator);
     allocator.destroy(self);
 }
 
@@ -332,22 +332,22 @@ test SkipList {
     var sl = try create(allocator);
     defer sl.free(allocator);
 
-    var obj = try Object.createRawString(allocator, "score 1");
-    try expect(sl.getRank(1, obj) == 0);
+    var ele = try sds.new(allocator, "score 1");
+    try expect(sl.getRank(1, ele) == 0);
     const score1 = try sl.insert(
         allocator,
         1,
-        obj,
+        ele,
     );
     try expect(score1.backward == null);
     try expect(sl.length == 1);
-    try expect(sl.getRank(1, obj) == 1);
+    try expect(sl.getRank(1, ele) == 1);
 
-    obj = try Object.createRawString(allocator, "score 2");
+    ele = try sds.new(allocator, "score 2");
     var score2 = try sl.insert(
         allocator,
         2,
-        obj,
+        ele,
     );
     try expect(sl.header.level(0).forward.? == score1);
     try expect(sl.tail == score2);
@@ -373,22 +373,21 @@ test SkipList {
     score2 = try sl.insert(
         allocator,
         2,
-        try Object.createRawString(allocator, "score 2.0"),
+        try sds.new(allocator, "score 2.0"),
     );
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
 
-    obj = try Object.createRawString(allocator, "deleted");
-    _ = try sl.insert(allocator, 3, obj);
+    ele = try sds.new(allocator, "deleted");
+    _ = try sl.insert(allocator, 3, ele);
     try expect(sl.length == 4);
-    const deleted = sl.delete(allocator, 3, obj);
+    const deleted = sl.delete(allocator, 3, ele);
     try expect(deleted);
     try expect(sl.length == 3);
     try expect(sl.tail.?.score == 2);
 }
 
 const std = @import("std");
-const Object = @import("Object.zig");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const expect = testing.expect;
@@ -398,3 +397,9 @@ const random = @import("random.zig");
 const isNan = std.math.isNan;
 const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
+const ctypes = @import("ctypes.zig");
+const ulong = ctypes.ulong;
+const uint = ctypes.uint;
+const sds = @import("sds.zig");
+const server = @import("server.zig");
+const shared = server.shared;
