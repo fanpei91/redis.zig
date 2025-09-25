@@ -1,5 +1,5 @@
 const MemSizedHdr5 = struct {
-    alloc: u8,
+    alloc: u5,
     hdr: Hdr5,
 };
 
@@ -7,10 +7,18 @@ pub const Hdr5 = struct {
     flags: u8 align(1), // 3 lsb of type, and 5 msb of string length
     buf: [0]u8,
 
-    fn alloc(s: String) *u8 {
+    inline fn fromString(s: String) *MemSizedHdr5 {
         const hdr: *Hdr5 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr5));
-        const parent: *MemSizedHdr5 = @alignCast(@fieldParentPtr("hdr", hdr));
-        return &parent.alloc;
+        return @alignCast(@fieldParentPtr("hdr", hdr));
+    }
+
+    inline fn setLen(s: String, len: u5) void {
+        setType(s, TYPE_5 | (@as(u8, len) << TYPE_BITS));
+    }
+
+    inline fn getLen(s: String) u5 {
+        const flags = (s - 1)[0];
+        return @intCast(flags >> TYPE_BITS);
     }
 };
 
@@ -19,6 +27,10 @@ pub const Hdr8 = struct {
     alloc: u8 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
+
+    inline fn fromString(s: String) *Hdr8 {
+        return @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
+    }
 };
 
 pub const Hdr16 = struct {
@@ -26,6 +38,10 @@ pub const Hdr16 = struct {
     alloc: u16 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
+
+    inline fn fromString(s: String) *Hdr16 {
+        return @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
+    }
 };
 
 pub const Hdr32 = struct {
@@ -33,6 +49,10 @@ pub const Hdr32 = struct {
     alloc: u32 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
+
+    inline fn fromString(s: String) *Hdr32 {
+        return @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
+    }
 };
 
 pub const Hdr64 = struct {
@@ -40,6 +60,10 @@ pub const Hdr64 = struct {
     alloc: u64 align(1), // excluding the header
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
+
+    inline fn fromString(s: String) *Hdr64 {
+        return @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
+    }
 };
 
 const MAX_PREALLOC = 1024 * 1024;
@@ -66,7 +90,7 @@ pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!String {
     const mem_size = hdr_len + init.len;
     const mem = try allocator.alloc(u8, mem_size);
 
-    const s = mem.ptr + hdr_len;
+    const s: String = mem.ptr + hdr_len;
     setType(s, typ);
     setLength(s, init.len);
     setAlloc(s, init.len);
@@ -134,7 +158,7 @@ pub fn makeRoomFor(
     // Since the header size changes, need to move the string forward,
     // and can't use realloc.
     const new_mem = try allocator.alloc(u8, new_mem_size);
-    const ns: [*]u8 = new_mem.ptr + new_hdr_len;
+    const ns: String = new_mem.ptr + new_hdr_len;
     setType(ns, new_type);
     setLength(ns, old_len);
     setAlloc(ns, new_alloc);
@@ -259,7 +283,7 @@ pub fn growZero(
 
     const add_len = new_len - curr_len;
     const ns = try makeRoomFor(allocator, s, add_len);
-    memset(ns + curr_len, 0, new_len);
+    memset(ns + curr_len, 0, add_len);
     setLength(ns, new_len);
     return ns;
 }
@@ -525,23 +549,11 @@ pub fn cmp(s1: String, s2: String) std.math.Order {
 pub fn getLen(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
-        TYPE_5 => flags >> TYPE_BITS,
-        TYPE_8 => {
-            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
-            return hdr.len;
-        },
-        TYPE_16 => {
-            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
-            return hdr.len;
-        },
-        TYPE_32 => {
-            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
-            return hdr.len;
-        },
-        TYPE_64 => {
-            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
-            return hdr.len;
-        },
+        TYPE_5 => Hdr5.getLen(s),
+        TYPE_8 => Hdr8.fromString(s).len,
+        TYPE_16 => Hdr16.fromString(s).len,
+        TYPE_32 => Hdr32.fromString(s).len,
+        TYPE_64 => Hdr64.fromString(s).len,
         else => 0,
     };
 }
@@ -553,23 +565,11 @@ pub fn getAvail(s: String) usize {
 pub fn getAlloc(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
-        TYPE_5 => Hdr5.alloc(s).*,
-        TYPE_8 => {
-            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
-            return hdr.alloc;
-        },
-        TYPE_16 => {
-            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
-            return hdr.alloc;
-        },
-        TYPE_32 => {
-            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
-            return hdr.alloc;
-        },
-        TYPE_64 => {
-            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
-            return hdr.alloc;
-        },
+        TYPE_5 => Hdr5.fromString(s).alloc,
+        TYPE_8 => Hdr8.fromString(s).alloc,
+        TYPE_16 => Hdr16.fromString(s).alloc,
+        TYPE_32 => Hdr32.fromString(s).alloc,
+        TYPE_64 => Hdr64.fromString(s).alloc,
         else => 0,
     };
 }
@@ -589,25 +589,11 @@ pub inline fn bufSlice(s: String) []u8 {
 
 pub fn setLength(s: String, new_len: usize) void {
     switch (getType(s)) {
-        TYPE_5 => {
-            setType(s, TYPE_5 | (@as(u8, @intCast(new_len)) << TYPE_BITS));
-        },
-        TYPE_8 => {
-            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
-            hdr.len = @intCast(new_len);
-        },
-        TYPE_16 => {
-            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
-            hdr.len = @intCast(new_len);
-        },
-        TYPE_32 => {
-            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
-            hdr.len = @intCast(new_len);
-        },
-        TYPE_64 => {
-            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
-            hdr.len = @intCast(new_len);
-        },
+        TYPE_5 => Hdr5.setLen(s, @intCast(new_len)),
+        TYPE_8 => Hdr8.fromString(s).len = @intCast(new_len),
+        TYPE_16 => Hdr16.fromString(s).len = @intCast(new_len),
+        TYPE_32 => Hdr32.fromString(s).len = @intCast(new_len),
+        TYPE_64 => Hdr64.fromString(s).len = @intCast(new_len),
         else => {},
     }
 }
@@ -638,25 +624,11 @@ inline fn memSlice(s: String) []u8 {
 
 fn setAlloc(s: String, new_alloc: usize) void {
     switch (getType(s)) {
-        TYPE_5 => {
-            Hdr5.alloc(s).* = @intCast(new_alloc);
-        },
-        TYPE_8 => {
-            const hdr: *Hdr8 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr8));
-            hdr.alloc = @intCast(new_alloc);
-        },
-        TYPE_16 => {
-            const hdr: *Hdr16 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr16));
-            hdr.alloc = @intCast(new_alloc);
-        },
-        TYPE_32 => {
-            const hdr: *Hdr32 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr32));
-            hdr.alloc = @intCast(new_alloc);
-        },
-        TYPE_64 => {
-            const hdr: *Hdr64 = @ptrFromInt(@intFromPtr(s) - @sizeOf(Hdr64));
-            hdr.alloc = @intCast(new_alloc);
-        },
+        TYPE_5 => Hdr5.fromString(s).alloc = @intCast(new_alloc),
+        TYPE_8 => Hdr8.fromString(s).alloc = @intCast(new_alloc),
+        TYPE_16 => Hdr16.fromString(s).alloc = @intCast(new_alloc),
+        TYPE_32 => Hdr32.fromString(s).alloc = @intCast(new_alloc),
+        TYPE_64 => Hdr64.fromString(s).alloc = @intCast(new_alloc),
         else => {},
     }
 }
@@ -888,60 +860,46 @@ test split {
 test splitArgs {
     const allocator = testing.allocator;
 
-    var tokens = (try splitArgs(allocator, "  SET key 1")).?;
+    var tokens = (try splitArgs(allocator, " \n SET  \r key \t 1")).?;
     try expect(tokens.len == 3);
     try expectEqualStrings("SET", bufSlice(tokens[0]));
     try expectEqualStrings("key", bufSlice(tokens[1]));
     try expectEqualStrings("1", bufSlice(tokens[2]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key \"1\"")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("1", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "\"1\"")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("1", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key \"line1\\nline2\"")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("line1\nline2", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "\"line1\\nline2\"")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("line1\nline2", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key \"ABC\\x41XYZ\"")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("ABCAXYZ", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "\"ABC\\x41XYZ\"")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("ABCAXYZ", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key 'abc'")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("abc", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "'abc'")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("abc", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key 'I\\'m here'")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("I'm here", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "'I\\'m here'")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("I'm here", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key \"a\\tb\"")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("a\tb", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "\"a\\tb\"")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("a\tb", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
-    tokens = (try splitArgs(allocator, "  SET key \"abc\\xGZ\"")).?;
-    try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("abcxGZ", bufSlice(tokens[2]));
+    tokens = (try splitArgs(allocator, "\"abc\\xGZ\"")).?;
+    try expect(tokens.len == 1);
+    try expectEqualStrings("abcxGZ", bufSlice(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "")).?;
@@ -1087,10 +1045,7 @@ test "cmp.lt" {
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const debug = std.debug;
 const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const uint = ctypes.uint;
 const longlong = ctypes.longlong;
 const builtin = @import("builtin");
 const assert = std.debug.assert;
