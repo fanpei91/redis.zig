@@ -77,7 +77,7 @@ pub fn createRawString(
     return try create(allocator, .string, s);
 }
 
-pub fn createEmbeddedString(
+fn createEmbeddedString(
     allocator: Allocator,
     str: []const u8,
 ) Allocator.Error!*Object {
@@ -167,6 +167,16 @@ fn createStringFromLonglongWithOptions(
     return try create(allocator, .string, s);
 }
 
+pub fn createStringFromLongDouble(
+    allocator: Allocator,
+    value: longdouble,
+    humanfriendly: bool,
+) Allocator.Error!*Object {
+    var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
+    const str = util.ld2string(&buf, value, humanfriendly);
+    return createString(allocator, str);
+}
+
 pub fn freeString(self: *Object, allocator: Allocator) void {
     if (self.encoding == .raw) {
         const s: sds.String = @ptrCast(self.ptr);
@@ -243,7 +253,9 @@ const ctypes = @import("ctypes.zig");
 const longlong = ctypes.longlong;
 const int = ctypes.int;
 const long = ctypes.long;
+const longdouble = ctypes.longdouble;
 const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
+const util = @import("util.zig");
