@@ -282,6 +282,24 @@ pub fn stringLen(self: *Object) usize {
     return util.sdigits10(v);
 }
 
+pub fn getDecoded(
+    self: *Object,
+    allocator: Allocator,
+) Allocator.Error!*Object {
+    if (self.sdsEncoded()) {
+        self.incrRefCount();
+        return self;
+    }
+    if (self.type == .string and self.encoding == .int) {
+        const sv: isize = @bitCast(@intFromPtr(self.ptr));
+        const v: long = @truncate(sv);
+        var buf: [20]u8 = undefined;
+        const digits = std.fmt.bufPrint(&buf, "{d}", .{v}) catch unreachable;
+        return createString(allocator, digits);
+    }
+    @panic("Unknown encoding type");
+}
+
 pub fn sdsEncoded(self: *Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
