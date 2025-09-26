@@ -154,14 +154,13 @@ fn createStringFromLonglongWithOptions(
         enabled = true;
     }
     if (value >= 0 and value < server.SHARED_INTEGERS and enabled) {
-        const idx: usize = @intCast(value);
-        const o = server.shared.integers[idx];
+        const o = server.shared.integers[@abs(value)];
         o.incrRefCount();
         return o;
     }
 
     if (value >= minInt(long) and value <= maxInt(long)) {
-        const uv: usize = @intCast(value);
+        const uv: usize = @bitCast(@as(isize, value));
         const o = try create(allocator, .string, @ptrFromInt(uv));
         o.encoding = .int;
         return o;
@@ -270,6 +269,21 @@ pub fn incrRefCount(self: *Object) void {
 pub fn resetRefCount(self: *Object) *Object {
     self.refcount = 0;
     return self;
+}
+
+pub fn stringLen(self: *Object) usize {
+    assert(self.type == .string);
+    if (self.sdsEncoded()) {
+        const s: sds.String = @ptrCast(self.ptr);
+        return sds.getLen(s);
+    }
+    const sv: isize = @bitCast(@intFromPtr(self.ptr));
+    const v: long = @truncate(sv);
+    return util.sdigits10(v);
+}
+
+pub fn sdsEncoded(self: *Object) bool {
+    return self.encoding == .raw or self.encoding == .embstr;
 }
 
 fn free(self: *Object, allocator: Allocator) void {
