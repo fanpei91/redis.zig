@@ -234,9 +234,9 @@ pub fn equalStrings(self: *Object, other: *Object) bool {
 }
 
 pub fn createZipList(allocator: Allocator) Allocator.Error!*Object {
-    const l = try ZipList.new(allocator);
-    errdefer l.free(allocator);
-    const obj = try create(allocator, .list, l);
+    const zl = try ZipList.new(allocator);
+    errdefer zl.free(allocator);
+    const obj = try create(allocator, .list, zl);
     obj.encoding = .ziplist;
     return obj;
 }
@@ -246,6 +246,14 @@ pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
     errdefer is.free(allocator);
     const obj = try create(allocator, .set, is);
     obj.encoding = .intset;
+    return obj;
+}
+
+pub fn createHash(allocator: Allocator) Allocator.Error!*Object {
+    const zl = try ZipList.new(allocator);
+    errdefer zl.free(allocator);
+    const obj = try create(allocator, .hash, zl);
+    obj.encoding = .ziplist;
     return obj;
 }
 
