@@ -55,8 +55,9 @@ pub const SHARED_REFCOUNT = maxInt(int);
 /// A common patter to create shared objects:
 ///
 ///  myobject: *Object = makeShared(create(...));
-pub fn makeShared(o: *Object) *Object {
-    o.refcount = SHARED_REFCOUNT;
+pub fn makeShared(self: *Object) *Object {
+    self.refcount = SHARED_REFCOUNT;
+    return self;
 }
 
 // TODO: This needs to be adjusted according to the allocator used.
@@ -205,7 +206,7 @@ pub fn dupeString(
     }
 }
 
-pub fn freeString(self: *Object, allocator: Allocator) void {
+fn freeString(self: *Object, allocator: Allocator) void {
     if (self.encoding == .raw) {
         const s: sds.String = @ptrCast(self.ptr);
         sds.free(allocator, s);
@@ -264,6 +265,11 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
 
 pub fn incrRefCount(self: *Object) void {
     if (self.refcount != SHARED_REFCOUNT) self.refcount += 1;
+}
+
+pub fn resetRefCount(self: *Object) *Object {
+    self.refcount = 0;
+    return self;
 }
 
 fn free(self: *Object, allocator: Allocator) void {
