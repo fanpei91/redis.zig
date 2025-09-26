@@ -534,16 +534,8 @@ pub fn toUpper(s: String) void {
 pub fn cmp(s1: String, s2: String) std.math.Order {
     const lhs = bufSlice(s1);
     const rhs = bufSlice(s2);
-    const n = @min(lhs.len, rhs.len);
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        switch (std.math.order(lhs[i], rhs[i])) {
-            .eq => continue,
-            .lt => return .lt,
-            .gt => return .gt,
-        }
-    }
-    return std.math.order(lhs.len, rhs.len);
+
+    return std.mem.order(u8, lhs, rhs);
 }
 
 pub fn getLen(s: String) usize {
