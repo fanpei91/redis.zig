@@ -4,6 +4,8 @@ pub const Type = enum(u4) {
     set = 2,
     zset = 3,
     hash = 4,
+    module = 5,
+    stream = 6,
 };
 
 pub const Encoding = enum(u4) {
@@ -11,11 +13,13 @@ pub const Encoding = enum(u4) {
     int = 1,
     ht = 2,
     zipmap = 3,
-    linkedlist = 4,
+    linkedlist = 4, // No longer used: old list encoding.
     ziplist = 5,
     intset = 6,
     skiplist = 7,
     embstr = 8,
+    quicklist = 9,
+    stream = 10,
 };
 
 type: Type,
@@ -185,11 +189,11 @@ pub fn dupeString(
 
     switch (str.encoding) {
         .raw => {
-            const s: sds.String = @ptrCast(@alignCast(str.ptr));
+            const s: sds.String = @ptrCast(str.ptr);
             return createRawString(allocator, sds.bufSlice(s));
         },
         .embstr => {
-            const s: sds.String = @ptrCast(@alignCast(str.ptr));
+            const s: sds.String = @ptrCast(str.ptr);
             return createEmbeddedString(allocator, sds.bufSlice(s));
         },
         .int => {
@@ -227,6 +231,14 @@ pub fn equalStrings(self: *Object, other: *Object) bool {
         return self.ptr == other.ptr;
     }
     return self.compareStrings(other) == .eq;
+}
+
+pub fn createZipList(allocator: Allocator) Allocator.Error!*Object {
+    const l = try ZipList.new(allocator);
+    errdefer l.free(allocator);
+    const obj = try create(allocator, .list, l);
+    obj.encoding = .ziplist;
+    return obj;
 }
 
 pub fn decrRefCount(self: *Object, allocator: Allocator) void {
@@ -283,3 +295,4 @@ const maxInt = std.math.maxInt;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const util = @import("util.zig");
+const ZipList = @import("ZipList.zig");
