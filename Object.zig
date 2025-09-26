@@ -177,6 +177,30 @@ pub fn createStringFromLongDouble(
     return createString(allocator, str);
 }
 
+pub fn dupeString(
+    allocator: Allocator,
+    str: *const Object,
+) Allocator.Error!*Object {
+    assert(str.type == .string);
+
+    switch (str.encoding) {
+        .raw => {
+            const s: sds.String = @ptrCast(@alignCast(str.ptr));
+            return createRawString(allocator, sds.bufSlice(s));
+        },
+        .embstr => {
+            const s: sds.String = @ptrCast(@alignCast(str.ptr));
+            return createEmbeddedString(allocator, sds.bufSlice(s));
+        },
+        .int => {
+            const o = try create(allocator, .string, str.ptr);
+            o.encoding = .int;
+            return o;
+        },
+        else => @panic("Wrong encoding."),
+    }
+}
+
 pub fn freeString(self: *Object, allocator: Allocator) void {
     if (self.encoding == .raw) {
         const s: sds.String = @ptrCast(self.ptr);
