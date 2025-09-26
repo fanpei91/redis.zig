@@ -241,6 +241,14 @@ pub fn createZipList(allocator: Allocator) Allocator.Error!*Object {
     return obj;
 }
 
+pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
+    const is = try IntSet.new(allocator);
+    errdefer is.free(allocator);
+    const obj = try create(allocator, .set, is);
+    obj.encoding = .intset;
+    return obj;
+}
+
 pub fn decrRefCount(self: *Object, allocator: Allocator) void {
     if (self.refcount == 1) {
         switch (self.type) {
@@ -296,3 +304,4 @@ const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
+const IntSet = @import("IntSet.zig");
