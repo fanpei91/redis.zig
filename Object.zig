@@ -20,8 +20,8 @@ pub const Encoding = enum(u4) {
 
 type: Type,
 encoding: Encoding,
-// lru: redis.LRU_BITS,
-refcount: i32,
+// lru: std.meta.Int(.unsigned, server.LRU_BITS),
+refcount: int,
 ptr: *anyopaque,
 
 pub const Object = @This();
@@ -32,17 +32,32 @@ pub fn create(
     ptr: *anyopaque,
 ) Allocator.Error!*Object {
     const obj = try allocator.create(Object);
-    obj.* = .{
-        .type = typ,
-        .encoding = .raw,
-        .ptr = ptr,
-        //.lru =
-        .refcount = 1,
-    };
+    obj.type = typ;
+    obj.encoding = .raw;
+    obj.ptr = ptr;
+    obj.refcount = 1;
+
+    // TODO: lru
     return obj;
 }
 
-const ENCODING_EMBSTR_SIZE_LIMIT = 39;
+pub const SHARED_REFCOUNT = maxInt(int);
+/// Set a special refcount in the object to make it "shared":
+/// incrRefCount() and decrRefCount() will test for this special refcount
+/// and will not touch the object. This way it is free to access shared
+/// objects such as small integers from different threads without any
+/// mutex.
+///
+/// A common patter to create shared objects:
+///
+///  myobject: *Object = makeShared(create(...));
+pub fn makeShared(o: *Object) *Object {
+    o.refcount = SHARED_REFCOUNT;
+}
+
+// TODO: This needs to be adjusted according to the allocator used.
+// For now, just use the 44 that Redis has chosen for jemalloc.
+const ENCODING_EMBSTR_SIZE_LIMIT = 44;
 pub fn createString(
     allocator: Allocator,
     str: []const u8,
@@ -57,35 +72,105 @@ pub fn createRawString(
     allocator: Allocator,
     str: []const u8,
 ) Allocator.Error!*Object {
-    return create(allocator, .string, try Sds.new(allocator, str));
+    const s = try sds.new(allocator, str);
+    errdefer sds.free(allocator, s);
+    return try create(allocator, .string, s);
 }
 
 pub fn createEmbeddedString(
     allocator: Allocator,
     str: []const u8,
 ) Allocator.Error!*Object {
-    const memsize = @sizeOf(Object) + @sizeOf(Sds) + str.len;
-    const mem = try allocator.alignedAlloc(u8, .of(Object), memsize);
+    const mem_size = @sizeOf(Object) + @sizeOf(sds.Hdr8) + str.len;
+    const mem = try allocator.alignedAlloc(u8, .of(Object), mem_size);
+
+    const sh: *sds.Hdr8 = @ptrFromInt(@intFromPtr(mem.ptr) + @sizeOf(Object));
+    sh.len = @intCast(str.len);
+    sh.alloc = @intCast(str.len);
+    sh.flags = sds.TYPE_8;
+    const s: sds.String = @ptrFromInt(@intFromPtr(sh) + @sizeOf(sds.Hdr8));
+    memcpy(s, str, str.len);
 
     const obj: *Object = @ptrCast(@alignCast(mem));
-    const sh: *Sds = @ptrFromInt(@intFromPtr(obj) + @sizeOf(Object));
-
-    sh.len = @intCast(str.len);
-    sh.avail = 0;
-    _ = sh.copy(allocator, str) catch unreachable;
-
     obj.type = .string;
     obj.encoding = .embstr;
     obj.refcount = 1;
-    obj.ptr = sh;
+    // TODO: obj.lru
+    obj.ptr = s;
 
     return obj;
 }
 
+/// Always demanding to create a shared object if possible.
+pub fn createStringFromLonglong(
+    allocator: Allocator,
+    value: longlong,
+) Allocator.Error!*Object {
+    return createStringFromLonglongWithOptions(
+        allocator,
+        value,
+        true,
+    );
+}
+
+/// Avoiding a shared object when LFU/LRU info are needed, that is, when the
+/// object is used as a value in the key space, and Redis is configured to evict
+/// based on LFU/LRU.
+pub fn createStringFromLonglongForValue(
+    allocator: Allocator,
+    value: longlong,
+) Allocator.Error!*Object {
+    return createStringFromLonglongWithOptions(
+        allocator,
+        value,
+        false,
+    );
+}
+
+/// Create a string object from a long long value. When possible returns a
+/// shared integer object, or at least an integer encoded one.
+///
+/// If `from_shared` is false, the function avoids returning a a shared
+/// integer, because the object is going to be used as value in the Redis key
+/// space (for instance when the INCR command is used), so we want LFU/LRU
+/// values specific for each key.
+fn createStringFromLonglongWithOptions(
+    allocator: Allocator,
+    value: longlong,
+    from_shared: bool,
+) Allocator.Error!*Object {
+    var enabled = from_shared;
+    if (server.instance.maxmemory == 0 or
+        (server.instance.maxmemory_policy &
+            server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0)
+    {
+        // If the maxmemory policy permits, we can still return shared integers
+        // even if `from_shared` is false.
+        enabled = true;
+    }
+    if (value >= 0 and value < server.SHARED_INTEGERS and enabled) {
+        const idx: usize = @intCast(value);
+        const o = server.shared.integers[idx];
+        o.incrRefCount();
+        return o;
+    }
+
+    if (value >= minInt(long) and value <= maxInt(long)) {
+        const uv: usize = @intCast(value);
+        const o = try create(allocator, .string, @ptrFromInt(uv));
+        o.encoding = .int;
+        return o;
+    }
+
+    const s = try sds.fromLonglong(allocator, value);
+    errdefer sds.free(allocator, s);
+    return try create(allocator, .string, s);
+}
+
 pub fn freeString(self: *Object, allocator: Allocator) void {
     if (self.encoding == .raw) {
-        const sds: *Sds = @ptrCast(@alignCast(self.ptr));
-        sds.free(allocator);
+        const s: sds.String = @ptrCast(self.ptr);
+        sds.free(allocator, s);
     }
 }
 
@@ -93,9 +178,11 @@ pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     assert(self.type == .string);
     assert(other.type == .string);
 
-    const a: *Sds = @ptrCast(@alignCast(self.ptr));
-    const b: *Sds = @ptrCast(@alignCast(other.ptr));
-    return a.cmp(b);
+    if (self == other) return .eq;
+
+    const a: sds.String = @ptrCast(self.ptr);
+    const b: sds.String = @ptrCast(other.ptr);
+    return sds.cmp(a, b);
 }
 
 pub fn equalStrings(self: *Object, other: *Object) bool {
@@ -109,7 +196,6 @@ pub fn equalStrings(self: *Object, other: *Object) bool {
 }
 
 pub fn decrRefCount(self: *Object, allocator: Allocator) void {
-    if (self.refcount <= 0) @panic("Object.decrRefCount against refcount <= 0");
     if (self.refcount == 1) {
         switch (self.type) {
             .string => self.freeString(allocator),
@@ -118,19 +204,20 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
         self.free(allocator);
         return;
     }
-    self.refcount -= 1;
+    if (self.refcount <= 0) @panic("Object.decrRefCount against refcount <= 0");
+    if (self.refcount != SHARED_REFCOUNT) self.refcount -= 1;
 }
 
 pub fn incrRefCount(self: *Object) void {
-    self.refcount += 1;
+    if (self.refcount != SHARED_REFCOUNT) self.refcount += 1;
 }
 
 fn free(self: *Object, allocator: Allocator) void {
     if (self.type == .string and self.encoding == .embstr) {
-        const sh: *Sds = @ptrCast(@alignCast(self.ptr));
-        const memsize = @sizeOf(Object) + @sizeOf(Sds) + sh.len + sh.avail;
+        const s: sds.String = @ptrCast(self.ptr);
+        const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
         const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
-        allocator.free(mem[0..memsize]);
+        allocator.free(mem[0..mem_size]);
         return;
     }
     allocator.destroy(self);
@@ -140,15 +227,23 @@ test createEmbeddedString {
     const allocator = std.testing.allocator;
     var o = try createEmbeddedString(allocator, "hello");
     defer o.decrRefCount(allocator);
-    var sh: *Sds = @ptrCast(@alignCast(o.ptr));
-    try expectEqualStrings("hello", sh.toSlice());
+    const s: sds.String = @ptrCast(o.ptr);
+    try expectEqualStrings("hello", sds.bufSlice(s));
 }
 
 const std = @import("std");
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
-const Sds = @import("Sds.zig");
+const sds = @import("sds.zig");
 const assert = std.debug.assert;
-const redis = @import("redis.zig");
+const server = @import("server.zig");
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
+const ctypes = @import("ctypes.zig");
+const longlong = ctypes.longlong;
+const int = ctypes.int;
+const long = ctypes.long;
+const minInt = std.math.minInt;
+const maxInt = std.math.maxInt;
+const memzig = @import("mem.zig");
+const memcpy = memzig.memcpy;
