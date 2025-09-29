@@ -161,7 +161,8 @@ fn createStringFromLonglongWithOptions(
 
     if (value >= minInt(long) and value <= maxInt(long)) {
         const uv: usize = @bitCast(@as(isize, value));
-        const o = try create(allocator, .string, @ptrFromInt(uv));
+        const ptr: *allowzero usize = @ptrFromInt(uv);
+        const o = try create(allocator, .string, ptr);
         o.encoding = .int;
         return o;
     }
