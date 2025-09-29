@@ -404,6 +404,7 @@ pub fn push(
     return self.insert(allocator, self.entryEnd(), str);
 }
 
+/// Insert item at ptr.
 pub fn insert(
     self: *ZipList,
     allocator: Allocator,
@@ -484,6 +485,9 @@ pub fn insert(
     return zl;
 }
 
+/// Delete a single entry from the ziplist, pointed to by ptr.*.
+/// Also update ptr.* in place, to be able to iterate over the
+/// ziplist, while deleting entries.
 pub fn delete(
     self: *ZipList,
     allocator: Allocator,
@@ -529,6 +533,7 @@ fn toBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
     return self.addr()[0..self.blobLen()];
 }
 
+/// Delete "num" entries, starting at "ptr". Returns pointer to the ziplist.
 fn cascadeDelete(
     self: *ZipList,
     allocator: Allocator,
@@ -592,6 +597,26 @@ fn cascadeDelete(
     return zl;
 }
 
+/// When an entry is inserted, we need to set the prevlen field of the next
+/// entry to equal the length of the inserted entry. It can occur that this
+/// length cannot be encoded in 1 byte and the next entry needs to be grow
+/// a bit larger to hold the 5-byte encoded prevlen. This can be done for free,
+/// because this only happens when an entry is already being inserted (which
+/// causes a realloc and memmove). However, encoding the prevlen may require
+/// that this entry is grown as well. This effect may cascade throughout
+/// the ziplist when there are consecutive entries with a size close to
+/// BIG_PREVLEN, so we need to check that the prevlen can be encoded in
+/// every consecutive entry.
+///
+/// Note that this effect can also happen in reverse, where the bytes required
+/// to encode the prevlen field can shrink. This effect is deliberately ignored,
+/// because it can cause a "flapping" effect where a chain prevlen fields is
+/// first grown and then shrunk again after consecutive inserts. Rather, the
+/// field is allowed to stay larger than necessary, because a large prevlen
+/// field implies the ziplist is holding large entries anyway.
+///
+/// The pointer "ptr" points to the first entry that does NOT need to be
+/// updated, i.e. consecutive fields MAY need an update.
 fn cascadeUpdate(
     self: *ZipList,
     allocator: Allocator,
