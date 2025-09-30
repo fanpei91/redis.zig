@@ -1,4 +1,3 @@
 **/.zig-cache/
 **/zig-out/
-allocator.zig
 .DS_Store

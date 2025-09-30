@@ -529,7 +529,7 @@ pub fn free(self: *ZipList, allocator: Allocator) void {
     allocator.free(self.toBytes());
 }
 
-fn toBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
+pub fn toBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
     return self.addr()[0..self.blobLen()];
 }
 
