@@ -14,12 +14,12 @@ pub fn build(b: *std.Build) !void {
     {
         redis_mod.addCSourceFiles(.{
             .files = &.{
-                "third_party/lzf/lzf_c.c",
-                "third_party/lzf/lzf_d.c",
+                "src/lzf/lzf_c.c",
+                "src/lzf/lzf_d.c",
             },
             .flags = &.{"-DSTRICT_ALIGN=1"},
         });
-        redis_mod.addIncludePath(b.path("third_party/lzf"));
+        redis_mod.addIncludePath(b.path("src/lzf"));
     }
 
     {
@@ -41,12 +41,12 @@ pub fn build(b: *std.Build) !void {
 
         mod.addCSourceFiles(.{
             .files = &.{
-                "third_party/lzf/lzf_c.c",
-                "third_party/lzf/lzf_d.c",
+                "src/lzf/lzf_c.c",
+                "src/lzf/lzf_d.c",
             },
             .flags = &.{"-DSTRICT_ALIGN=1"},
         });
-        mod.addIncludePath(b.path("third_party/lzf"));
+        mod.addIncludePath(b.path("src/lzf"));
 
         const quicklist_test = b.addTest(.{
             .root_module = mod,

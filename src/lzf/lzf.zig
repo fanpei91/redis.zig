@@ -1,6 +1,5 @@
 const liblzf = @cImport({
     @cInclude("lzf.h");
-    @cInclude("lzfP.h");
 });
 
 pub fn compress(noalias in: []const u8, noalias out: []u8) uint {
@@ -23,5 +22,5 @@ pub fn decompress(noalias in: []const u8, noalias out: []u8) uint {
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ctypes = @import("ctypes.zig");
+const ctypes = @import("../ctypes.zig");
 const uint = ctypes.uint;

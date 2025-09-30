@@ -546,6 +546,19 @@ inline fn allowsCompression(self: *QuickList) bool {
     return self.compress != 0;
 }
 
+test lzf {
+    const phrase = "How are you? I am fine! Thank you! And you?" ** 100;
+    var compressed: [phrase.len]u8 = undefined;
+    var decompressed: [phrase.len]u8 = undefined;
+    const csz = lzf.compress(phrase, &compressed);
+    try expect(csz != 0);
+    try expect(csz < phrase.len);
+    const dsz = lzf.decompress(compressed[0..csz], &decompressed);
+    try expect(dsz != 0);
+    try expect(dsz == phrase.len);
+    try expectEqualStrings(phrase, &decompressed);
+}
+
 test QuickList {}
 
 const std = @import("std");
@@ -559,9 +572,10 @@ const Allocator = std.mem.Allocator;
 const ZipList = @import("ZipList.zig");
 const assert = std.debug.assert;
 const maxInt = std.math.maxInt;
-const lzf = @import("lzf.zig");
+const lzf = @import("lzf/lzf.zig");
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const testing = std.testing;
 const expect = testing.expect;
 const expectEqual = testing.expectEqual;
+const expectEqualStrings = testing.expectEqualStrings;
