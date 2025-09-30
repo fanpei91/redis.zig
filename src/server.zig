@@ -24,6 +24,18 @@ pub const Server = struct {
     maxmemory_samples: int, // Pricision of random sampling
 };
 
+test {
+    _ = @import("sds.zig");
+    _ = @import("adlist.zig");
+    _ = @import("dict.zig");
+    _ = @import("IntSet.zig");
+    _ = @import("ZipList.zig");
+    _ = @import("QuickList.zig");
+    _ = @import("Object.zig");
+    _ = @import("util.zig");
+    _ = @import("t_zset.zig");
+}
+
 const Object = @import("Object.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
