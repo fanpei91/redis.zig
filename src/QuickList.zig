@@ -436,6 +436,25 @@ pub fn insertNodeAfter(
     return self.insertNode(allocator, old_node, new_node, true);
 }
 
+/// Create new node consisting of a pre-formed ziplist.
+/// Used for loading RDBs where entire ziplists have been stored
+/// to be retrieved later.
+pub fn appendZiplist(
+    self: *QuickList,
+    allocator: Allocator,
+    zl: *ZipList,
+) Allocator.Error!void {
+    const node = try Node.create(allocator);
+    errdefer node.release(allocator);
+
+    node.zl = zl;
+    node.sz = zl.blobLen();
+    node.count = zl.len.get();
+
+    try self.insertNodeAfter(allocator, self.tail, node);
+    self.count += node.count;
+}
+
 fn setFill(self: *QuickList, fill: i16) void {
     self.fill = if (fill < -5) -5 else fill;
 }
