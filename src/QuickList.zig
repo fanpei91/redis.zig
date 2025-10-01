@@ -311,6 +311,34 @@ pub fn create(allocator: Allocator) Allocator.Error!*QuickList {
     return list;
 }
 
+/// Create new (potentially multi-node) quicklist from a single existing ziplist.
+/// Frees passed-in ziplist 'zl'.
+pub fn createFromZiplist(
+    allocator: Allocator,
+    fill: i16,
+    compress: u16,
+    zl: *ZipList,
+) Allocator.Error!*QuickList {
+    defer zl.free(allocator);
+    const ql = try new(allocator, fill, compress);
+    var p = zl.index(0) orelse {
+        return ql;
+    };
+
+    var longstr: [32]u8 = undefined;
+    while (zl.get(p)) |un| {
+        var value: []u8 = undefined;
+        switch (un) {
+            .str => |v| value = v,
+            .num => |n| value = std.fmt.bufPrint(&longstr, "{}", .{n}) catch unreachable,
+        }
+        _ = try ql.pushTail(allocator, value);
+        p = zl.next(p) orelse break;
+    }
+
+    return ql;
+}
+
 pub fn new(
     allocator: Allocator,
     fill: i16,
@@ -514,14 +542,14 @@ fn compressNode(
         _ = try node.compress(allocator);
         return;
     }
-    try self.forceCompressionPolicy(allocator, node);
+    try self.meetCompressionPolicy(allocator, node);
 }
 
 /// Force 'quicklist' to meet compression guidelines set by compress depth.
 /// The only way to guarantee interior nodes get compressed is to iterate
 /// to our "interior" compress depth then compress the next node we find.
 /// If compress depth is larger than the entire list, we return immediately.
-fn forceCompressionPolicy(
+fn meetCompressionPolicy(
     self: *QuickList,
     allocator: Allocator,
     node: *Node,
@@ -577,41 +605,47 @@ test lzf {
     try expectEqualStrings(phrase, &decompressed);
 }
 
-test QuickList {
+test "push" {
     const allocator = std.testing.allocator;
-    {
-        var ql = try new(allocator, -2, 2);
-        defer ql.release(allocator);
-        try expectEqual(0, ql.len);
-        try expectEqual(0, ql.count);
-        try expectEqual(null, ql.head);
-        try expectEqual(null, ql.tail);
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    try ql.push(allocator, "hello" ** 100, .tail);
+    try expectEqual(1, ql.len);
+    try expectEqual(1, ql.count);
+    try expect(ql.head == ql.tail);
+    try expectEqual(1, ql.head.?.count);
+
+    try ql.push(allocator, "world" ** 100, .head);
+    try expectEqual(1, ql.len);
+    try expectEqual(2, ql.count);
+
+    for (0..10) |_| {
+        try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .head);
+        try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .tail);
     }
-    {
-        var ql = try new(allocator, -2, 1);
-        defer ql.release(allocator);
+    try expectEqual(21, ql.len);
+    try expectEqual(22, ql.count);
+    try expect(ql.head.?.isCompressed() == false);
+    try expect(ql.tail.?.isCompressed() == false);
+    try expect(ql.head.?.next.?.isCompressed());
+    try expect(ql.tail.?.prev.?.isCompressed());
+}
 
-        try ql.push(allocator, "hello" ** 100, .tail);
-        try expectEqual(1, ql.len);
-        try expectEqual(1, ql.count);
-        try expect(ql.head == ql.tail);
-        try expectEqual(1, ql.head.?.count);
+test "createFromZiplist" {
+    const allocator = std.testing.allocator;
 
-        try ql.push(allocator, "world" ** 100, .head);
-        try expectEqual(1, ql.len);
-        try expectEqual(2, ql.count);
+    var zl = try ZipList.new(allocator);
+    errdefer zl.free(allocator);
 
-        for (0..10) |_| {
-            try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .head);
-            try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .tail);
-        }
-        try expectEqual(21, ql.len);
-        try expectEqual(22, ql.count);
-        try expect(ql.head.?.isCompressed() == false);
-        try expect(ql.tail.?.isCompressed() == false);
-        try expect(ql.head.?.next.?.isCompressed());
-        try expect(ql.tail.?.prev.?.isCompressed());
-    }
+    zl = try zl.push(allocator, "hello", .tail);
+    zl = try zl.push(allocator, "world", .tail);
+    zl = try zl.push(allocator, "1234", .tail);
+    try expectEqual(3, zl.len.get());
+
+    const ql = try createFromZiplist(allocator, -2, 2, zl);
+    defer ql.release(allocator);
+    try expectEqual(3, ql.count);
 }
 
 const std = @import("std");
@@ -632,3 +666,4 @@ const testing = std.testing;
 const expect = testing.expect;
 const expectEqual = testing.expectEqual;
 const expectEqualStrings = testing.expectEqualStrings;
+const util = @import("util.zig");

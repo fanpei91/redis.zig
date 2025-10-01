@@ -303,7 +303,7 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
 pub fn get(
     _: *const ZipList,
     entry: [*]u8,
-) ?union(enum) { num: i64, str: []const u8 } {
+) ?union(enum) { num: i64, str: []u8 } {
     if (entry[0] == END) return null;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
