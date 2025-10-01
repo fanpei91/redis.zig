@@ -339,22 +339,11 @@ pub fn push(
     }
 }
 
-pub fn release(self: *QuickList, allocator: Allocator) void {
-    var current = self.head;
-    while (current) |node| {
-        current = node.next;
-        self.count -= node.count;
-        self.len -= 1;
-        node.release(allocator);
-    }
-    allocator.destroy(self);
-}
-
 /// Add new entry to head node of quicklist.
 ///
 /// Returns false if used existing head.
 /// Returns true if new head created.
-fn pushHead(
+pub fn pushHead(
     self: *QuickList,
     allocator: Allocator,
     value: []const u8,
@@ -388,7 +377,7 @@ fn pushHead(
 ///
 /// Returns false if used existing tail.
 /// Returns true if new tail created.
-fn pushTail(
+pub fn pushTail(
     self: *QuickList,
     allocator: Allocator,
     value: []const u8,
@@ -418,15 +407,18 @@ fn pushTail(
     return orig_tail != self.tail;
 }
 
-fn setFill(self: *QuickList, fill: i16) void {
-    self.fill = if (fill < -5) -5 else fill;
+pub fn release(self: *QuickList, allocator: Allocator) void {
+    var current = self.head;
+    while (current) |node| {
+        current = node.next;
+        self.count -= node.count;
+        self.len -= 1;
+        node.release(allocator);
+    }
+    allocator.destroy(self);
 }
 
-fn setCompressDepth(self: *QuickList, depth: u16) void {
-    self.compress = depth;
-}
-
-fn insertNodeBefore(
+pub fn insertNodeBefore(
     self: *QuickList,
     allocator: Allocator,
     old_node: ?*Node,
@@ -435,13 +427,21 @@ fn insertNodeBefore(
     return self.insertNode(allocator, old_node, new_node, false);
 }
 
-fn insertNodeAfter(
+pub fn insertNodeAfter(
     self: *QuickList,
     allocator: Allocator,
     old_node: ?*Node,
     new_node: *Node,
 ) Allocator.Error!void {
     return self.insertNode(allocator, old_node, new_node, true);
+}
+
+fn setFill(self: *QuickList, fill: i16) void {
+    self.fill = if (fill < -5) -5 else fill;
+}
+
+fn setCompressDepth(self: *QuickList, depth: u16) void {
+    self.compress = depth;
 }
 
 fn insertNode(
@@ -495,14 +495,14 @@ fn compressNode(
         _ = try node.compress(allocator);
         return;
     }
-    try self._compress(allocator, node);
+    try self.forceCompressionPolicy(allocator, node);
 }
 
 /// Force 'quicklist' to meet compression guidelines set by compress depth.
 /// The only way to guarantee interior nodes get compressed is to iterate
 /// to our "interior" compress depth then compress the next node we find.
 /// If compress depth is larger than the entire list, we return immediately.
-fn _compress(
+fn forceCompressionPolicy(
     self: *QuickList,
     allocator: Allocator,
     node: *Node,
@@ -554,12 +554,46 @@ test lzf {
     try expect(csz != 0);
     try expect(csz < phrase.len);
     const dsz = lzf.decompress(compressed[0..csz], &decompressed);
-    try expect(dsz != 0);
     try expect(dsz == phrase.len);
     try expectEqualStrings(phrase, &decompressed);
 }
 
-test QuickList {}
+test QuickList {
+    const allocator = std.testing.allocator;
+    {
+        var ql = try new(allocator, -2, 2);
+        defer ql.release(allocator);
+        try expectEqual(0, ql.len);
+        try expectEqual(0, ql.count);
+        try expectEqual(null, ql.head);
+        try expectEqual(null, ql.tail);
+    }
+    {
+        var ql = try new(allocator, -2, 1);
+        defer ql.release(allocator);
+
+        try ql.push(allocator, "hello" ** 100, .tail);
+        try expectEqual(1, ql.len);
+        try expectEqual(1, ql.count);
+        try expect(ql.head == ql.tail);
+        try expectEqual(1, ql.head.?.count);
+
+        try ql.push(allocator, "world" ** 100, .head);
+        try expectEqual(1, ql.len);
+        try expectEqual(2, ql.count);
+
+        for (0..10) |_| {
+            try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .head);
+            try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .tail);
+        }
+        try expectEqual(21, ql.len);
+        try expectEqual(22, ql.count);
+        try expect(ql.head.?.isCompressed() == false);
+        try expect(ql.tail.?.isCompressed() == false);
+        try expect(ql.head.?.next.?.isCompressed());
+        try expect(ql.tail.?.prev.?.isCompressed());
+    }
+}
 
 const std = @import("std");
 const ctypes = @import("ctypes.zig");
