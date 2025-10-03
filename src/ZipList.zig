@@ -130,6 +130,10 @@ const Entry = struct {
     }
 };
 
+pub inline fn cast(ptr: *anyopaque) *ZipList {
+    return @ptrCast(@alignCast(ptr));
+}
+
 pub fn new(allocator: Allocator) Allocator.Error!*ZipList {
     const bytes = HEADER_SIZE + END_SIZE;
     const ptr = (try allocator.alignedAlloc(u8, .of(ZipList), bytes)).ptr;
@@ -303,7 +307,7 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
 pub fn get(
     _: *const ZipList,
     entry: [*]u8,
-) ?union(enum) { num: i64, str: []u8 } {
+) ?union(enum) { num: longlong, str: []u8 } {
     if (entry[0] == END) return null;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
@@ -1086,6 +1090,7 @@ const readInt = std.mem.readInt;
 const ctypes = @import("ctypes.zig");
 const int = ctypes.int;
 const uint = ctypes.uint;
+const longlong = ctypes.longlong;
 const panic = std.debug.panic;
 const assert = std.debug.assert;
 const memzig = @import("mem.zig");
