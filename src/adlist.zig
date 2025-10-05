@@ -1,4 +1,4 @@
-pub fn DoublyLinkedList(
+pub fn List(
     comptime SearchKey: type,
     comptime Value: type,
     comptime PrivData: type,
@@ -36,11 +36,11 @@ pub fn DoublyLinkedList(
                 backward,
             };
 
-            list: *List,
+            list: *LinkedList,
             curr: ?*Node = null,
             direction: Direction,
 
-            fn init(list: *List, direction: Direction) Iterator {
+            fn init(list: *LinkedList, direction: Direction) Iterator {
                 var self: Iterator = .{
                     .list = list,
                     .direction = direction,
@@ -105,7 +105,7 @@ pub fn DoublyLinkedList(
             }
         };
 
-        const List = @This();
+        const LinkedList = @This();
         first: ?*Node = null,
         last: ?*Node = null,
         len: ulong = 0,
@@ -115,8 +115,8 @@ pub fn DoublyLinkedList(
             allocator: Allocator,
             priv_data: PrivData,
             vtable: *const Vtable,
-        ) Allocator.Error!*List {
-            const list = try allocator.create(List);
+        ) Allocator.Error!*LinkedList {
+            const list = try allocator.create(LinkedList);
             list.* = .{
                 .ctx = .{ .priv_data = priv_data, .vtable = vtable },
             };
@@ -124,7 +124,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn prepend(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
             value: Value,
         ) Allocator.Error!void {
@@ -139,7 +139,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn append(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
             value: Value,
         ) Allocator.Error!void {
@@ -154,7 +154,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn insertBefore(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
             value: Value,
             existing_node: *Node,
@@ -172,7 +172,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn insertAfter(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
             value: Value,
             existing_node: *Node,
@@ -190,7 +190,7 @@ pub fn DoublyLinkedList(
         }
 
         pub fn removeNode(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
             existing_node: *Node,
         ) void {
@@ -215,7 +215,7 @@ pub fn DoublyLinkedList(
             self.len -= 1;
         }
 
-        pub fn join(self: *List, other: *List) void {
+        pub fn join(self: *LinkedList, other: *LinkedList) void {
             if (other.len == 0) return;
             assert(self != other);
 
@@ -233,7 +233,7 @@ pub fn DoublyLinkedList(
             other.len = 0;
         }
 
-        pub fn rotateTailToHead(self: *List) void {
+        pub fn rotateTailToHead(self: *LinkedList) void {
             if (self.len <= 1) return;
 
             const tail = self.last.?;
@@ -246,7 +246,7 @@ pub fn DoublyLinkedList(
             self.first = tail;
         }
 
-        pub fn rotateHeadToTail(self: *List) void {
+        pub fn rotateHeadToTail(self: *LinkedList) void {
             if (self.len <= 1) return;
 
             const head = self.first.?;
@@ -259,15 +259,15 @@ pub fn DoublyLinkedList(
             self.last = head;
         }
 
-        pub fn iterator(self: *List, direction: Iterator.Direction) Iterator {
+        pub fn iterator(self: *LinkedList, direction: Iterator.Direction) Iterator {
             return .init(self, direction);
         }
 
         pub fn dupe(
-            self: *List,
+            self: *LinkedList,
             allocator: Allocator,
-        ) Allocator.Error!*List {
-            var dup_list = try List.create(
+        ) Allocator.Error!*LinkedList {
+            var dup_list = try LinkedList.create(
                 allocator,
                 self.ctx.priv_data,
                 self.ctx.vtable,
@@ -283,7 +283,7 @@ pub fn DoublyLinkedList(
             return dup_list;
         }
 
-        pub fn search(self: *List, key: SearchKey) ?*Node {
+        pub fn search(self: *LinkedList, key: SearchKey) ?*Node {
             var it = self.iterator(.forward);
             while (it.next()) |node| {
                 if (self.ctx.eql(key, node.value)) {
@@ -293,7 +293,7 @@ pub fn DoublyLinkedList(
             return null;
         }
 
-        pub fn index(self: *List, idx: long) ?*Node {
+        pub fn index(self: *LinkedList, idx: long) ?*Node {
             var node: ?*Node = null;
             if (idx < 0) {
                 var i = (-idx) - 1;
@@ -311,7 +311,7 @@ pub fn DoublyLinkedList(
             return node;
         }
 
-        pub fn empty(self: *List, allocator: Allocator) void {
+        pub fn empty(self: *LinkedList, allocator: Allocator) void {
             var curr = self.first;
             while (curr) |node| {
                 curr = node.next;
@@ -323,7 +323,7 @@ pub fn DoublyLinkedList(
             self.last = null;
         }
 
-        pub fn release(self: *List, allocator: Allocator) void {
+        pub fn release(self: *LinkedList, allocator: Allocator) void {
             self.empty(allocator);
             allocator.destroy(self);
         }
@@ -605,7 +605,7 @@ test "join" {
     try expectEqual(null, it.next());
 }
 
-const TestList = DoublyLinkedList(
+const TestList = List(
     u32,
     u32,
     ?TestContext,
