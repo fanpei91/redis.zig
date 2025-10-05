@@ -304,10 +304,7 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
     return p - prevlen.len;
 }
 
-pub fn get(
-    _: *const ZipList,
-    entry: [*]u8,
-) ?union(enum) { num: longlong, str: []u8 } {
+pub fn get(entry: [*]u8) ?union(enum) { num: longlong, str: []u8 } {
     if (entry[0] == END) return null;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
@@ -323,7 +320,7 @@ pub fn get(
     };
 }
 
-pub fn eql(_: *const ZipList, entry: [*]u8, str: []const u8) bool {
+pub fn eql(entry: [*]u8, str: []const u8) bool {
     if (entry[0] == END) return false;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
@@ -972,7 +969,7 @@ test ZipList {
         zl = try zl.push(allocator, &large, .head);
         try expectEqual(maxInt(u16) + 5, zl.numOfEntries());
         const head = zl.entryHead();
-        try expect(zl.eql(head, &large));
+        try expect(eql(head, &large));
     }
 
     {
@@ -985,10 +982,10 @@ test ZipList {
     {
         zl = try zl.push(allocator, "4294967295", .head);
         const ptr = zl.index(0).?;
-        const ret = zl.get(ptr);
+        const ret = get(ptr);
         try expect(ret != null);
         try expect(ret.?.num == 4294967295);
-        try expect(zl.eql(ptr, "4294967295"));
+        try expect(eql(ptr, "4294967295"));
     }
 
     {
@@ -997,9 +994,9 @@ test ZipList {
         try expect(first != null);
         try expectEqualStrings(
             "first",
-            zl.get(first.?).?.str,
+            get(first.?).?.str,
         );
-        try expect(zl.eql(first.?, "first"));
+        try expect(eql(first.?, "first"));
     }
 
     {
@@ -1008,7 +1005,7 @@ test ZipList {
         try expect(last != null);
         try expectEqualStrings(
             "last",
-            zl.get(last.?).?.str,
+            get(last.?).?.str,
         );
     }
 
@@ -1067,9 +1064,9 @@ test ZipList {
         try expect(second != null);
         try expect(second.? == target.?);
         try expectEqual(3, target.?.numOfEntries());
-        try expect(target.?.eql(target.?.index(0).?, "first-1"));
-        try expect(target.?.eql(target.?.index(1).?, "second-1"));
-        try expect(target.?.eql(target.?.index(2).?, "second-2"));
+        try expect(eql(target.?.index(0).?, "first-1"));
+        try expect(eql(target.?.index(1).?, "second-1"));
+        try expect(eql(target.?.index(2).?, "second-2"));
         second.?.free(allocator);
     }
 }

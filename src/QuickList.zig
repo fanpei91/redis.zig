@@ -221,6 +221,13 @@ pub const Node = packed struct {
         }
     }
 
+    /// If we previously used Node.decompressForUse(), just recompress.
+    fn recompressOnly(node: *Node, allocator: Allocator) Allocator.Error!void {
+        if (node.recompress == .true) {
+            _ = try node.compress(allocator);
+        }
+    }
+
     /// Split 'node' into two parts, parameterized by 'offset' and 'after'.
     ///
     /// The 'after' argument controls which quicklistNode gets returned.
@@ -409,7 +416,7 @@ pub const Iterator = struct {
         entry.zi = self.zi;
         entry.offset = @intCast(self.offset);
         if (self.zi) |zi| {
-            switch (zl.get(zi).?) {
+            switch (ZipList.get(zi).?) {
                 .str => |v| {
                     entry.value = v.ptr;
                     entry.sz = @intCast(v.len);
@@ -553,7 +560,7 @@ pub fn createFromZiplist(
     };
 
     var longstr: [32]u8 = undefined;
-    while (zl.get(p)) |un| {
+    while (ZipList.get(p)) |un| {
         var value: []u8 = undefined;
         switch (un) {
             .str => |v| value = v,
@@ -766,7 +773,7 @@ pub fn delRange(
             if (node.count == 0) {
                 try self.delNode(allocator, node);
             } else {
-                try self.recompressOnly(allocator, node);
+                try node.recompressOnly(allocator);
             }
         }
 
@@ -883,7 +890,7 @@ pub fn index(
     try entry.node.?.decompressForUse(allocator);
     const zl = ZipList.cast(entry.node.?.zl.?);
     entry.zi = zl.index(entry.offset);
-    const value = zl.get(entry.zi.?).?;
+    const value = ZipList.get(entry.zi.?).?;
     switch (value) {
         .num => |v| entry.longval = v,
         .str => |v| {
@@ -894,6 +901,11 @@ pub fn index(
     // The caller will use our result, so we don't re-compress here.
     // The caller can recompress or delete the node as needed.
     return true;
+}
+
+/// Passthrough to ZipList.eql()
+pub fn eql(entry: [*]u8, str: []const u8) bool {
+    return ZipList.eql(entry, str);
 }
 
 pub fn release(self: *QuickList, allocator: Allocator) void {
@@ -982,7 +994,7 @@ fn insert(
         }
         node.count += 1;
         node.updateSz();
-        try self.recompressOnly(allocator, node);
+        try node.recompressOnly(allocator);
         return;
     }
 
@@ -992,7 +1004,7 @@ fn insert(
         node.zl = try zl.insert(allocator, entry.zi.?, value);
         node.count += 1;
         node.updateSz();
-        try self.recompressOnly(allocator, node);
+        try node.recompressOnly(allocator);
         return;
     }
 
@@ -1003,7 +1015,7 @@ fn insert(
         next.zl = try zl.push(allocator, value, .head);
         next.count += 1;
         next.updateSz();
-        try self.recompressOnly(allocator, next);
+        try next.recompressOnly(allocator);
         return;
     }
 
@@ -1014,7 +1026,7 @@ fn insert(
         prev.zl = try zl.push(allocator, value, .tail);
         prev.count += 1;
         prev.updateSz();
-        try self.recompressOnly(allocator, prev);
+        try prev.recompressOnly(allocator);
         return;
     }
 
@@ -1292,16 +1304,6 @@ fn compressNode(
         return;
     }
     try self.meetCompression(allocator, node);
-}
-
-fn recompressOnly(
-    _: QuickList,
-    allocator: Allocator,
-    node: *Node,
-) Allocator.Error!void {
-    if (node.recompress == .true) {
-        _ = try node.compress(allocator);
-    }
 }
 
 /// Force 'quicklist' to meet compression guidelines set by compress depth.
