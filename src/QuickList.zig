@@ -673,6 +673,31 @@ pub fn insertBefore(
     return self.insert(allocator, entry, value, false);
 }
 
+/// Replace quicklist entry at offset 'idx' by 'data'.
+///
+/// Returns true if replace happened.
+/// Returns false if replace failed and no changes happened.
+pub fn replaceAtIndex(
+    self: *QuickList,
+    allocator: Allocator,
+    idx: long,
+    data: []const u8,
+) Allocator.Error!bool {
+    var entry: Entry = undefined;
+    if (try self.index(allocator, idx, &entry)) {
+        @branchHint(.likely);
+        const node = entry.node.?;
+        var zl = ZipList.cast(node.zl.?);
+        zl = try zl.delete(allocator, &entry.zi.?);
+        zl = try zl.insert(allocator, entry.zi.?, data);
+        node.zl = zl;
+        node.updateSz();
+        try self.compressNode(allocator, node);
+        return true;
+    }
+    return false;
+}
+
 /// Create new node consisting of a pre-formed ziplist.
 /// Used for loading RDBs where entire ziplists have been stored
 /// to be retrieved later.
@@ -1328,6 +1353,24 @@ test "insertBefore() | insertAfter() | index()" {
     try expectEqualStrings("value4", last.value.?[0..last.sz]);
     try ql.insertBefore(allocator, &last, "value3.3");
     try expectEqual(6, ql.count);
+}
+
+test "replaceAtIndex()" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    _ = try ql.pushTail(allocator, "value1");
+    _ = try ql.pushTail(allocator, "22");
+
+    const replaced = try ql.replaceAtIndex(allocator, 1, "22");
+    try expect(replaced);
+    try expectEqual(2, ql.count);
+
+    var entry: Entry = undefined;
+    const found = try ql.index(allocator, 1, &entry);
+    try expect(found);
+    try expectEqual(22, entry.longval);
 }
 
 test "iterator.next(.head|.tail)" {
