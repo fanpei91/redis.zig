@@ -35,7 +35,7 @@ const optimization_level = [_]usize{
 /// recompress: 1 bit, bool, true if node is temporarry decompressed for usage.
 /// attempted_compress: 1 bit, boolean, used for verifying during testing.
 /// extra: 10 bits, free for future use; pads out the remainder of 32 bits
-const Node = packed struct {
+pub const Node = packed struct {
     const Encoding = enum(u2) {
         raw = 1,
         lzf = 2,
@@ -353,20 +353,89 @@ const LZF = struct {
     }
 };
 
-const Iterator = struct {
-    const Direction = enum(int) {
+pub const Iterator = struct {
+    pub const Direction = enum(int) {
         head = 0,
         tail = 1,
     };
 
     quicklist: *QuickList,
-    current: *Node,
-    zi: [*]u8,
+    current: ?*Node,
+    zi: ?[*]u8,
     offset: long, // offset in current ziplist
     direction: Direction,
+
+    /// Get next element in iterator.
+    ///
+    /// Note: You must NOT insert into the list while iterating over it.
+    /// You *may* delete from the list while iterating using the
+    /// Iterator.del() function.
+    /// If you insert into the quicklist while iterating, you should
+    /// re-create the iterator after your addition.
+    ///
+    /// Populates 'entry' with values for this iteration.
+    /// Returns false when iteration is complete or if iteration not possible.
+    /// If return value is false, the contents of 'entry' are not valid.
+    pub fn next(
+        self: *Iterator,
+        allocator: Allocator,
+        entry: *Entry,
+    ) Allocator.Error!bool {
+        Entry.init(entry);
+        entry.quicklist = self.quicklist;
+        entry.node = self.current;
+
+        if (self.current == null) return false;
+
+        const current = self.current.?;
+        try current.decompressForUse(allocator);
+        const zl = ZipList.cast(current.zl.?);
+        if (self.zi == null) {
+            self.zi = zl.index(@intCast(self.offset));
+        } else {
+            if (self.direction == .head) {
+                self.zi = zl.next(self.zi.?);
+                self.offset += 1;
+            } else if (self.direction == .tail) {
+                self.zi = zl.prev(self.zi.?);
+                self.offset += -1;
+            }
+        }
+        entry.zi = self.zi;
+        entry.offset = @intCast(self.offset);
+        if (self.zi) |zi| {
+            switch (zl.get(zi).?) {
+                .str => |v| {
+                    entry.value = v.ptr;
+                    entry.sz = @intCast(v.len);
+                },
+                .num => |n| entry.longval = n,
+            }
+            return true;
+        }
+        // We ran out of ziplist entries.
+        // Pick next node, update offset, then re-run retrieval.
+        try self.quicklist.compressNode(allocator, current);
+        if (self.direction == .head) {
+            self.current = current.next;
+            self.offset = 0;
+        } else if (self.direction == .tail) {
+            self.current = current.prev;
+            self.offset = -1;
+        }
+        self.zi = null;
+        return self.next(allocator, entry);
+    }
+
+    /// If we still have a valid current node, then re-encode current node.
+    pub fn release(self: *Iterator, allocator: Allocator) Allocator.Error!void {
+        if (self.current) |curr| {
+            try self.quicklist.compressNode(allocator, curr);
+        }
+    }
 };
 
-const Entry = struct {
+pub const Entry = struct {
     quicklist: ?*QuickList,
     node: ?*Node,
     zi: ?[*]u8,
@@ -386,7 +455,7 @@ const Entry = struct {
     }
 };
 
-const Where = enum {
+pub const Where = enum {
     head,
     tail,
 };
@@ -558,6 +627,38 @@ pub fn insertBefore(
     return self.insert(allocator, entry, value, false);
 }
 
+/// Create new node consisting of a pre-formed ziplist.
+/// Used for loading RDBs where entire ziplists have been stored
+/// to be retrieved later.
+pub fn appendZiplist(
+    self: *QuickList,
+    allocator: Allocator,
+    zl: *ZipList,
+) Allocator.Error!void {
+    const node = try Node.create(allocator);
+    errdefer node.release(allocator);
+
+    node.zl = zl;
+    node.sz = zl.blobLen();
+    node.count = zl.len.get();
+
+    try self.insertNodeAfter(allocator, self.tail, node);
+    self.count += node.count;
+}
+
+pub fn iterator(
+    self: *QuickList,
+    direction: Iterator.Direction,
+) Iterator {
+    return .{
+        .quicklist = self,
+        .current = if (direction == .head) self.head else self.tail,
+        .zi = null,
+        .offset = if (direction == .head) 0 else -1,
+        .direction = direction,
+    };
+}
+
 /// Populate 'entry' with the element at the specified zero-based index
 /// where 0 is the head, 1 is the element next to head
 /// and so on. Negative integers are used in order to count
@@ -578,8 +679,6 @@ pub fn index(
     const forward = if (idx < 0) false else true;
     var indix: ulonglong = undefined;
     var n: ?*Node = null;
-    var accum: ulonglong = 0;
-
     if (!forward) {
         indix = @abs(idx) - 1;
         n = self.tail;
@@ -592,6 +691,7 @@ pub fn index(
         return false;
     }
 
+    var accum: ulonglong = 0;
     while (n) |node| {
         @branchHint(.likely);
         if (accum + node.count > indix) {
@@ -637,25 +737,6 @@ pub fn release(self: *QuickList, allocator: Allocator) void {
         node.release(allocator);
     }
     allocator.destroy(self);
-}
-
-/// Create new node consisting of a pre-formed ziplist.
-/// Used for loading RDBs where entire ziplists have been stored
-/// to be retrieved later.
-pub fn appendZiplist(
-    self: *QuickList,
-    allocator: Allocator,
-    zl: *ZipList,
-) Allocator.Error!void {
-    const node = try Node.create(allocator);
-    errdefer node.release(allocator);
-
-    node.zl = zl;
-    node.sz = zl.blobLen();
-    node.count = zl.len.get();
-
-    try self.insertNodeAfter(allocator, self.tail, node);
-    self.count += node.count;
 }
 
 ///  Insert a new entry before or after existing entry 'entry'.
@@ -1156,6 +1237,39 @@ test "insertBefore() | insertAfter() | index()" {
     try expectEqualStrings("value4", last.value.?[0..last.sz]);
     try ql.insertBefore(allocator, &last, "value3.3");
     try expectEqual(6, ql.count);
+}
+
+test "iterator" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    _ = try ql.pushTail(allocator, "value1");
+    _ = try ql.pushTail(allocator, "value2");
+    _ = try ql.pushTail(allocator, "value3");
+    _ = try ql.pushTail(allocator, "5");
+
+    var entry: Entry = undefined;
+    var it = ql.iterator(.head);
+    var ok = try it.next(allocator, &entry);
+    try expect(ok);
+    try expectEqualStrings("value1", entry.value.?[0..entry.sz]);
+    try expectEqual(0, entry.offset);
+    try expect(try it.next(allocator, &entry));
+    try expect(try it.next(allocator, &entry));
+    try expect(try it.next(allocator, &entry));
+    try expectEqual(5, entry.longval);
+    try expectEqual(3, entry.offset);
+    ok = try it.next(allocator, &entry);
+    try expect(ok == false);
+    try it.release(allocator);
+
+    it = ql.iterator(.tail);
+    ok = try it.next(allocator, &entry);
+    try expect(ok);
+    try expectEqual(5, entry.longval);
+    try expectEqual(-1, entry.offset);
+    try it.release(allocator);
 }
 
 const std = @import("std");
