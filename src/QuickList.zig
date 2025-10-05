@@ -427,6 +427,52 @@ pub const Iterator = struct {
         return self.next(allocator, entry);
     }
 
+    /// Delete one element represented by 'entry'
+    ///
+    /// 'entry' stores enough metadata to delete the proper position in
+    /// the correct ziplist in the correct quicklist node.
+    pub fn delEntry(
+        self: *Iterator,
+        allocator: Allocator,
+        entry: *Entry,
+    ) Allocator.Error!void {
+        assert(entry.quicklist == self.quicklist);
+        assert(entry.node == self.current);
+        assert(entry.zi == self.zi);
+        assert(entry.offset == self.offset);
+
+        const node = entry.node.?;
+        const nxt = node.next;
+        const prv = node.prev;
+
+        const deleted_node = try entry.quicklist.?.delIndex(
+            allocator,
+            node,
+            &entry.zi.?,
+        );
+        // After delete, the zi is now invalid for any future usage.
+        self.zi = null;
+
+        // If current node is deleted, we must update iterator node and offset.
+        if (deleted_node) {
+            if (self.direction == .head) {
+                self.current = nxt;
+                self.offset = 0;
+            } else if (self.direction == .tail) {
+                self.current = prv;
+                self.offset = -1;
+            }
+        }
+        // else if (!deleted_node), no changes needed.
+        // we already reset self.zi above, and the existing self.offset
+        // doesn't move again because:
+        //   - [1, 2, 3] => delete offset 1 => [1, 3]: next element still offset 1
+        //   - [1, 2, 3] => delete offset 0 => [2, 3]: next element still offset 0
+        //  if we deleted the last element at offet N and now
+        //  length of this ziplist is N-1, the next call into
+        //  self.next() will jump to the next node.
+    }
+
     /// If we still have a valid current node, then re-encode current node.
     pub fn release(self: *Iterator, allocator: Allocator) Allocator.Error!void {
         if (self.current) |curr| {
@@ -1019,6 +1065,33 @@ fn delNode(
     self.len -= 1;
 }
 
+/// Delete one entry from list given the node for the entry and a pointer
+/// to the entry in the node.
+///
+/// Note: delIndex() *requires* uncompressed nodes because you
+///       already had to get p.* from an uncompressed node somewhere.
+///
+/// Returns true if the entire node was deleted, false if node still exists.
+/// Also updates in/out param 'p' with the next offset in the ziplist.
+fn delIndex(
+    self: *QuickList,
+    allocator: Allocator,
+    node: *Node,
+    p: *[*]u8,
+) Allocator.Error!bool {
+    node.zl = try ZipList.cast(node.zl.?).delete(allocator, p);
+    node.count -= 1;
+    var gone = false;
+    if (node.count == 0) {
+        gone = true;
+        try self.delNode(allocator, node);
+    } else {
+        node.updateSz();
+    }
+    self.count -= 1;
+    return gone;
+}
+
 fn setFill(self: *QuickList, fill: i16) void {
     self.fill = if (fill < -5) -5 else fill;
 }
@@ -1269,6 +1342,22 @@ test "iterator" {
     try expect(ok);
     try expectEqual(5, entry.longval);
     try expectEqual(-1, entry.offset);
+    try it.release(allocator);
+
+    it = ql.iterator(.head);
+    while (try it.next(allocator, &entry)) {
+        try it.delEntry(allocator, &entry);
+    }
+    try expectEqual(0, ql.count);
+    try expectEqual(0, ql.len);
+    try it.release(allocator);
+
+    it = ql.iterator(.tail);
+    while (try it.next(allocator, &entry)) {
+        try it.delEntry(allocator, &entry);
+    }
+    try expectEqual(0, ql.count);
+    try expectEqual(0, ql.len);
     try it.release(allocator);
 }
 
