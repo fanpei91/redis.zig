@@ -693,16 +693,34 @@ pub fn appendZiplist(
 }
 
 pub fn iterator(
-    self: *QuickList,
+    self: *const QuickList,
     direction: Iterator.Direction,
 ) Iterator {
     return .{
-        .quicklist = self,
+        .quicklist = @constCast(self),
         .current = if (direction == .head) self.head else self.tail,
         .zi = null,
         .offset = if (direction == .head) 0 else -1,
         .direction = direction,
     };
+}
+
+pub fn iteratorAtIndex(
+    self: *const QuickList,
+    allocator: Allocator,
+    direction: Iterator.Direction,
+    idx: longlong,
+) Allocator.Error!?Iterator {
+    var entry: Entry = undefined;
+    const ok = try self.index(allocator, idx, &entry);
+    if (ok) {
+        var it = self.iterator(direction);
+        it.current = entry.node;
+        it.zi = null;
+        it.offset = entry.offset;
+        return it;
+    }
+    return null;
 }
 
 /// Populate 'entry' with the element at the specified zero-based index
@@ -714,13 +732,13 @@ pub fn iterator(
 /// Returns true if element found
 /// Returns false if element not found
 pub fn index(
-    self: *QuickList,
+    self: *const QuickList,
     allocator: Allocator,
     idx: longlong,
     entry: *Entry,
 ) Allocator.Error!bool {
     Entry.init(entry);
-    entry.quicklist = self;
+    entry.quicklist = @constCast(self);
 
     const forward = if (idx < 0) false else true;
     var indix: ulonglong = undefined;
@@ -1312,7 +1330,7 @@ test "insertBefore() | insertAfter() | index()" {
     try expectEqual(6, ql.count);
 }
 
-test "iterator" {
+test "iterator.next(.head|.tail)" {
     const allocator = std.testing.allocator;
     var ql = try new(allocator, -2, 1);
     defer ql.release(allocator);
@@ -1343,21 +1361,77 @@ test "iterator" {
     try expectEqual(5, entry.longval);
     try expectEqual(-1, entry.offset);
     try it.release(allocator);
+}
 
+test "iterator.delEntry(.head)" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    _ = try ql.pushTail(allocator, "value1");
+    _ = try ql.pushTail(allocator, "value2");
+    _ = try ql.pushTail(allocator, "value3");
+    _ = try ql.pushTail(allocator, "5");
+
+    var entry: Entry = undefined;
+    var it = ql.iterator(.head);
     it = ql.iterator(.head);
+    var iterations: usize = 0;
     while (try it.next(allocator, &entry)) {
         try it.delEntry(allocator, &entry);
+        iterations += 1;
     }
+    try expectEqual(4, iterations);
     try expectEqual(0, ql.count);
     try expectEqual(0, ql.len);
     try it.release(allocator);
+}
 
-    it = ql.iterator(.tail);
+test "iterator.delEntry(.tail)" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    _ = try ql.pushTail(allocator, "value1");
+    _ = try ql.pushTail(allocator, "value2");
+    _ = try ql.pushTail(allocator, "value3");
+    _ = try ql.pushTail(allocator, "5");
+
+    var entry: Entry = undefined;
+    var it = ql.iterator(.tail);
+    var iterations: usize = 0;
     while (try it.next(allocator, &entry)) {
         try it.delEntry(allocator, &entry);
+        iterations += 1;
     }
+    try expectEqual(4, iterations);
     try expectEqual(0, ql.count);
     try expectEqual(0, ql.len);
+    try it.release(allocator);
+}
+
+test "iteratorAtIndex.delEntry(.head)" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    _ = try ql.pushTail(allocator, "value1");
+    _ = try ql.pushTail(allocator, "value2");
+    _ = try ql.pushTail(allocator, "value3");
+    _ = try ql.pushTail(allocator, "5");
+
+    var entry: Entry = undefined;
+    var it = (try ql.iteratorAtIndex(allocator, .head, 1)).?;
+    var iterations: usize = 0;
+    while (try it.next(allocator, &entry)) {
+        iterations += 1;
+        try it.delEntry(allocator, &entry);
+    }
+    try expectEqual(3, iterations);
+    try expectEqual(1, ql.count);
+    try expectEqual(1, ql.len);
+    _ = try ql.index(allocator, 0, &entry);
+    try expectEqualStrings("value1", entry.value.?[0..entry.sz]);
     try it.release(allocator);
 }
 
