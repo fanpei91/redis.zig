@@ -1,6 +1,3 @@
-/// compression disable
-const NOCOMPRESS = false;
-
 /// Maximum size in bytes of any multi-element ziplist.
 /// Larger values will live in their own isolated ziplists.
 /// This is used only if we're limited by record count. when we're limited by
@@ -698,6 +695,80 @@ pub fn replaceAtIndex(
     return false;
 }
 
+/// Delete a range of elements from the quicklist.
+///
+/// elements may span across multiple Nodes, so we
+/// have to be careful about tracking where we start and end.
+///
+/// Returns true if entries were deleted, false if nothing was deleted.
+pub fn delRange(
+    self: *QuickList,
+    allocator: Allocator,
+    start: long,
+    count: long,
+) Allocator.Error!bool {
+    if (count <= 0) return false;
+
+    var extent: ulong = @intCast(count);
+    if (start >= 0 and extent > (self.count -% @abs(start))) {
+        extent = self.count -% @abs(start);
+    } else if (start < 0 and extent > @abs(start)) {
+        extent = @abs(start);
+    }
+
+    var entry: Entry = undefined;
+    if (!try self.index(allocator, start, &entry)) {
+        return false;
+    }
+
+    var node = entry.node.?;
+    while (extent != 0) {
+        var offset = entry.offset;
+        const next = node.next;
+        var del: ulong = 0;
+        var delete_entire_node = false;
+        if (offset == 0 and extent >= node.count) {
+            delete_entire_node = true;
+            del = node.count;
+        } else if (offset >= 0 and extent >= node.count) {
+            del = node.count - @as(u16, @intCast(offset));
+        } else if (offset < 0) {
+            // If offset is negative, we are in the first run of this loop
+            // and we are deleting the entire range
+            // from this start offset to end of list.  Since the Negative
+            // offset is the number of elements until the tail of the list,
+            // just use it directly as the deletion count.
+            del = @abs(offset);
+            if (del > extent) del = extent;
+        } else {
+            // else, we are deleting less than the extent of this node, so
+            // use extent directly.
+            del = extent;
+        }
+
+        if (delete_entire_node) {
+            try self.delNode(allocator, node);
+        } else {
+            try node.decompressForUse(allocator);
+            const zl = ZipList.cast(node.zl.?);
+            node.zl = try zl.deleteRange(allocator, offset, @intCast(del));
+            node.updateSz();
+            node.count -= @intCast(del);
+            self.count -= del;
+            if (node.count == 0) {
+                try self.delNode(allocator, node);
+            } else {
+                try self.recompressOnly(allocator, node);
+            }
+        }
+
+        extent -= del;
+        offset = 0;
+        node = next orelse break;
+    }
+    return true;
+}
+
 /// Create new node consisting of a pre-formed ziplist.
 /// Used for loading RDBs where entire ziplists have been stored
 /// to be retrieved later.
@@ -1371,6 +1442,47 @@ test "replaceAtIndex()" {
     const found = try ql.index(allocator, 1, &entry);
     try expect(found);
     try expectEqual(22, entry.longval);
+}
+
+test "delRange()" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, 10, 1);
+    defer ql.release(allocator);
+
+    var entry: Entry = undefined;
+    var buf: [30]u8 = undefined;
+    for (1..101) |i| {
+        const value = std.fmt.bufPrint(&buf, "value{}", .{i}) catch unreachable;
+        _ = try ql.pushTail(allocator, value);
+    }
+    var deleted = try ql.delRange(allocator, 0, 10);
+    try expect(deleted);
+    try expectEqual(90, ql.count);
+    try expectEqual(9, ql.len);
+    var found = try ql.index(allocator, 0, &entry);
+    try expect(found);
+    try expectEqualStrings("value11", entry.value.?[0..entry.sz]);
+
+    deleted = try ql.delRange(allocator, -10, 10);
+    try expect(deleted);
+    try expectEqual(80, ql.count);
+    try expectEqual(8, ql.len);
+    found = try ql.index(allocator, -1, &entry);
+    try expect(found);
+    try expectEqualStrings("value90", entry.value.?[0..entry.sz]);
+
+    deleted = try ql.delRange(allocator, 5, 10);
+    try expect(deleted);
+    try expectEqual(70, ql.count);
+
+    deleted = try ql.delRange(allocator, -5, 10);
+    try expect(deleted);
+    try expectEqual(65, ql.count);
+
+    deleted = try ql.delRange(allocator, 0, 65);
+    try expect(deleted);
+    try expectEqual(0, ql.count);
+    try expectEqual(0, ql.len);
 }
 
 test "iterator.next(.head|.tail)" {
