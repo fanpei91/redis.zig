@@ -61,6 +61,14 @@ pub const Node = packed struct {
     attempted_compress: AttemptedCompress, // node can't compress; too small
     extra: u10, // more bits to steal for future usage
 
+    /// Extract the raw LZF data from this Node.
+    pub fn getLzf(self: *const Node) []u8 {
+        assert(self.encoding == .lzf);
+
+        const lz: *LZF = @ptrCast(@alignCast(self.zl));
+        return lz.data();
+    }
+
     fn create(allocator: Allocator) Allocator.Error!*Node {
         const node = try allocator.create(Node);
         node.prev = null;
