@@ -1,17 +1,15 @@
-/// Context must be a struct type with the following member functions:
-///
-///     pub fn eql(self, SearchKey, Value) bool
-///
-///     pub fn dupe(self, Allocator, Value) Allocator.Error!Value
-///
-///     pub fn free(self, Allocator, Value) void
 pub fn DoublyLinkedList(
     comptime SearchKey: type,
     comptime Value: type,
-    comptime Context: type,
+    comptime PrivData: type,
 ) type {
     return struct {
-        pub const List = @This();
+        pub const Vtable = struct {
+            eql: ?*const fn (priv_data: PrivData, key: SearchKey, val: Value) bool,
+            dupe: ?*const fn (priv_data: PrivData, Allocator, val: Value) Allocator.Error!Value,
+            free: ?*const fn (priv_data: PrivData, Allocator, val: Value) void,
+        };
+
         pub const Node = struct {
             value: Value,
             prev: ?*Node = null,
@@ -78,6 +76,36 @@ pub fn DoublyLinkedList(
             }
         };
 
+        const Context = struct {
+            priv_data: PrivData,
+            vtable: *const Vtable,
+
+            fn eql(self: *Context, key: SearchKey, val: Value) bool {
+                if (self.vtable.eql) |cmp| {
+                    return cmp(self.priv_data, key, val);
+                }
+                return std.meta.eql(key, val);
+            }
+
+            fn dupe(
+                self: *Context,
+                allocator: Allocator,
+                val: Value,
+            ) Allocator.Error!Value {
+                if (self.vtable.dupe) |d| {
+                    return d(self.priv_data, allocator, val);
+                }
+                return val;
+            }
+
+            fn free(self: *Context, allocator: Allocator, val: Value) void {
+                if (self.vtable.free) |f| {
+                    f(self.priv_data, allocator, val);
+                }
+            }
+        };
+
+        const List = @This();
         first: ?*Node = null,
         last: ?*Node = null,
         len: ulong = 0,
@@ -85,11 +113,12 @@ pub fn DoublyLinkedList(
 
         pub fn create(
             allocator: Allocator,
-            ctx: Context,
+            priv_data: PrivData,
+            vtable: *const Vtable,
         ) Allocator.Error!*List {
             const list = try allocator.create(List);
             list.* = .{
-                .ctx = ctx,
+                .ctx = .{ .priv_data = priv_data, .vtable = vtable },
             };
             return list;
         }
@@ -238,7 +267,11 @@ pub fn DoublyLinkedList(
             self: *List,
             allocator: Allocator,
         ) Allocator.Error!*List {
-            var dup_list = try List.create(allocator, self.ctx);
+            var dup_list = try List.create(
+                allocator,
+                self.ctx.priv_data,
+                self.ctx.vtable,
+            );
             errdefer dup_list.release(allocator);
 
             var it = self.iterator(.forward);
@@ -300,7 +333,11 @@ pub fn DoublyLinkedList(
 test "prepend/insertBefore" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.prepend(allocator, 1);
@@ -316,7 +353,11 @@ test "prepend/insertBefore" {
 test "append/insertAfter" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -332,7 +373,11 @@ test "append/insertAfter" {
 test "removeNode" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -350,7 +395,11 @@ test "removeNode" {
 test "rotateTailToHead" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -373,7 +422,11 @@ test "rotateTailToHead" {
 test "rotateHeadToTail" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -396,7 +449,11 @@ test "rotateHeadToTail" {
 test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -431,7 +488,11 @@ test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
 test "dupe" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -458,7 +519,11 @@ test "dupe" {
 test "search" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -474,7 +539,11 @@ test "search" {
 test "index" {
     const allocator = testing.allocator;
 
-    var ll: *TestList = try .create(allocator, .init());
+    var ll: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer ll.release(allocator);
 
     try ll.append(allocator, 1);
@@ -500,10 +569,18 @@ test "index" {
 test "join" {
     const allocator = testing.allocator;
 
-    var l1: *TestList = try .create(allocator, .init());
+    var l1: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer l1.release(allocator);
 
-    var l2: *TestList = try .create(allocator, .init());
+    var l2: *TestList = try TestList.create(
+        allocator,
+        null,
+        TestContext.vtable(),
+    );
     defer l2.release(allocator);
 
     try l1.append(allocator, 1);
@@ -531,26 +608,29 @@ test "join" {
 const TestList = DoublyLinkedList(
     u32,
     u32,
-    TestContext,
+    ?TestContext,
 );
 
 const TestContext = struct {
     const Self = @This();
 
-    fn init() Self {
-        return .{};
+    fn vtable() *const TestList.Vtable {
+        return &.{
+            .eql = eql,
+            .dupe = dupe,
+            .free = free,
+        };
     }
 
-    fn eql(self: Self, key: u32, value: u32) bool {
-        _ = self;
+    fn eql(_: ?Self, key: u32, value: u32) bool {
         return key == value;
     }
 
-    fn dupe(_: Self, _: Allocator, value: u32) Allocator.Error!u32 {
+    fn dupe(_: ?Self, _: Allocator, value: u32) Allocator.Error!u32 {
         return value;
     }
 
-    fn free(_: Self, _: Allocator, _: u32) void {}
+    fn free(_: ?Self, _: Allocator, _: u32) void {}
 };
 
 const std = @import("std");
