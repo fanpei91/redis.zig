@@ -352,7 +352,7 @@ pub fn eql(entry: [*]u8, str: []const u8) bool {
 /// skipping over the alternating entries.
 ///
 /// Returns null when the field could not be found.
-pub fn find(_: *const ZipList, entry: [*]u8, str: []const u8, skip: uint) ?[*]u8 {
+pub fn find(entry: [*]u8, str: []const u8, skip: uint) ?[*]u8 {
     var p = entry;
     var skipcnt: uint = 0;
     var value: i64 = 0;
@@ -975,7 +975,7 @@ test ZipList {
     {
         zl = try zl.push(allocator, "4294967295", .tail);
         const head = zl.entryHead();
-        const found = zl.find(head, "4294967295", 0);
+        const found = find(head, "4294967295", 0);
         try expect(found != null);
     }
 

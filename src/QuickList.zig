@@ -588,6 +588,38 @@ pub fn setOptions(self: *QuickList, fill: i16, depth: u16) void {
     self.setCompressDepth(depth);
 }
 
+pub fn pop(
+    self: *QuickList,
+    allocator: Allocator,
+    where: Where,
+    receiver: ?*const fn (
+        Allocator,
+        union(enum) { num: longlong, str: []u8 },
+    ) Allocator.Error!void,
+) Allocator.Error!bool {
+    if (self.count == 0) return false;
+    const node = (if (where == .head) self.head else self.tail) orelse
+        return false;
+
+    const pos: int = if (where == .head) 0 else -1;
+    var entry = ZipList.cast(node.zl.?).index(pos) orelse return false;
+    const un = ZipList.get(entry) orelse return false;
+    switch (un) {
+        .num => |v| {
+            if (receiver) |cb| {
+                try cb(allocator, .{ .num = v });
+            }
+        },
+        .str => |v| {
+            if (receiver) |cb| {
+                try cb(allocator, .{ .str = v });
+            }
+        },
+    }
+    _ = try self.delIndex(allocator, node, &entry);
+    return true;
+}
+
 pub fn push(
     self: *QuickList,
     allocator: Allocator,
@@ -1366,7 +1398,7 @@ test lzf {
     try expectEqualStrings(phrase, &decompressed);
 }
 
-test "push" {
+test "push()" {
     const allocator = std.testing.allocator;
     var ql = try new(allocator, -2, 1);
     defer ql.release(allocator);
@@ -1393,7 +1425,27 @@ test "push" {
     try expect(ql.tail.?.prev.?.isCompressed());
 }
 
-test "createFromZiplist" {
+test "pop()" {
+    const allocator = std.testing.allocator;
+    var ql = try new(allocator, -2, 1);
+    defer ql.release(allocator);
+
+    try ql.push(allocator, "a", .tail);
+    try ql.push(allocator, "b", .tail);
+    try ql.push(allocator, "1", .tail);
+
+    try expect(try ql.pop(allocator, .head, null));
+    try expectEqual(2, ql.count);
+
+    try expect(try ql.pop(allocator, .tail, null));
+    try expectEqual(1, ql.count);
+
+    try expect(try ql.pop(allocator, .tail, null));
+    try expectEqual(0, ql.count);
+    try expect(!try ql.pop(allocator, .tail, null));
+}
+
+test "createFromZiplist()" {
     const allocator = std.testing.allocator;
 
     var zl = try ZipList.new(allocator);
