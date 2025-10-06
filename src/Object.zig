@@ -213,6 +213,15 @@ fn freeString(self: *Object, allocator: Allocator) void {
     }
 }
 
+fn freeList(self: *Object, allocator: Allocator) void {
+    if (self.encoding == .quicklist) {
+        const ql: *QuickList = @ptrCast(@alignCast(self.ptr));
+        ql.release(allocator);
+    } else {
+        @panic("Unknown list encoding type");
+    }
+}
+
 pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     assert(self.type == .string);
     assert(other.type == .string);
@@ -262,6 +271,7 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
     if (self.refcount == 1) {
         switch (self.type) {
             .string => self.freeString(allocator),
+            .list => self.freeList(allocator),
             else => unreachable, // TODO: complete all branch
         }
         self.free(allocator);
@@ -352,3 +362,4 @@ const memcpy = memzig.memcpy;
 const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
+const QuickList = @import("QuickList.zig");
