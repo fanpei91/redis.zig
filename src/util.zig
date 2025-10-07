@@ -13,6 +13,17 @@ pub fn ld2string(buf: []u8, value: longdouble, humanfriendly: bool) []u8 {
     return writer.buffered();
 }
 
+pub fn string2l(str: []const u8, lval: *long) bool {
+    lval.* = std.fmt.parseInt(long, str, 0) catch return false;
+    return true;
+}
+
+pub fn string2ll(str: []const u8, llval: *longlong) bool {
+    llval.* = std.fmt.parseInt(longlong, str, 0) catch
+        return false;
+    return true;
+}
+
 pub fn sdigits10(v: i64) u32 {
     if (v < 0) {
         const uv: u64 = @abs(v);
@@ -59,6 +70,8 @@ test ld2string {
 const std = @import("std");
 const ctypes = @import("ctypes.zig");
 const longdouble = ctypes.longdouble;
+const long = ctypes.long;
+const longlong = ctypes.longlong;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;

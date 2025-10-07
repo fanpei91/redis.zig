@@ -323,9 +323,7 @@ pub fn stringLen(self: *Object) usize {
 }
 
 pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *longlong) bool {
-    llval.* = std.fmt.parseInt(longlong, sds.bufSlice(s), 0) catch
-        return false;
-    return true;
+    return util.string2ll(sds.bufSlice(s), llval);
 }
 
 /// Get a decoded version of an encoded object (returned as a new object).
@@ -346,6 +344,82 @@ pub fn getDecoded(
         return createString(allocator, digits);
     }
     @panic("Unknown encoding type");
+}
+
+/// Try to encode a string object in order to save space.
+pub fn tryEncoding(
+    self: *Object,
+    allocator: Allocator,
+) Allocator.Error!*Object {
+    assert(self.type == .string);
+
+    if (!self.sdsEncoded()) return self;
+    if (self.refcount > 1) return self;
+
+    const slice = sds.bufSlice(sds.cast(self.ptr));
+    var value: long = undefined;
+    if (slice.len <= 20 and util.string2l(slice, &value)) {
+        const use_shared_integers = (server.instance.maxmemory == 0 or
+            (server.instance.maxmemory_policy & server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
+        if (use_shared_integers and value > 0 and value < server.SHARED_INTEGERS) {
+            self.decrRefCount(allocator);
+            const obj = server.shared.integers[@as(usize, @intCast(value))];
+            obj.incrRefCount();
+            return obj;
+        } else {
+            if (self.encoding == .raw) {
+                sds.free(allocator, sds.cast(self.ptr));
+                self.encoding = .int;
+                const uv: usize = @bitCast(@as(isize, value));
+                const ptr: *allowzero usize = @ptrFromInt(uv);
+                self.ptr = ptr;
+                return self;
+            } else if (self.encoding == .embstr) {
+                self.decrRefCount(allocator);
+                return createStringFromLonglongForValue(allocator, value);
+            }
+        }
+    }
+    // If the string is small and is still RAW encoded,
+    // try the EMBSTR encoding which is more efficient.
+    // In this representation the object and the SDS string are allocated
+    // in the same chunk of memory to save space and cache misses.
+    if (slice.len <= ENCODING_EMBSTR_SIZE_LIMIT) {
+        if (self.encoding == .embstr) return self;
+        const emb = try createEmbeddedString(allocator, slice);
+        self.decrRefCount(allocator);
+        return emb;
+    }
+
+    // We can't encode the object...
+    //
+    // Do the last try, and at least optimize the SDS string inside
+    // the string object to require little space, in case there
+    // is more than 10% of free space at the end of the SDS string.
+    //
+    // We do that only for relatively large strings as this branch
+    // is only entered if the length of the string is greater than
+    // ENCODING_EMBSTR_SIZE_LIMIT.
+    try self.trimStringIfNeeded(allocator);
+
+    return self;
+}
+
+/// Optimize the SDS string inside the string object to require little space,
+/// in case there is more than 10% of free space at the end of the SDS
+/// string. This happens because SDS strings tend to overallocate to avoid
+/// wasting too much time in allocations when appending to the string.
+pub fn trimStringIfNeeded(
+    self: *Object,
+    allocator: Allocator,
+) Allocator.Error!void {
+    if (self.encoding != .raw) {
+        return;
+    }
+    const s = sds.cast(self.ptr);
+    if (sds.getAvail(s) > sds.getLen(s) / 10) {
+        self.ptr = try sds.removeAvailSpace(allocator, s);
+    }
 }
 
 pub fn sdsEncoded(self: *Object) bool {
