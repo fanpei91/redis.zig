@@ -13,6 +13,11 @@ pub fn ld2string(buf: []u8, value: longdouble, humanfriendly: bool) []u8 {
     return writer.buffered();
 }
 
+pub fn ll2string(buf: []u8, value: longlong) []u8 {
+    assert(buf.len >= 20);
+    return std.fmt.bufPrint(buf, "{d}", .{value}) catch unreachable;
+}
+
 pub fn string2l(str: []const u8, lval: *long) bool {
     lval.* = std.fmt.parseInt(long, str, 0) catch return false;
     return true;
@@ -32,6 +37,8 @@ pub fn sdigits10(v: i64) u32 {
     return digits10(@intCast(v));
 }
 
+/// Return the number of digits of 'v' when converted to string in radix 10.
+// See ll2string() for more information.
 pub fn digits10(v: u64) u32 {
     if (v < 10) return 1;
     if (v < 100) return 2;

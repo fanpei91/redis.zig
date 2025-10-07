@@ -111,7 +111,7 @@ pub fn fromLonglong(
     num: longlong,
 ) Allocator.Error!String {
     var buf: [20]u8 = undefined;
-    const digits = std.fmt.bufPrint(&buf, "{d}", .{num}) catch unreachable;
+    const digits = util.ll2string(&buf, num);
     return new(allocator, digits);
 }
 
@@ -1058,3 +1058,4 @@ const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const memset = memzig.memset;
 const memmove = memzig.memmove;
+const util = @import("util.zig");

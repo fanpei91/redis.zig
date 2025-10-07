@@ -340,7 +340,7 @@ pub fn getDecoded(
         const sv: isize = @bitCast(@intFromPtr(self.ptr));
         const v: long = @truncate(sv);
         var buf: [20]u8 = undefined;
-        const digits = std.fmt.bufPrint(&buf, "{d}", .{v}) catch unreachable;
+        const digits = util.ll2string(&buf, v);
         return createString(allocator, digits);
     }
     @panic("Unknown encoding type");
@@ -424,6 +424,22 @@ pub fn trimStringIfNeeded(
 
 pub fn sdsEncoded(self: *Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
+}
+
+pub fn getLongLong(self: *Object, llval: *longlong) bool {
+    assert(self.type == .string);
+    if (self.sdsEncoded()) {
+        return util.string2ll(
+            sds.bufSlice(sds.cast(self.ptr)),
+            llval,
+        );
+    }
+    if (self.encoding == .int) {
+        const sv: isize = @bitCast(@intFromPtr(self.ptr));
+        llval.* = sv;
+        return true;
+    }
+    @panic("Unknown string encoding");
 }
 
 fn freeString(self: *Object, allocator: Allocator) void {

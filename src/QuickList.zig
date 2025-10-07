@@ -564,7 +564,7 @@ pub fn createFromZiplist(
         var value: []u8 = undefined;
         switch (un) {
             .str => |v| value = v,
-            .num => |n| value = std.fmt.bufPrint(&longstr, "{}", .{n}) catch unreachable,
+            .num => |n| value = util.ll2string(&longstr, n),
         }
         _ = try ql.pushTail(allocator, value);
         p = zl.next(p) orelse break;
