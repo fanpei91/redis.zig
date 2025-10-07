@@ -78,6 +78,10 @@ pub const TYPE_64 = 4;
 
 pub const String = [*]u8;
 
+pub fn cast(ptr: *anyopaque) String {
+    return @ptrCast(ptr);
+}
+
 pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!String {
     // Empty strings are usually created in order to append. Use type 8
     // since type 5 is not good at this.

@@ -22,13 +22,12 @@ pub const Encoding = enum(u4) {
     stream = 10,
 };
 
+const Object = @This();
 type: Type,
 encoding: Encoding,
 // lru: std.meta.Int(.unsigned, server.LRU_BITS),
 refcount: int,
 ptr: *anyopaque,
-
-pub const Object = @This();
 
 pub fn create(
     allocator: Allocator,
@@ -229,10 +228,10 @@ fn freeSet(self: *Object, allocator: Allocator) void {
             is.free(allocator);
         },
         .ht => {
-            const d: *set.Dict = @ptrCast(@alignCast(self.ptr));
+            const d: *Dict = @ptrCast(@alignCast(self.ptr));
             d.destroy(allocator);
         },
-        else => unreachable,
+        else => @panic("Unknown set encoding type"),
     }
 }
 
@@ -246,6 +245,7 @@ fn freeZset(self: *Object, allocator: Allocator) void {
             const zl: *ZipList = ZipList.cast(self.ptr);
             zl.free(allocator);
         },
+        else => @panic("Unknown sorted set encoding type"),
     }
 }
 
@@ -295,10 +295,10 @@ pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
 }
 
 pub fn createSet(allocator: Allocator) Allocator.Error!*Object {
-    const d = try set.Dict.create(
+    const d = try Dict.create(
         allocator,
-        set.priv_data,
-        set.priv_data.vtable(),
+        server.setDictVtable,
+        null,
     );
     errdefer d.destroy(allocator);
     const obj = try create(allocator, .set, d);
@@ -428,6 +428,6 @@ const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
-const set = @import("t_set.zig");
+const Dict = @import("Dict.zig");
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;

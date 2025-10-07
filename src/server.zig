@@ -18,16 +18,51 @@ const SharedObjects = struct {
     maxstring: sds.String,
 };
 
+/// Set dictionary type. Keys are SDS strings, values are ot used.
+pub const setDictVtable: *const Dict.Vtable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictSdsFree,
+    .freeVal = null,
+};
+
+/// Sorted sets hash (note: a skiplist is used in addition to the hash table)
+pub const zsetDictVtable: *const Dict.Vtable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = null, //  sds.String shared & freed by skiplist
+    .freeVal = null,
+};
+
 pub const Server = struct {
     maxmemory: ulonglong, // Max number of memory bytes to use
     maxmemory_policy: int, // Policy for key eviction
     maxmemory_samples: int, // Pricision of random sampling
 };
 
+fn dictSdsHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
+    return std.hash.Wyhash.hash(
+        0,
+        sds.bufSlice(sds.cast(key)),
+    );
+}
+
+fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
+    return sds.cmp(sds.cast(key1), sds.cast(key2)) == .eq;
+}
+
+fn dictSdsFree(_: Dict.PrivData, allocator: Allocator, key: Dict.Key) void {
+    sds.free(allocator, sds.cast(key));
+}
+
 test {
     _ = @import("sds.zig");
     _ = @import("adlist.zig");
-    _ = @import("dict.zig");
+    _ = @import("Dict.zig");
     _ = @import("IntSet.zig");
     _ = @import("ZipList.zig");
     _ = @import("QuickList.zig");
@@ -43,3 +78,4 @@ const sds = @import("sds.zig");
 const ctypes = @import("ctypes.zig");
 const int = ctypes.int;
 const ulonglong = ctypes.ulonglong;
+const Dict = @import("Dict.zig");

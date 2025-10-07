@@ -26,36 +26,17 @@ pub const Range = struct {
 };
 
 pub const Zset = struct {
-    const Dict = dict.Dict(sds.String, void, DictVtable);
-    const priv_data = DictVtable{};
-    const DictVtable = struct {
-        fn vtable(_: DictVtable) *const Zset.Dict.Vtable {
-            return &.{
-                .hash = hash,
-                .eql = eql,
-                .dupeKey = null,
-                .dupeVal = null,
-                .freeKey = null, // sds.String shared & freed by skiplist
-                .freeVal = null,
-            };
-        }
-
-        fn hash(_: DictVtable, key: sds.String) dict.Hash {
-            return std.hash.Wyhash.hash(0, sds.bufSlice(key));
-        }
-
-        fn eql(_: DictVtable, key1: sds.String, key2: sds.String) bool {
-            return sds.cmp(key1, key2) == .eq;
-        }
-    };
-
     zsl: *SkipList,
     dict: *Dict,
 
     pub fn create(allocator: Allocator) Allocator.Error!*Zset {
         const z = try allocator.create(Zset);
         errdefer allocator.destroy(z);
-        z.dict = try Dict.create(allocator, priv_data, priv_data.vtable());
+        z.dict = try Dict.create(
+            allocator,
+            server.zsetDictVtable,
+            null,
+        );
         z.zsl = try SkipList.create(allocator);
         return z;
     }
@@ -445,4 +426,4 @@ const uint = ctypes.uint;
 const sds = @import("sds.zig");
 const server = @import("server.zig");
 const shared = server.shared;
-const dict = @import("dict.zig");
+const Dict = @import("Dict.zig");
