@@ -222,6 +222,20 @@ fn freeList(self: *Object, allocator: Allocator) void {
     }
 }
 
+fn freeSet(self: *Object, allocator: Allocator) void {
+    switch (self.encoding) {
+        .intset => {
+            const is: *IntSet = @ptrCast(@alignCast(self.ptr));
+            is.free(allocator);
+        },
+        .ht => {
+            const d: *set.Dict = @ptrCast(@alignCast(self.ptr));
+            d.destroy(allocator);
+        },
+        else => unreachable,
+    }
+}
+
 pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     assert(self.type == .string);
     assert(other.type == .string);
@@ -300,6 +314,7 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
         switch (self.type) {
             .string => self.freeString(allocator),
             .list => self.freeList(allocator),
+            .set => self.freeSet(allocator),
             else => unreachable, // TODO: complete all branch
         }
         self.free(allocator);
