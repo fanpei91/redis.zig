@@ -268,10 +268,10 @@ pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
 }
 
 pub fn createSet(allocator: Allocator) Allocator.Error!*Object {
-    const d = try tset.Dict.create(
+    const d = try set.Dict.create(
         allocator,
-        tset.priv_data,
-        tset.priv_data.vtable(),
+        set.priv_data,
+        set.priv_data.vtable(),
     );
     errdefer d.destroy(allocator);
     const obj = try create(allocator, .set, d);
@@ -284,6 +284,14 @@ pub fn createHash(allocator: Allocator) Allocator.Error!*Object {
     errdefer zl.free(allocator);
     const obj = try create(allocator, .hash, zl);
     obj.encoding = .ziplist;
+    return obj;
+}
+
+pub fn createZset(allocator: Allocator) Allocator.Error!*Object {
+    const zs = try Zset.create(allocator);
+    errdefer zs.destroy(allocator);
+    const obj = try create(allocator, .zset, zs);
+    obj.encoding = .skiplist;
     return obj;
 }
 
@@ -383,4 +391,6 @@ const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
-const tset = @import("t_set.zig");
+const set = @import("t_set.zig");
+const zset = @import("t_zset.zig");
+const Zset = zset.Zset;
