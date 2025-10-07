@@ -205,50 +205,6 @@ pub fn dupeString(
     }
 }
 
-fn freeString(self: *Object, allocator: Allocator) void {
-    if (self.encoding == .raw) {
-        const s: sds.String = @ptrCast(self.ptr);
-        sds.free(allocator, s);
-    }
-}
-
-fn freeList(self: *Object, allocator: Allocator) void {
-    if (self.encoding == .quicklist) {
-        const ql: *QuickList = @ptrCast(@alignCast(self.ptr));
-        ql.release(allocator);
-    } else {
-        @panic("Unknown list encoding type");
-    }
-}
-
-fn freeSet(self: *Object, allocator: Allocator) void {
-    switch (self.encoding) {
-        .intset => {
-            const is: *IntSet = @ptrCast(@alignCast(self.ptr));
-            is.free(allocator);
-        },
-        .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.ptr));
-            d.destroy(allocator);
-        },
-        else => @panic("Unknown set encoding type"),
-    }
-}
-
-fn freeZset(self: *Object, allocator: Allocator) void {
-    switch (self.encoding) {
-        .skiplist => {
-            const zl: *Zset = @ptrCast(@alignCast(self.ptr));
-            zl.destroy(allocator);
-        },
-        .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.ptr);
-            zl.free(allocator);
-        },
-        else => @panic("Unknown sorted set encoding type"),
-    }
-}
-
 pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     assert(self.type == .string);
     assert(other.type == .string);
@@ -337,6 +293,7 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
             .list => self.freeList(allocator),
             .set => self.freeSet(allocator),
             .zset => self.freeZset(allocator),
+            .hash => self.freeHash(allocator),
             else => unreachable, // TODO: complete all branch
         }
         self.free(allocator);
@@ -386,6 +343,64 @@ pub fn getDecoded(
 
 pub fn sdsEncoded(self: *Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
+}
+
+fn freeString(self: *Object, allocator: Allocator) void {
+    if (self.encoding == .raw) {
+        const s: sds.String = @ptrCast(self.ptr);
+        sds.free(allocator, s);
+    }
+}
+
+fn freeList(self: *Object, allocator: Allocator) void {
+    if (self.encoding == .quicklist) {
+        const ql: *QuickList = @ptrCast(@alignCast(self.ptr));
+        ql.release(allocator);
+    } else {
+        @panic("Unknown list encoding type");
+    }
+}
+
+fn freeSet(self: *Object, allocator: Allocator) void {
+    switch (self.encoding) {
+        .intset => {
+            const is: *IntSet = @ptrCast(@alignCast(self.ptr));
+            is.free(allocator);
+        },
+        .ht => {
+            const d: *Dict = @ptrCast(@alignCast(self.ptr));
+            d.destroy(allocator);
+        },
+        else => @panic("Unknown set encoding type"),
+    }
+}
+
+fn freeZset(self: *Object, allocator: Allocator) void {
+    switch (self.encoding) {
+        .skiplist => {
+            const zl: *Zset = @ptrCast(@alignCast(self.ptr));
+            zl.destroy(allocator);
+        },
+        .ziplist => {
+            const zl: *ZipList = ZipList.cast(self.ptr);
+            zl.free(allocator);
+        },
+        else => @panic("Unknown sorted set encoding type"),
+    }
+}
+
+fn freeHash(self: *Object, allocator: Allocator) void {
+    switch (self.encoding) {
+        .ht => {
+            const d: *Dict = @ptrCast(@alignCast(self.ptr));
+            d.destroy(allocator);
+        },
+        .ziplist => {
+            const zl: *ZipList = ZipList.cast(self.ptr);
+            zl.free(allocator);
+        },
+        else => @panic("Unknown hash encoding type"),
+    }
 }
 
 fn free(self: *Object, allocator: Allocator) void {
