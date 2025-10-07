@@ -243,6 +243,14 @@ pub fn equalStrings(self: *Object, other: *Object) bool {
     return self.compareStrings(other) == .eq;
 }
 
+pub fn createQuickList(allocator: Allocator) Allocator.Error!*Object {
+    const ql = try QuickList.create(allocator);
+    errdefer ql.release(allocator);
+    const obj = try create(allocator, .list, ql);
+    obj.encoding = .quicklist;
+    return obj;
+}
+
 pub fn createZipList(allocator: Allocator) Allocator.Error!*Object {
     const zl = try ZipList.new(allocator);
     errdefer zl.free(allocator);
