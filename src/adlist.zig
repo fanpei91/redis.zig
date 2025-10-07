@@ -1,13 +1,12 @@
 pub fn List(
     comptime SearchKey: type,
     comptime Value: type,
-    comptime PrivData: type,
 ) type {
     return struct {
         pub const Vtable = struct {
-            eql: ?*const fn (priv_data: PrivData, key: SearchKey, val: Value) bool,
-            dupe: ?*const fn (priv_data: PrivData, Allocator, val: Value) Allocator.Error!Value,
-            free: ?*const fn (priv_data: PrivData, Allocator, val: Value) void,
+            eql: ?*const fn (key: SearchKey, val: Value) bool,
+            dupe: ?*const fn (Allocator, val: Value) Allocator.Error!Value,
+            free: ?*const fn (Allocator, val: Value) void,
         };
 
         pub const Node = struct {
@@ -77,12 +76,11 @@ pub fn List(
         };
 
         const Context = struct {
-            priv_data: PrivData,
             vtable: *const Vtable,
 
             fn eql(self: *Context, key: SearchKey, val: Value) bool {
                 if (self.vtable.eql) |cmp| {
-                    return cmp(self.priv_data, key, val);
+                    return cmp(key, val);
                 }
                 return std.meta.eql(key, val);
             }
@@ -93,14 +91,14 @@ pub fn List(
                 val: Value,
             ) Allocator.Error!Value {
                 if (self.vtable.dupe) |d| {
-                    return d(self.priv_data, allocator, val);
+                    return d(allocator, val);
                 }
                 return val;
             }
 
             fn free(self: *Context, allocator: Allocator, val: Value) void {
                 if (self.vtable.free) |f| {
-                    f(self.priv_data, allocator, val);
+                    f(allocator, val);
                 }
             }
         };
@@ -113,12 +111,11 @@ pub fn List(
 
         pub fn create(
             allocator: Allocator,
-            priv_data: PrivData,
             vtable: *const Vtable,
         ) Allocator.Error!*LinkedList {
             const list = try allocator.create(LinkedList);
             list.* = .{
-                .ctx = .{ .priv_data = priv_data, .vtable = vtable },
+                .ctx = .{ .vtable = vtable },
             };
             return list;
         }
@@ -269,7 +266,6 @@ pub fn List(
         ) Allocator.Error!*LinkedList {
             var dup_list = try LinkedList.create(
                 allocator,
-                self.ctx.priv_data,
                 self.ctx.vtable,
             );
             errdefer dup_list.release(allocator);
@@ -330,13 +326,12 @@ pub fn List(
     };
 }
 
-test "prepend/insertBefore" {
+test "prepend() |insertBefore()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -350,13 +345,12 @@ test "prepend/insertBefore" {
     try expectEqual(ll.first.?.next.?.value, 3);
 }
 
-test "append/insertAfter" {
+test "append() | insertAfter()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -370,13 +364,12 @@ test "append/insertAfter" {
     try expectEqual(3, ll.first.?.next.?.value);
 }
 
-test "removeNode" {
+test "removeNode()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -392,13 +385,12 @@ test "removeNode" {
     try expectEqual(3, ll.last.?.value);
 }
 
-test "rotateTailToHead" {
+test "rotateTailToHead()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -419,13 +411,12 @@ test "rotateTailToHead" {
     try expectEqual(null, it.next());
 }
 
-test "rotateHeadToTail" {
+test "rotateHeadToTail()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -446,13 +437,12 @@ test "rotateHeadToTail" {
     try expectEqual(null, it.next());
 }
 
-test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
+test "iterator(forward|backward) | Iterator.rewind(forward|backward)" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -485,13 +475,12 @@ test "iterator(forward|backward) || Iterator.rewind(forward|backward)" {
     try expectEqual(null, backward.next());
 }
 
-test "dupe" {
+test "dupe()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -516,13 +505,12 @@ test "dupe" {
     }
 }
 
-test "search" {
+test "search()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -536,13 +524,12 @@ test "search" {
     try expectEqual(3, found.?.value);
 }
 
-test "index" {
+test "index()" {
     const allocator = testing.allocator;
 
     var ll: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer ll.release(allocator);
 
@@ -566,20 +553,18 @@ test "index" {
     try expect(found == null);
 }
 
-test "join" {
+test "join()" {
     const allocator = testing.allocator;
 
     var l1: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer l1.release(allocator);
 
     var l2: *TestList = try TestList.create(
         allocator,
-        null,
-        TestContext.vtable(),
+        TestVtable.vtable,
     );
     defer l2.release(allocator);
 
@@ -608,29 +593,24 @@ test "join" {
 const TestList = List(
     u32,
     u32,
-    ?TestContext,
 );
 
-const TestContext = struct {
-    const Self = @This();
+const TestVtable = struct {
+    const vtable: *const TestList.Vtable = &.{
+        .eql = eql,
+        .dupe = dupe,
+        .free = free,
+    };
 
-    fn vtable() *const TestList.Vtable {
-        return &.{
-            .eql = eql,
-            .dupe = dupe,
-            .free = free,
-        };
-    }
-
-    fn eql(_: ?Self, key: u32, value: u32) bool {
+    fn eql(key: u32, value: u32) bool {
         return key == value;
     }
 
-    fn dupe(_: ?Self, _: Allocator, value: u32) Allocator.Error!u32 {
+    fn dupe(_: Allocator, value: u32) Allocator.Error!u32 {
         return value;
     }
 
-    fn free(_: ?Self, _: Allocator, _: u32) void {}
+    fn free(_: Allocator, _: u32) void {}
 };
 
 const std = @import("std");
