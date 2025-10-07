@@ -832,7 +832,7 @@ test "add() | addOrFind() || find() | fetchVal()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -926,7 +926,7 @@ test "getRandom()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -943,7 +943,7 @@ test "getSome()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -959,7 +959,7 @@ test "replace()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -977,7 +977,7 @@ test "delete()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -994,7 +994,7 @@ test "unlink() | freeUnlinkedEntry()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -1011,7 +1011,7 @@ test "expand() | rehash()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -1042,7 +1042,7 @@ test "iterator() | fingerprint()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -1070,7 +1070,7 @@ test "scan()" {
     const allocator = testing.allocator;
     const dict = try Dict.create(
         allocator,
-        TestSdsVtable.vtable(),
+        TestSdsVtable.vtable,
         null,
     );
     defer dict.destroy(allocator);
@@ -1092,16 +1092,14 @@ test "scan()" {
 const TestSdsVtable = struct {
     const Self = @This();
 
-    fn vtable() *const Vtable {
-        return &.{
-            .hash = hash,
-            .eql = eql,
-            .dupeKey = null,
-            .dupeVal = null,
-            .freeKey = releaseKey,
-            .freeVal = releaseVal,
-        };
-    }
+    const vtable: *const Vtable = &.{
+        .hash = hash,
+        .eql = eql,
+        .dupeKey = null,
+        .dupeVal = null,
+        .freeKey = releaseKey,
+        .freeVal = releaseVal,
+    };
 
     fn batchAdd(
         dict: *Dict,
