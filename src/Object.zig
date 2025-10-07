@@ -322,6 +322,14 @@ pub fn createZset(allocator: Allocator) Allocator.Error!*Object {
     return obj;
 }
 
+pub fn createZsetZipList(allocator: Allocator) Allocator.Error!*Object {
+    const zl = try ZipList.new(allocator);
+    errdefer zl.free(allocator);
+    const obj = try create(allocator, .zset, zl);
+    obj.encoding = .ziplist;
+    return obj;
+}
+
 pub fn decrRefCount(self: *Object, allocator: Allocator) void {
     if (self.refcount == 1) {
         switch (self.type) {
