@@ -315,14 +315,21 @@ pub fn resetRefCount(self: *Object) *Object {
 pub fn stringLen(self: *Object) usize {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        const s: sds.String = @ptrCast(self.ptr);
-        return sds.getLen(s);
+        return sds.getLen(sds.cast(self.ptr));
     }
     const sv: isize = @bitCast(@intFromPtr(self.ptr));
     const v: long = @truncate(sv);
     return util.sdigits10(v);
 }
 
+pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *longlong) bool {
+    llval.* = std.fmt.parseInt(longlong, sds.bufSlice(s), 0) catch
+        return false;
+    return true;
+}
+
+/// Get a decoded version of an encoded object (returned as a new object).
+/// If the object is already raw-encoded just increment the ref count.
 pub fn getDecoded(
     self: *Object,
     allocator: Allocator,
@@ -422,6 +429,22 @@ test createEmbeddedString {
     try expectEqualStrings("hello", sds.bufSlice(s));
 }
 
+test isSdsRepresentableAsLongLong {
+    var llval: longlong = undefined;
+    const allocator = std.testing.allocator;
+    var s = try sds.new(allocator, "123456789");
+    defer sds.free(allocator, s);
+
+    var ok = isSdsRepresentableAsLongLong(s, &llval);
+    try expect(ok);
+    try expectEqual(123456789, llval);
+
+    sds.clear(s);
+    s = try sds.cat(allocator, s, "abc1");
+    ok = isSdsRepresentableAsLongLong(s, &llval);
+    try expect(!ok);
+}
+
 const std = @import("std");
 const meta = std.meta;
 const Allocator = std.mem.Allocator;
@@ -430,6 +453,7 @@ const assert = std.debug.assert;
 const server = @import("server.zig");
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
+const expectEqual = std.testing.expectEqual;
 const ctypes = @import("ctypes.zig");
 const longlong = ctypes.longlong;
 const int = ctypes.int;
