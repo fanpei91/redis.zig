@@ -236,6 +236,19 @@ fn freeSet(self: *Object, allocator: Allocator) void {
     }
 }
 
+fn freeZset(self: *Object, allocator: Allocator) void {
+    switch (self.encoding) {
+        .skiplist => {
+            const zl: *Zset = @ptrCast(@alignCast(self.ptr));
+            zl.destroy(allocator);
+        },
+        .ziplist => {
+            const zl: *ZipList = ZipList.cast(self.ptr);
+            zl.free(allocator);
+        },
+    }
+}
+
 pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
     assert(self.type == .string);
     assert(other.type == .string);
@@ -315,6 +328,7 @@ pub fn decrRefCount(self: *Object, allocator: Allocator) void {
             .string => self.freeString(allocator),
             .list => self.freeList(allocator),
             .set => self.freeSet(allocator),
+            .zset => self.freeZset(allocator),
             else => unreachable, // TODO: complete all branch
         }
         self.free(allocator);
