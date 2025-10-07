@@ -469,14 +469,15 @@ pub fn Dict(
             return try items.toOwnedSlice(allocator);
         }
 
-        pub const scanEntryFunc = fn (priv_data: PrivData, e: *const Entry) void;
-        pub const scanBucketFunc = fn (priv_data: PrivData, e: *?*Entry) void;
+        pub const scanEntryFunc = *const fn (priv_data: PrivData, e: *const Entry) void;
+        pub const scanBucketFunc = *const fn (priv_data: PrivData, e: *?*Entry) void;
 
         pub fn scan(
             self: *Dictionary,
             cursor: ulong,
             scanEntryFn: ?scanEntryFunc,
             scanBucketFn: ?scanBucketFunc,
+            priv_data: PrivData,
         ) ulong {
             var v = cursor;
             var t0: *HashTable = &self.ht[0];
@@ -485,13 +486,13 @@ pub fn Dict(
             if (!self.isRehashing()) {
                 const idx = v & m0;
                 if (scanBucketFn) |scanBucket| {
-                    scanBucket(self.ctx.priv_data, &t0.table.?[idx]);
+                    scanBucket(priv_data, &t0.table.?[idx]);
                 }
                 var entry = t0.get(idx);
                 while (entry) |ent| {
                     entry = ent.next;
                     if (scanEntryFn) |scanEntry| {
-                        scanEntry(self.ctx.priv_data, ent);
+                        scanEntry(priv_data, ent);
                     }
                 }
             } else {
@@ -503,14 +504,14 @@ pub fn Dict(
 
                 const idx = v & m0;
                 if (scanBucketFn) |scanBucket| {
-                    scanBucket(self.ctx.priv_data, &t0.table.?[idx]);
+                    scanBucket(priv_data, &t0.table.?[idx]);
                 }
                 m0 = t0.sizemask;
                 var entry = t0.get(idx);
                 while (entry) |ent| {
                     entry = ent.next;
                     if (scanEntryFn) |scanEntry| {
-                        scanEntry(self.ctx.priv_data, ent);
+                        scanEntry(priv_data, ent);
                     }
                 }
 
@@ -518,13 +519,13 @@ pub fn Dict(
                 while (true) {
                     const i = v & m1;
                     if (scanBucketFn) |scanBucket| {
-                        scanBucket(self.ctx.priv_data, &t1.table.?[i]);
+                        scanBucket(priv_data, &t1.table.?[i]);
                     }
                     entry = t1.get(i);
                     while (entry) |ent| {
                         entry = ent.next;
                         if (scanEntryFn) |scanEntry| {
-                            scanEntry(self.ctx.priv_data, ent);
+                            scanEntry(priv_data, ent);
                         }
                     }
                     v = (((v | m0) + 1) & ~m0) | (v & m0);
@@ -830,7 +831,7 @@ test "Dict.add | Dict.addOrFind || Dict.find | Dict.fetchVal" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -895,7 +896,7 @@ test "Dict.getRandom" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -912,7 +913,7 @@ test "Dict.getSome" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -928,7 +929,7 @@ test "Dict.replace" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -945,7 +946,7 @@ test "Dict.delete" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -961,7 +962,7 @@ test "Dict.unlink | Dict.freeUnlinkedEntry" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -977,7 +978,7 @@ test "Dict.expand | Dict.rehash" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -1008,7 +1009,7 @@ test "Dict.iterator | Dict.fingerprint" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -1034,7 +1035,7 @@ test "Dict.scan" {
     const dict: *TestDict = try TestDict.create(
         allocator,
         null,
-        TestContext.vtable(),
+        TestContext.vtable,
     );
     defer dict.destroy(allocator);
 
@@ -1047,7 +1048,7 @@ test "Dict.scan" {
     var times: usize = 0;
     var cursor: usize = 0;
     while (true) {
-        cursor = dict.scan(cursor, null, null);
+        cursor = dict.scan(cursor, null, null, null);
         times += 1;
         if (cursor == 0) break;
     }
@@ -1067,16 +1068,14 @@ const TestContext = struct {
 
     scanned: usize = 0,
 
-    fn vtable() *const TestDict.Vtable {
-        return &.{
-            .hash = hash,
-            .eql = eql,
-            .dupeKey = dupeKey,
-            .dupeVal = dupeVal,
-            .freeKey = freeKey,
-            .freeVal = freeVal,
-        };
-    }
+    const vtable: *const TestDict.Vtable = &.{
+        .hash = hash,
+        .eql = eql,
+        .dupeKey = dupeKey,
+        .dupeVal = dupeVal,
+        .freeKey = freeKey,
+        .freeVal = freeVal,
+    };
 
     fn batchAdd(
         dict: *TestDict,

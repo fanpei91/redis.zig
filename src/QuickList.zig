@@ -592,7 +592,7 @@ pub fn pop(
     self: *QuickList,
     allocator: Allocator,
     where: Where,
-    receiver: ?*const fn (
+    callback: ?*const fn (
         Allocator,
         union(enum) { num: longlong, str: []u8 },
     ) Allocator.Error!void,
@@ -606,12 +606,12 @@ pub fn pop(
     const un = ZipList.get(entry) orelse return false;
     switch (un) {
         .num => |v| {
-            if (receiver) |cb| {
+            if (callback) |cb| {
                 try cb(allocator, .{ .num = v });
             }
         },
         .str => |v| {
-            if (receiver) |cb| {
+            if (callback) |cb| {
                 try cb(allocator, .{ .str = v });
             }
         },

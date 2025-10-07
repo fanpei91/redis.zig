@@ -259,6 +259,18 @@ pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
     return obj;
 }
 
+pub fn createSet(allocator: Allocator) Allocator.Error!*Object {
+    const d = try tset.Dict.create(
+        allocator,
+        tset.priv_data,
+        tset.priv_data.vtable(),
+    );
+    errdefer d.destroy(allocator);
+    const obj = try create(allocator, .set, d);
+    obj.encoding = .ht;
+    return obj;
+}
+
 pub fn createHash(allocator: Allocator) Allocator.Error!*Object {
     const zl = try ZipList.new(allocator);
     errdefer zl.free(allocator);
@@ -363,3 +375,4 @@ const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
+const tset = @import("t_set.zig");
