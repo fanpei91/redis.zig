@@ -20,6 +20,20 @@ pub const Encoding = enum(u4) {
     embstr = 8,
     quicklist = 9,
     stream = 10,
+
+    pub fn toString(self: Encoding) []const u8 {
+        return switch (self) {
+            .raw => "raw",
+            .int => "int",
+            .ht => "hashtable",
+            .ziplist => "ziplist",
+            .intset => "intset",
+            .skiplist => "skiplist",
+            .embstr => "embstr",
+            .quicklist => "quicklist",
+            else => "unknown",
+        };
+    }
 };
 
 const Object = @This();
@@ -440,6 +454,10 @@ pub fn getLongLong(self: *Object, llval: *longlong) bool {
         return true;
     }
     @panic("Unknown string encoding");
+}
+
+pub fn strEncoding(self: *Object) []const u8 {
+    return self.encoding.toString();
 }
 
 fn freeString(self: *Object, allocator: Allocator) void {
