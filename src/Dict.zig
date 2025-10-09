@@ -17,6 +17,19 @@ pub fn disableResize() void {
     dict_can_resize = false;
 }
 
+var hash_seed: u64 = 0;
+
+pub fn hashSeed(s: ?u64) void {
+    hash_seed = s orelse std.crypto.random.int(u64);
+}
+
+pub fn genHash(key: []const u8) Hash {
+    return std.hash.Wyhash.hash(
+        hash_seed,
+        key,
+    );
+}
+
 pub const Vtable = struct {
     hash: *const fn (priv_data: PrivData, key: Key) Hash,
     eql: ?*const fn (priv_data: PrivData, key1: Key, key2: Key) bool,
@@ -1137,7 +1150,7 @@ const TestSdsVtable = struct {
     }
 
     fn hash(_: PrivData, key: Key) Hash {
-        return std.hash.Wyhash.hash(0, sds.bufSlice(sds.cast(key)));
+        return genHash(sds.bufSlice(sds.cast(key)));
     }
 
     fn releaseKey(_: PrivData, allocator: Allocator, key: Key) void {

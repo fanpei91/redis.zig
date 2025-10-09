@@ -196,22 +196,26 @@ pub fn createStringFromLongDouble(
 }
 
 pub fn dupeString(
+    self: *const Object,
     allocator: Allocator,
-    str: *const Object,
 ) Allocator.Error!*Object {
-    assert(str.type == .string);
+    assert(self.type == .string);
 
-    switch (str.encoding) {
+    switch (self.encoding) {
         .raw => {
-            const s: sds.String = @ptrCast(str.ptr);
-            return createRawString(allocator, sds.bufSlice(s));
+            return createRawString(
+                allocator,
+                sds.bufSlice(sds.cast(self.ptr)),
+            );
         },
         .embstr => {
-            const s: sds.String = @ptrCast(str.ptr);
-            return createEmbeddedString(allocator, sds.bufSlice(s));
+            return createEmbeddedString(
+                allocator,
+                sds.bufSlice(sds.cast(self.ptr)),
+            );
         },
         .int => {
-            const o = try create(allocator, .string, str.ptr);
+            const o = try create(allocator, .string, self.ptr);
             o.encoding = .int;
             return o;
         },
