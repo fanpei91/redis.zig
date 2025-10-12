@@ -1,9 +1,3 @@
-const FILTER_READ = -1;
-const FILTER_WRITE = -2;
-
-const FLAGS_ADD = 0x0001;
-const FLAGS_DEL = 0x0002;
-
 const State = struct {
     kqfd: i32,
     events: []posix.Kevent,
@@ -26,19 +20,18 @@ pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
     var ke: posix.Kevent = .{
         .ident = @intCast(fd),
         .filter = 0,
-        .flags = FLAGS_ADD,
+        .flags = posix.system.EV.ADD,
         .fflags = 0,
         .data = 0,
         .udata = 0,
     };
-    var eventlist = [_]posix.Kevent{};
     if (mask & ae.READABLE != 0) {
-        ke.filter = FILTER_READ;
-        _ = try posix.kevent(state.kqfd, &.{ke}, &eventlist, null);
+        ke.filter = posix.system.EVFILT.READ;
+        _ = try posix.kevent(state.kqfd, &.{ke}, &.{}, null);
     }
     if (mask & ae.WRITABLE != 0) {
-        ke.filter = FILTER_WRITE;
-        _ = try posix.kevent(state.kqfd, &.{ke}, &eventlist, null);
+        ke.filter = posix.system.EVFILT.WRITE;
+        _ = try posix.kevent(state.kqfd, &.{ke}, &.{}, null);
     }
 }
 
@@ -48,19 +41,18 @@ pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
     var ke: posix.Kevent = .{
         .ident = @intCast(fd),
         .filter = 0,
-        .flags = FLAGS_DEL,
+        .flags = posix.system.EV.DELETE,
         .fflags = 0,
         .data = 0,
         .udata = 0,
     };
-    var eventlist = [_]posix.Kevent{};
     if (mask & ae.READABLE != 0) {
-        ke.filter = FILTER_READ;
-        _ = try posix.kevent(state.kqfd, &.{ke}, &eventlist, null);
+        ke.filter = posix.system.EVFILT.READ;
+        _ = try posix.kevent(state.kqfd, &.{ke}, &.{}, null);
     }
     if (mask & ae.WRITABLE != 0) {
-        ke.filter = FILTER_WRITE;
-        _ = try posix.kevent(state.kqfd, &.{ke}, &eventlist, null);
+        ke.filter = posix.system.EVFILT.WRITE;
+        _ = try posix.kevent(state.kqfd, &.{ke}, &.{}, null);
     }
 }
 
@@ -96,8 +88,8 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?long) usize {
         for (0..numevents) |i| {
             var mask: int = 0;
             const e = state.events[i];
-            if (e.filter == FILTER_READ) mask |= ae.READABLE;
-            if (e.filter == FILTER_WRITE) mask |= ae.WRITABLE;
+            if (e.filter == posix.system.EVFILT.READ) mask |= ae.READABLE;
+            if (e.filter == posix.system.EVFILT.WRITE) mask |= ae.WRITABLE;
             el.fired[i].fd = @intCast(e.ident);
             el.fired[i].mask = mask;
         }
