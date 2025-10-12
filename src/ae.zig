@@ -130,7 +130,7 @@ pub const EventLoop = struct {
         self: *EventLoop,
         allocator: Allocator,
         setsize: int,
-    ) Allocator.Error!bool {
+    ) !bool {
         if (setsize == self.events.len) return true;
         if (self.maxfd >= setsize) return false;
 
@@ -306,7 +306,7 @@ pub const EventLoop = struct {
                 }
             }
 
-            const numevents: usize = api.poll(self, timeout);
+            const numevents: usize = try api.poll(self, timeout);
 
             if (self.afterSleep != null and flags & CALL_AFTER_SLEEP != 0) {
                 try self.afterSleep.?(allocator, self);
@@ -572,5 +572,5 @@ const Allocator = std.mem.Allocator;
 const api = switch (builtin.os.tag) {
     .linux => @import("ae_epoll.zig"),
     .macos, .netbsd, .freebsd, .dragonfly, .openbsd => @import("ae_kqueue.zig"),
-    else => unreachable,
+    else => @import("ae_select.zig"),
 };

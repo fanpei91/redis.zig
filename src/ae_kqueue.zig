@@ -56,11 +56,7 @@ pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
     }
 }
 
-pub fn resize(
-    allocator: Allocator,
-    el: *EventLoop,
-    setsize: int,
-) Allocator.Error!void {
+pub fn resize(allocator: Allocator, el: *EventLoop, setsize: int) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     state.events = try allocator.realloc(
         state.events,
@@ -68,7 +64,7 @@ pub fn resize(
     );
 }
 
-pub fn poll(el: *EventLoop, timeout_in_ms: ?long) usize {
+pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     var retval: usize = undefined;
 

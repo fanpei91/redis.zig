@@ -61,7 +61,7 @@ pub fn resize(
     allocator: Allocator,
     el: *EventLoop,
     setsize: int,
-) Allocator.Error!void {
+) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     state.events = try allocator.realloc(
         state.events,
@@ -69,7 +69,7 @@ pub fn resize(
     );
 }
 
-pub fn poll(el: *EventLoop, timeout_in_ms: ?long) usize {
+pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
 
     const timeout: i32 = @intCast(timeout_in_ms orelse -1);
