@@ -38,19 +38,19 @@ pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
     try posix.epoll_ctl(state.epfd, op, fd, &ee);
 }
 
-pub fn delEvent(el: *EventLoop, fd: int, del_mask: int) !void {
-    const mask = el.events[@intCast(fd)].mask & (~del_mask);
+pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
+    const msk = el.events[@intCast(fd)].mask & (~mask);
     var ee: linux.epoll_event = .{
         .events = 0,
         .data = .{
             .fd = fd,
         },
     };
-    if (mask & ae.READABLE != 0) ee.events |= linux.EPOLL.IN;
-    if (mask & ae.WRITABLE != 0) ee.events |= linux.EPOLL.OUT;
+    if (msk & ae.READABLE != 0) ee.events |= linux.EPOLL.IN;
+    if (msk & ae.WRITABLE != 0) ee.events |= linux.EPOLL.OUT;
 
     const state: *State = @ptrCast(@alignCast(el.apidata));
-    if (mask != ae.NONE) {
+    if (msk != ae.NONE) {
         try posix.epoll_ctl(state.epfd, linux.EPOLL.CTL_MOD, fd, &ee);
         return;
     }

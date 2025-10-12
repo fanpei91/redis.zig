@@ -183,7 +183,7 @@ pub const EventLoop = struct {
     pub fn deleteFileEvent(self: *EventLoop, fd: int, mask: int) !void {
         if (fd >= self.getSetSize()) return;
 
-        const fe: *FileEvent = self.events[@intCast(fd)];
+        const fe: *FileEvent = &self.events[@intCast(fd)];
         if (fe.mask == NONE) return;
 
         var msk = mask;
@@ -220,8 +220,6 @@ pub const EventLoop = struct {
         self.time_event_next_id += 1;
 
         const te = try allocator.create(TimeEvent);
-        errdefer allocator.destroy(te);
-
         te.id = id;
         addMillisecondsToNow(milliseconds, &te.when_sec, &te.when_ms);
         te.timeProc = proc;
@@ -571,8 +569,8 @@ const std = @import("std");
 const posix = std.posix;
 const expect = std.testing.expect;
 const Allocator = std.mem.Allocator;
-const epoll = @import("ae_epoll.zig");
 const api = switch (builtin.os.tag) {
-    .linux => epoll,
+    .linux => @import("ae_epoll.zig"),
+    .macos, .netbsd, .freebsd, .dragonfly, .openbsd => @import("ae_kqueue.zig"),
     else => unreachable,
 };
