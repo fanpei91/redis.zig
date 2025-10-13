@@ -40,7 +40,7 @@ const Object = @This();
 type: Type,
 encoding: Encoding,
 // lru: std.meta.Int(.unsigned, server.LRU_BITS),
-refcount: int,
+refcount: i32,
 ptr: *anyopaque,
 
 pub fn create(
@@ -58,7 +58,7 @@ pub fn create(
     return obj;
 }
 
-pub const SHARED_REFCOUNT = maxInt(int);
+pub const SHARED_REFCOUNT = maxInt(i32);
 /// Set a special refcount in the object to make it "shared":
 /// incrRefCount() and decrRefCount() will test for this special refcount
 /// and will not touch the object. This way it is free to access shared
@@ -122,7 +122,7 @@ fn createEmbeddedString(
 /// Always demanding to create a shared object if possible.
 pub fn createStringFromLonglong(
     allocator: Allocator,
-    value: longlong,
+    value: i64,
 ) Allocator.Error!*Object {
     return createStringFromLonglongWithOptions(
         allocator,
@@ -136,7 +136,7 @@ pub fn createStringFromLonglong(
 /// based on LFU/LRU.
 pub fn createStringFromLonglongForValue(
     allocator: Allocator,
-    value: longlong,
+    value: i64,
 ) Allocator.Error!*Object {
     return createStringFromLonglongWithOptions(
         allocator,
@@ -154,7 +154,7 @@ pub fn createStringFromLonglongForValue(
 /// values specific for each key.
 fn createStringFromLonglongWithOptions(
     allocator: Allocator,
-    value: longlong,
+    value: i64,
     from_shared: bool,
 ) Allocator.Error!*Object {
     var enabled = from_shared;
@@ -172,8 +172,8 @@ fn createStringFromLonglongWithOptions(
         return o;
     }
 
-    if (value >= minInt(long) and value <= maxInt(long)) {
-        const uv: usize = @bitCast(@as(isize, value));
+    if (value >= minInt(isize) and value <= maxInt(isize)) {
+        const uv: usize = @bitCast(@as(isize, @intCast(value)));
         const ptr: *allowzero usize = @ptrFromInt(uv);
         const o = try create(allocator, .string, ptr);
         o.encoding = .int;
@@ -187,7 +187,7 @@ fn createStringFromLonglongWithOptions(
 
 pub fn createStringFromLongDouble(
     allocator: Allocator,
-    value: longdouble,
+    value: f80,
     humanfriendly: bool,
 ) Allocator.Error!*Object {
     var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
@@ -336,11 +336,11 @@ pub fn stringLen(self: *Object) usize {
         return sds.getLen(sds.cast(self.ptr));
     }
     const sv: isize = @bitCast(@intFromPtr(self.ptr));
-    const v: long = @truncate(sv);
+    const v: i64 = @intCast(sv);
     return util.sdigits10(v);
 }
 
-pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *longlong) bool {
+pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *i64) bool {
     return util.string2ll(sds.bufSlice(s), llval);
 }
 
@@ -356,7 +356,7 @@ pub fn getDecoded(
     }
     if (self.type == .string and self.encoding == .int) {
         const sv: isize = @bitCast(@intFromPtr(self.ptr));
-        const v: long = @truncate(sv);
+        const v: i64 = @truncate(sv);
         var buf: [20]u8 = undefined;
         const digits = util.ll2string(&buf, v);
         return createString(allocator, digits);
@@ -375,7 +375,7 @@ pub fn tryEncoding(
     if (self.refcount > 1) return self;
 
     const slice = sds.bufSlice(sds.cast(self.ptr));
-    var value: long = undefined;
+    var value: i64 = undefined;
     if (slice.len <= 20 and util.string2l(slice, &value)) {
         const use_shared_integers = (server.instance.maxmemory == 0 or
             (server.instance.maxmemory_policy & server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
@@ -444,7 +444,7 @@ pub fn sdsEncoded(self: *Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
 
-pub fn getLongLong(self: *Object, llval: *longlong) bool {
+pub fn getLongLong(self: *Object, llval: *i64) bool {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
         return util.string2ll(
@@ -542,7 +542,7 @@ test createEmbeddedString {
 }
 
 test isSdsRepresentableAsLongLong {
-    var llval: longlong = undefined;
+    var llval: i64 = undefined;
     const allocator = std.testing.allocator;
     var s = try sds.new(allocator, "123456789");
     defer sds.free(allocator, s);
@@ -566,11 +566,6 @@ const server = @import("server.zig");
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqual = std.testing.expectEqual;
-const ctypes = @import("ctypes.zig");
-const longlong = ctypes.longlong;
-const int = ctypes.int;
-const long = ctypes.long;
-const longdouble = ctypes.longdouble;
 const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
 const memzig = @import("mem.zig");

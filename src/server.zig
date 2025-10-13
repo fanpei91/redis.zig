@@ -39,16 +39,13 @@ pub const zsetDictVtable: *const Dict.Vtable = &.{
 };
 
 pub const Server = struct {
-    maxmemory: ulonglong, // Max number of memory bytes to use
-    maxmemory_policy: int, // Policy for key eviction
-    maxmemory_samples: int, // Pricision of random sampling
+    maxmemory: u64, // Max number of memory bytes to use
+    maxmemory_policy: i32, // Policy for key eviction
+    maxmemory_samples: i32, // Pricision of random sampling
 };
 
 fn dictSdsHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
-    return std.hash.Wyhash.hash(
-        0,
-        sds.bufSlice(sds.cast(key)),
-    );
+    return Dict.genHash(sds.bufSlice(sds.cast(key)));
 }
 
 fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
@@ -57,6 +54,21 @@ fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
 
 fn dictSdsFree(_: Dict.PrivData, allocator: Allocator, key: Dict.Key) void {
     sds.free(allocator, sds.cast(key));
+}
+
+fn initServerConfig(allocator: Allocator) Allocator.Error!void {
+    _ = allocator;
+}
+
+pub fn main() !void {
+    var debug = std.heap.DebugAllocator(.{}).init;
+    const allocator = debug.allocator();
+    defer _ = debug.deinit();
+
+    random.seed(null);
+    Dict.hashSeed(null);
+
+    try Server.init(allocator);
 }
 
 test {
@@ -75,7 +87,5 @@ const Object = @import("Object.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const sds = @import("sds.zig");
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const ulonglong = ctypes.ulonglong;
 const Dict = @import("Dict.zig");
+const random = @import("random.zig");

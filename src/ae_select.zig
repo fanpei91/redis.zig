@@ -16,26 +16,26 @@ pub fn create(allocator: Allocator, el: *EventLoop) !void {
     el.apidata = state;
 }
 
-pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn addEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     if (mask & ae.READABLE != 0) c.FD_SET(fd, &state.rfds);
     if (mask & ae.WRITABLE != 0) c.FD_SET(fd, &state.wfds);
 }
 
-pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn delEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     if (mask & ae.READABLE != 0) c.FD_CLR(fd, &state.rfds);
     if (mask & ae.WRITABLE != 0) c.FD_CLR(fd, &state.wfds);
 }
 
-pub fn resize(_: Allocator, _: *EventLoop, setsize: int) !void {
+pub fn resize(_: Allocator, _: *EventLoop, setsize: i32) !void {
     // Just ensure we have enough room in the fd_set type.
     if (setsize >= c.FD_SETSIZE) {
         return error.SetSizeTooLarge;
     }
 }
 
-pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
+pub fn poll(el: *EventLoop, timeout_in_ms: ?i64) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     @memcpy(
         std.mem.toBytes(&state._rfds),
@@ -52,7 +52,7 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
             .tv_usec = @rem(ms, std.time.ms_per_s) * std.time.us_per_ms,
         };
     }
-    const retval: int = c.select(
+    const retval: i32 = c.select(
         el.maxfd + 1,
         &state._rfds,
         &state._wfds,
@@ -65,7 +65,7 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
         var i: usize = 0;
         const maxfd: usize = @intCast(el.maxfd);
         while (i <= maxfd) : (i += 1) {
-            var mask: int = 0;
+            var mask: i32 = 0;
             const fe = el.events[i];
             if (fe.mask == ae.NONE) continue;
             if (fe.mask & ae.READABLE != 0 and c.FD_ISSET(i, &state._rfds) != 0) {
@@ -95,9 +95,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ae = @import("ae.zig");
 const EventLoop = ae.EventLoop;
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const long = ctypes.long;
 const c = @cImport({
     @cInclude("sys/select.h");
 });

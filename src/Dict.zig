@@ -45,7 +45,7 @@ pub const Entry = struct {
         val: Value,
         u64: u64,
         s64: i64,
-        d: double,
+        d: f64,
     },
     next: ?*Entry = null,
 
@@ -62,12 +62,12 @@ pub const Entry = struct {
 
 pub const Iterator = struct {
     dict: *Dict,
-    index: long,
+    index: i64,
     table: u8,
     safe: bool,
     entry: ?*Entry,
     next_entry: ?*Entry,
-    fingerprint: longlong,
+    fingerprint: i64,
 
     pub fn next(self: *Iterator) ?*Entry {
         while (true) {
@@ -164,9 +164,9 @@ const Context = struct {
 };
 
 const HashTable = struct {
-    size: ulong = 0, // Must be power of two。
-    used: ulong = 0,
-    sizemask: ulong = 0, // size - 1
+    size: u64 = 0, // Must be power of two。
+    used: u64 = 0,
+    sizemask: u64 = 0, // size - 1
     table: ?[*]?*Entry = null,
 
     fn create(
@@ -233,8 +233,8 @@ const HashTable = struct {
 const Dict = @This();
 ctx: Context,
 ht: [2]HashTable = .{ .{}, .{} },
-rehashidx: long = -1,
-iterators: ulong = 0,
+rehashidx: i64 = -1,
+iterators: u64 = 0,
 
 pub fn iterator(self: *Dict, safe: bool) Iterator {
     const it: Iterator = .{
@@ -391,27 +391,27 @@ pub fn getRandom(self: *Dict, allocator: Allocator) ?*Entry {
     const h1 = &self.ht[1];
     var entry: ?*Entry = null;
     if (self.isRehashing()) {
-        const rehashidx: ulong = @abs(self.rehashidx);
+        const rehashidx: u64 = @abs(self.rehashidx);
         while (entry == null) {
-            const random = rand.int(ulong);
+            const random = rand.int(u64);
             const idx = rehashidx + (random % (h0.size + h1.size - rehashidx));
             entry = if (idx >= h0.size) h1.get(idx - h0.size) else h0.get(idx);
         }
     } else {
         while (entry == null) {
-            const random = rand.int(ulong);
+            const random = rand.int(u64);
             const idx = random & h0.sizemask;
             entry = h0.get(idx);
         }
     }
 
     const head = entry.?;
-    var list_len: ulong = 0;
+    var list_len: u64 = 0;
     while (entry != null) {
         entry = entry.?.next;
         list_len += 1;
     }
-    const random = rand.int(ulong);
+    const random = rand.int(u64);
     var list_ele = random % list_len;
     entry = head;
     while (list_ele > 0) : (list_ele -= 1) {
@@ -423,9 +423,9 @@ pub fn getRandom(self: *Dict, allocator: Allocator) ?*Entry {
 pub fn getSome(
     self: *Dict,
     allocator: Allocator,
-    n: uint,
+    n: u32,
 ) Allocator.Error![]*Entry {
-    const count: ulong = @min(self.size(), n);
+    const count: u64 = @min(self.size(), n);
 
     for (0..count) |_| {
         if (self.isRehashing()) {
@@ -449,7 +449,7 @@ pub fn getSome(
         max_sizemask = h1.sizemask;
     }
 
-    var i = rand.int(ulong) & max_sizemask;
+    var i = rand.int(u64) & max_sizemask;
     var empty_visits: usize = 0;
     var stored: usize = 0;
     var max_steps = count * 10;
@@ -465,7 +465,7 @@ pub fn getSome(
             if (entry == null) {
                 empty_visits += 1;
                 if (empty_visits >= 5 and empty_visits > count) {
-                    i = rand.int(ulong) & max_sizemask;
+                    i = rand.int(u64) & max_sizemask;
                     empty_visits = 0;
                 }
             } else {
@@ -489,11 +489,11 @@ pub const scanBucketFunc = *const fn (priv_data: PrivData, e: *?*Entry) void;
 
 pub fn scan(
     self: *Dict,
-    cursor: ulong,
+    cursor: u64,
     scanEntryFn: ?scanEntryFunc,
     scanBucketFn: ?scanBucketFunc,
     priv_data: PrivData,
-) ulong {
+) u64 {
     var v = cursor;
     var t0: *HashTable = &self.ht[0];
     var m0 = t0.sizemask;
@@ -617,7 +617,7 @@ pub fn isRehashing(self: *Dict) bool {
 pub fn expand(
     self: *Dict,
     allocator: Allocator,
-    len: ulong,
+    len: u64,
 ) Allocator.Error!bool {
     if (self.isRehashing() or self.ht[0].used > len) {
         return false;
@@ -663,11 +663,11 @@ pub fn empty(
     self.rehashidx = -1;
 }
 
-pub fn size(self: *Dict) ulong {
+pub fn size(self: *Dict) u64 {
     return self.ht[0].used + self.ht[1].used;
 }
 
-pub fn slots(self: *Dict) ulong {
+pub fn slots(self: *Dict) u64 {
     return self.ht[0].size + self.ht[1].size;
 }
 
@@ -715,11 +715,11 @@ pub fn destroy(self: *Dict, allocator: Allocator) void {
 
 /// Return the index where the key should be inserted, or return null
 /// if `key` exists, and the optional output parameter may be filled.
-fn keyIndex(self: *Dict, key: Key, existing: ?*?*Entry) ?ulong {
+fn keyIndex(self: *Dict, key: Key, existing: ?*?*Entry) ?u64 {
     if (existing) |exit| exit.* = null;
 
     const hash: Hash = self.ctx.hash(key);
-    var idx: ?ulong = null;
+    var idx: ?u64 = null;
     for (0..self.ht.len) |i| {
         var ht: *HashTable = &self.ht[i];
         idx = hash & ht.sizemask;
@@ -800,11 +800,11 @@ fn rehash(self: *Dict, allocator: Allocator, n: usize) bool {
     return true;
 }
 
-fn fingerprint(self: *Dict) longlong {
+fn fingerprint(self: *Dict) i64 {
     const h0 = self.ht[0];
     const h1 = self.ht[1];
 
-    var intergers: [6]longlong = undefined;
+    var intergers: [6]i64 = undefined;
 
     intergers[0] = if (h0.table == null) 0 else @bitCast(@intFromPtr(h0.table));
     intergers[1] = @bitCast(h0.size);
@@ -814,7 +814,7 @@ fn fingerprint(self: *Dict) longlong {
     intergers[4] = @bitCast(h1.size);
     intergers[5] = @bitCast(h1.used);
 
-    var hash: longlong = 0;
+    var hash: i64 = 0;
     var j: u8 = 0;
     while (j < 6) : (j += 1) {
         hash +%= intergers[j];
@@ -829,9 +829,9 @@ fn fingerprint(self: *Dict) longlong {
     return hash;
 }
 
-fn nextPower(sz: ulong) ulong {
-    var i: ulong = HT_INITIAL_SIZE;
-    const max = std.math.maxInt(long);
+fn nextPower(sz: u64) u64 {
+    var i: u64 = HT_INITIAL_SIZE;
+    const max = std.math.maxInt(i64);
     if (sz >= max) return max + 1;
     while (true) {
         if (i >= sz) {
@@ -1166,13 +1166,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const rand = @import("random.zig");
-const ctypes = @import("ctypes.zig");
-const long = ctypes.long;
-const int = ctypes.int;
-const longlong = ctypes.longlong;
-const ulong = ctypes.ulong;
-const uint = ctypes.uint;
-const double = ctypes.double;
 const expectEqual = testing.expectEqual;
 const expectEqualStrings = testing.expectEqualStrings;
 const expect = testing.expect;

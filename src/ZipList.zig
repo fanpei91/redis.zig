@@ -239,8 +239,8 @@ pub fn merge(
     return target;
 }
 
-pub fn numOfEntries(self: *ZipList) uint {
-    var cnt: uint = self.len.get();
+pub fn numOfEntries(self: *ZipList) u32 {
+    var cnt: u32 = self.len.get();
     if (cnt < maxInt(u16)) {
         return cnt;
     }
@@ -258,7 +258,7 @@ pub fn numOfEntries(self: *ZipList) uint {
     return cnt;
 }
 
-pub fn index(self: *const ZipList, idx: int) ?[*]u8 {
+pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
     var i = idx;
     var p: [*]u8 = undefined;
     if (i < 0) {
@@ -304,7 +304,7 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
     return p - prevlen.len;
 }
 
-pub fn get(entry: [*]u8) ?union(enum) { num: longlong, str: []u8 } {
+pub fn get(entry: [*]u8) ?union(enum) { num: i64, str: []u8 } {
     if (entry[0] == END) return null;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
@@ -352,9 +352,9 @@ pub fn eql(entry: [*]u8, str: []const u8) bool {
 /// skipping over the alternating entries.
 ///
 /// Returns null when the field could not be found.
-pub fn find(entry: [*]u8, str: []const u8, skip: uint) ?[*]u8 {
+pub fn find(entry: [*]u8, str: []const u8, skip: u32) ?[*]u8 {
     var p = entry;
-    var skipcnt: uint = 0;
+    var skipcnt: u32 = 0;
     var value: i64 = 0;
     var encoding: u8 = 0;
     while (p[0] != END) {
@@ -504,8 +504,8 @@ pub fn delete(
 pub fn deleteRange(
     self: *ZipList,
     allocator: Allocator,
-    idx: int,
-    num: uint,
+    idx: i32,
+    num: u32,
 ) Allocator.Error!*ZipList {
     if (self.index(idx)) |ptr| {
         return try self.cascadeDelete(allocator, ptr, num);
@@ -539,7 +539,7 @@ fn cascadeDelete(
     self: *ZipList,
     allocator: Allocator,
     ptr: [*]u8,
-    num: uint,
+    num: u32,
 ) Allocator.Error!*ZipList {
     var p = ptr;
     var zl = self;
@@ -1084,10 +1084,6 @@ const minInt = std.math.minInt;
 const maxInt = std.math.maxInt;
 const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const uint = ctypes.uint;
-const longlong = ctypes.longlong;
 const panic = std.debug.panic;
 const assert = std.debug.assert;
 const memzig = @import("mem.zig");

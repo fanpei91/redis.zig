@@ -24,21 +24,21 @@ pub const ClientData = *anyopaque;
 
 pub const FileEvent = struct {
     /// one of (READABLE|WRITABLE|BARRIER)
-    mask: int,
+    mask: i32,
     rfileProc: FileProc,
     wfileProc: FileProc,
     client_data: ClientData,
 };
 
 pub const FiredEvent = struct {
-    fd: int,
-    mask: int,
+    fd: i32,
+    mask: i32,
 };
 
 pub const TimeEvent = struct {
-    id: longlong,
-    when_sec: long,
-    when_ms: long,
+    id: i64,
+    when_sec: i64,
+    when_ms: i64,
     timeProc: TimeProc,
     finalizerProc: ?EventFinalizerProc,
     client_data: ?ClientData,
@@ -49,17 +49,17 @@ pub const TimeEvent = struct {
 pub const FileProc = *const fn (
     Allocator,
     *EventLoop,
-    fd: int,
+    fd: i32,
     client_data: ClientData,
-    mask: int,
+    mask: i32,
 ) anyerror!void;
 
 pub const TimeProc = *const fn (
     Allocator,
     *EventLoop,
-    id: longlong,
+    id: i64,
     clicent_data: ClientData,
-) anyerror!int;
+) anyerror!i32;
 
 pub const EventFinalizerProc = *const fn (
     Allocator,
@@ -74,7 +74,7 @@ pub const BeforeSleepProc = *const fn (
 
 pub const EventLoop = struct {
     /// highest file descriptor currently registered
-    maxfd: int,
+    maxfd: i32,
     /// This is used for polling API specific data
     apidata: *anyopaque,
     /// Registered events
@@ -84,14 +84,14 @@ pub const EventLoop = struct {
     /// Used to detect system clock skew
     last_time: i64,
     time_event_head: ?*TimeEvent,
-    time_event_next_id: longlong,
+    time_event_next_id: i64,
     stopped: bool,
     beforeSleep: ?BeforeSleepProc,
     afterSleep: ?BeforeSleepProc,
 
     pub fn create(
         allocator: Allocator,
-        setsize: int,
+        setsize: i32,
     ) !*EventLoop {
         std.debug.assert(setsize > 0);
 
@@ -129,7 +129,7 @@ pub const EventLoop = struct {
     pub fn resizeSetSize(
         self: *EventLoop,
         allocator: Allocator,
-        setsize: int,
+        setsize: i32,
     ) !bool {
         if (setsize == self.events.len) return true;
         if (self.maxfd >= setsize) return false;
@@ -148,7 +148,7 @@ pub const EventLoop = struct {
         return true;
     }
 
-    pub fn getSetSize(self: *EventLoop) uint {
+    pub fn getSetSize(self: *EventLoop) i32 {
         return @intCast(self.events.len);
     }
 
@@ -162,8 +162,8 @@ pub const EventLoop = struct {
 
     pub fn createFileEvent(
         self: *EventLoop,
-        fd: int,
-        mask: int,
+        fd: i32,
+        mask: i32,
         proc: FileProc,
         client_data: ClientData,
     ) !bool {
@@ -180,7 +180,7 @@ pub const EventLoop = struct {
         return true;
     }
 
-    pub fn deleteFileEvent(self: *EventLoop, fd: int, mask: int) !void {
+    pub fn deleteFileEvent(self: *EventLoop, fd: i32, mask: i32) !void {
         if (fd >= self.getSetSize()) return;
 
         const fe: *FileEvent = &self.events[@intCast(fd)];
@@ -203,7 +203,7 @@ pub const EventLoop = struct {
         }
     }
 
-    pub fn getFileEvents(self: *EventLoop, fd: int) int {
+    pub fn getFileEvents(self: *EventLoop, fd: i32) i32 {
         if (fd >= self.getSetSize()) return 0;
         return self.events[@intCast(fd)].mask;
     }
@@ -211,11 +211,11 @@ pub const EventLoop = struct {
     pub fn createTimeEvent(
         self: *EventLoop,
         allocator: Allocator,
-        milliseconds: longlong,
+        milliseconds: i64,
         proc: TimeProc,
         client_data: ?ClientData,
         finalizerProc: ?EventFinalizerProc,
-    ) !longlong {
+    ) !i64 {
         const id = self.time_event_next_id;
         self.time_event_next_id += 1;
 
@@ -236,7 +236,7 @@ pub const EventLoop = struct {
         return id;
     }
 
-    pub fn deleteTimeEvent(self: *EventLoop, id: longlong) bool {
+    pub fn deleteTimeEvent(self: *EventLoop, id: i64) bool {
         var te = self.time_event_head;
         while (te) |event| {
             if (event.id == id) {
@@ -265,9 +265,9 @@ pub const EventLoop = struct {
     pub fn processEvents(
         self: *EventLoop,
         allocator: Allocator,
-        flags: int,
-    ) !int {
-        var processed: int = 0;
+        flags: i32,
+    ) !usize {
+        var processed: usize = 0;
 
         // Nothing to do? return ASAP
         if ((flags & TIME_EVENTS == 0) and
@@ -280,14 +280,13 @@ pub const EventLoop = struct {
         // file events to process as long as we want to process time
         // events, in order to sleep until the next time event is ready
         // to fire.
-        if (self.maxfd != -1 or
-            ((flags & TIME_EVENTS != 0) and (flags & DONT_WAIT == 0)))
-        {
-            var timeout: ?long = null;
+        const waitting = flags & DONT_WAIT == 0;
+        if (self.maxfd != -1 or (flags & TIME_EVENTS != 0 and waitting)) {
             var shortest: ?*TimeEvent = null;
-            if (flags & TIME_EVENTS != 0 and flags & DONT_WAIT == 0) {
+            if (flags & TIME_EVENTS != 0 and waitting) {
                 shortest = self.searchNearestTimer();
             }
+            var timeout: ?i64 = null;
             if (shortest) |st| {
                 const now = getTime();
                 // How many milliseconds we need to wait for the next
@@ -299,7 +298,7 @@ pub const EventLoop = struct {
                     timeout = 0;
                 }
             } else {
-                if (flags & DONT_WAIT != 0) {
+                if (!waitting) {
                     timeout = 0;
                 } else {
                     timeout = null; // wait forever
@@ -318,7 +317,7 @@ pub const EventLoop = struct {
                 const fe: *FileEvent = &self.events[@intCast(fd)];
 
                 // Number of events fired for current fd.
-                var fired: int = 0;
+                var fired: usize = 0;
 
                 // Normally we execute the readable event first, and the writable
                 // event laster. This is useful as sometimes we may be able
@@ -429,7 +428,7 @@ pub const EventLoop = struct {
         return nearest;
     }
 
-    fn processTimeEvents(self: *EventLoop, allocator: Allocator) !int {
+    fn processTimeEvents(self: *EventLoop, allocator: Allocator) !usize {
         // If the system clock is moved to the future, and then set back to the
         // right value, time events may be delayed in a random way. Often this
         // means that scheduled operations will not be performed soon enough.
@@ -449,7 +448,7 @@ pub const EventLoop = struct {
         self.last_time = curr_ts;
 
         const max_id = self.time_event_next_id - 1;
-        var processed: int = 0;
+        var processed: usize = 0;
         var curr_event = self.time_event_head;
         while (curr_event) |te| {
             if (te.id == DELETED_EVENT_ID) {
@@ -504,10 +503,10 @@ pub const EventLoop = struct {
 
 /// Wait for milliseconds until the given file descriptor becomes
 /// writable/readable/exception
-pub fn wait(fd: int, mask: int, milliseconds: longlong) posix.PollError!usize {
+pub fn wait(fd: i32, mask: i32, milliseconds: i64) posix.PollError!usize {
     var pfd: posix.pollfd = undefined;
     @memset(std.mem.asBytes(&pfd), 0);
-    pfd.fd = fd;
+    pfd.fd = @intCast(fd);
 
     if (mask & READABLE != 0) pfd.events |= posix.POLL.IN;
     if (mask & WRITABLE != 0) pfd.events |= posix.POLL.OUT;
@@ -525,7 +524,7 @@ pub fn wait(fd: int, mask: int, milliseconds: longlong) posix.PollError!usize {
     return ready;
 }
 
-fn addMillisecondsToNow(milliseconds: longlong, sec: *long, ms: *long) void {
+fn addMillisecondsToNow(milliseconds: i64, sec: *i64, ms: *i64) void {
     const now = getTime();
     var when_sec = now.sec + @divTrunc(milliseconds, std.time.ms_per_s);
     var when_ms = now.ms + @rem(milliseconds, std.time.ms_per_s);
@@ -537,7 +536,7 @@ fn addMillisecondsToNow(milliseconds: longlong, sec: *long, ms: *long) void {
     ms.* = when_ms;
 }
 
-fn getTime() struct { sec: long, ms: long } {
+fn getTime() struct { sec: i64, ms: i64 } {
     const timestamp = std.time.milliTimestamp();
     const sec = @divTrunc(timestamp, std.time.ms_per_s);
     const ms = @rem(timestamp, std.time.ms_per_s);
@@ -548,8 +547,8 @@ fn getTime() struct { sec: long, ms: long } {
 }
 
 test addMillisecondsToNow {
-    var when_sec: long = 0;
-    var when_ms: long = 0;
+    var when_sec: i64 = 0;
+    var when_ms: i64 = 0;
     addMillisecondsToNow(10 * std.time.ns_per_s, &when_sec, &when_ms);
     std.debug.print("sec: {}, ms: {}\n", .{ when_sec, when_ms });
 }
@@ -559,11 +558,6 @@ test wait {
     std.debug.print("{}\n", .{ret});
 }
 
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const uint = ctypes.uint;
-const long = ctypes.long;
-const longlong = ctypes.longlong;
 const builtin = @import("builtin");
 const std = @import("std");
 const posix = std.posix;

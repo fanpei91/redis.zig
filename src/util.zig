@@ -3,7 +3,7 @@
 /// This should be the size of the buffer given to `ld2string()`
 pub const MAX_LONG_DOUBLE_CHARS = 5 * 1024;
 
-pub fn ld2string(buf: []u8, value: longdouble, humanfriendly: bool) []u8 {
+pub fn ld2string(buf: []u8, value: f80, humanfriendly: bool) []u8 {
     assert(buf.len >= MAX_LONG_DOUBLE_CHARS);
     var writer: std.Io.Writer = .fixed(buf);
     writer.printFloat(value, .{
@@ -13,20 +13,18 @@ pub fn ld2string(buf: []u8, value: longdouble, humanfriendly: bool) []u8 {
     return writer.buffered();
 }
 
-pub fn ll2string(buf: []u8, value: longlong) []u8 {
+pub fn ll2string(buf: []u8, value: i64) []u8 {
     assert(buf.len >= 20);
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch unreachable;
 }
 
-pub fn string2l(str: []const u8, lval: *long) bool {
-    lval.* = std.fmt.parseInt(long, str, 0) catch return false;
+pub fn string2l(str: []const u8, lval: *i64) bool {
+    lval.* = std.fmt.parseInt(i64, str, 0) catch return false;
     return true;
 }
 
-pub fn string2ll(str: []const u8, llval: *longlong) bool {
-    llval.* = std.fmt.parseInt(longlong, str, 0) catch
-        return false;
-    return true;
+pub fn string2ll(str: []const u8, llval: *i64) bool {
+    return string2l(str, llval);
 }
 
 pub fn sdigits10(v: i64) u32 {
@@ -75,10 +73,6 @@ test ld2string {
 }
 
 const std = @import("std");
-const ctypes = @import("ctypes.zig");
-const longdouble = ctypes.longdouble;
-const long = ctypes.long;
-const longlong = ctypes.longlong;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;

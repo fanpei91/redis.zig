@@ -106,7 +106,7 @@ pub fn List(
         const LinkedList = @This();
         first: ?*Node = null,
         last: ?*Node = null,
-        len: ulong = 0,
+        len: u64 = 0,
         ctx: Context,
 
         pub fn create(
@@ -289,7 +289,7 @@ pub fn List(
             return null;
         }
 
-        pub fn index(self: *LinkedList, idx: long) ?*Node {
+        pub fn index(self: *LinkedList, idx: i64) ?*Node {
             var node: ?*Node = null;
             if (idx < 0) {
                 var i = (-idx) - 1;
@@ -616,9 +616,6 @@ const TestVtable = struct {
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
-const ctypes = @import("ctypes.zig");
-const ulong = ctypes.ulong;
-const long = ctypes.long;
 const assert = std.debug.assert;
 const expect = testing.expect;
 const expectEqual = testing.expectEqual;

@@ -53,7 +53,7 @@ pub const Node = packed struct {
     prev: ?*Node,
     next: ?*Node,
     zl: ?*anyopaque,
-    sz: uint, // ziplist size in bytes
+    sz: u32, // ziplist size in bytes
     count: u16, // count of items in ziplist
     encoding: Encoding, // RAW==1 or LZF==2
     container: Container, // NONE==1 or ZIPLIST==2
@@ -147,7 +147,7 @@ pub const Node = packed struct {
         return false;
     }
 
-    fn sizeMeetsOptimizationRequirement(sz: usize, fill: int) bool {
+    fn sizeMeetsOptimizationRequirement(sz: usize, fill: i32) bool {
         if (fill >= 0) return false;
         const offset = @abs(fill) - 1;
         if (offset < optimization_level.len) {
@@ -250,7 +250,7 @@ pub const Node = packed struct {
     fn split(
         self: *Node,
         allocator: Allocator,
-        offset: int,
+        offset: i32,
         after: bool,
     ) Allocator.Error!*Node {
         assert(!self.isCompressed());
@@ -319,10 +319,10 @@ pub const Node = packed struct {
 /// NOTE: uncompressed length is stored in Node.sz.
 /// When Node.zl is compressed, node.zl points to a LZF
 const LZF = struct {
-    sz: uint, // LZF size in bytes
+    sz: u32, // LZF size in bytes
     compressed: [0]u8,
 
-    fn create(allocator: Allocator, sz: uint) Allocator.Error!*LZF {
+    fn create(allocator: Allocator, sz: u32) Allocator.Error!*LZF {
         const mem_size = @as(usize, @sizeOf(LZF)) + sz;
         const mem = try allocator.alignedAlloc(u8, .of(LZF), mem_size);
         const lz: *LZF = @ptrCast(@alignCast(mem.ptr));
@@ -333,7 +333,7 @@ const LZF = struct {
     fn resize(
         self: *LZF,
         allocator: Allocator,
-        new_sz: uint,
+        new_sz: u32,
     ) Allocator.Error!*LZF {
         const old_mem = self.addr();
         const old_mem_size = @as(usize, @sizeOf(LZF)) + self.sz;
@@ -366,7 +366,7 @@ const LZF = struct {
 };
 
 pub const Iterator = struct {
-    pub const Direction = enum(int) {
+    pub const Direction = enum(i32) {
         head = 0,
         tail = 1,
     };
@@ -374,7 +374,7 @@ pub const Iterator = struct {
     quicklist: *QuickList,
     current: ?*Node,
     zi: ?[*]u8,
-    offset: long, // offset in current ziplist
+    offset: i64, // offset in current ziplist
     direction: Direction,
 
     /// Get next element in iterator.
@@ -498,9 +498,9 @@ pub const Entry = struct {
     node: ?*Node,
     zi: ?[*]u8,
     value: ?[*]u8,
-    longval: longlong,
-    sz: uint,
-    offset: int,
+    longval: i64,
+    sz: u32,
+    offset: i32,
 
     fn init(e: *Entry) void {
         e.quicklist = null;
@@ -527,8 +527,8 @@ pub const Where = enum {
 const QuickList = @This();
 head: ?*Node,
 tail: ?*Node,
-count: ulong, // total count of all entries in all ziplists
-len: ulong, // number of Nodes
+count: u64, // total count of all entries in all ziplists
+len: u64, // number of Nodes
 fill: i16, // fill factor for individual nodes
 compress: u16, // depth of end nodes not to compress;0=off
 
@@ -594,14 +594,14 @@ pub fn pop(
     where: Where,
     callback: ?*const fn (
         Allocator,
-        union(enum) { num: longlong, str: []u8 },
+        union(enum) { num: i64, str: []u8 },
     ) Allocator.Error!void,
 ) Allocator.Error!bool {
     if (self.count == 0) return false;
     const node = (if (where == .head) self.head else self.tail) orelse
         return false;
 
-    const pos: int = if (where == .head) 0 else -1;
+    const pos: i32 = if (where == .head) 0 else -1;
     var entry = ZipList.cast(node.zl.?).index(pos) orelse return false;
     const un = ZipList.get(entry) orelse return false;
     switch (un) {
@@ -724,7 +724,7 @@ pub fn insertBefore(
 pub fn replaceAtIndex(
     self: *QuickList,
     allocator: Allocator,
-    idx: long,
+    idx: i64,
     data: []const u8,
 ) Allocator.Error!bool {
     var entry: Entry = undefined;
@@ -751,12 +751,12 @@ pub fn replaceAtIndex(
 pub fn delRange(
     self: *QuickList,
     allocator: Allocator,
-    start: long,
-    count: long,
+    start: i64,
+    count: i64,
 ) Allocator.Error!bool {
     if (count <= 0) return false;
 
-    var extent: ulong = @intCast(count);
+    var extent: u64 = @intCast(count);
     if (start >= 0 and extent > (self.count -% @abs(start))) {
         extent = self.count -% @abs(start);
     } else if (start < 0 and extent > @abs(start)) {
@@ -772,7 +772,7 @@ pub fn delRange(
     while (extent != 0) {
         var offset = entry.offset;
         const next = node.next;
-        var del: ulong = 0;
+        var del: u64 = 0;
         var delete_entire_node = false;
         if (offset == 0 and extent >= node.count) {
             delete_entire_node = true;
@@ -852,7 +852,7 @@ pub fn iteratorAtIndex(
     self: *const QuickList,
     allocator: Allocator,
     direction: Iterator.Direction,
-    idx: longlong,
+    idx: i64,
 ) Allocator.Error!?Iterator {
     var entry: Entry = undefined;
     const ok = try self.index(allocator, idx, &entry);
@@ -877,14 +877,14 @@ pub fn iteratorAtIndex(
 pub fn index(
     self: *const QuickList,
     allocator: Allocator,
-    idx: longlong,
+    idx: i64,
     entry: *Entry,
 ) Allocator.Error!bool {
     Entry.init(entry);
     entry.quicklist = @constCast(self);
 
     const forward = if (idx < 0) false else true;
-    var indix: ulonglong = undefined;
+    var indix: u64 = undefined;
     var n: ?*Node = null;
     if (!forward) {
         indix = @abs(idx) - 1;
@@ -898,7 +898,7 @@ pub fn index(
         return false;
     }
 
-    var accum: ulonglong = 0;
+    var accum: u64 = 0;
     while (n) |node| {
         @branchHint(.likely);
         if (accum + node.count > indix) {
@@ -916,7 +916,7 @@ pub fn index(
     } else {
         // reverse = need negative offset for tail-to-head, so undo
         // the result of the original if (index < 0) above.
-        entry.offset = -@as(int, @intCast(indix + 1 - accum));
+        entry.offset = -@as(i32, @intCast(indix + 1 - accum));
     }
 
     try entry.node.?.decompressForUse(allocator);
@@ -1653,13 +1653,6 @@ test "iteratorAtIndex.delEntry(.head)" {
 }
 
 const std = @import("std");
-const ctypes = @import("ctypes.zig");
-const ulong = ctypes.ulong;
-const int = ctypes.int;
-const uint = ctypes.uint;
-const long = ctypes.long;
-const longlong = ctypes.longlong;
-const ulonglong = ctypes.ulonglong;
 const Allocator = std.mem.Allocator;
 const ZipList = @import("ZipList.zig");
 const assert = std.debug.assert;

@@ -7,14 +7,14 @@ pub fn create(allocator: Allocator, el: *EventLoop) !void {
     const state = try allocator.create(State);
     errdefer allocator.destroy(state);
 
-    state.events = try allocator.alloc(posix.Kevent, el.getSetSize());
+    state.events = try allocator.alloc(posix.Kevent, @intCast(el.getSetSize()));
     errdefer allocator.free(state.events);
 
     state.kqfd = try posix.kqueue();
     el.apidata = state;
 }
 
-pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn addEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
 
     var ke: posix.Kevent = .{
@@ -35,7 +35,7 @@ pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
     }
 }
 
-pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn delEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
 
     var ke: posix.Kevent = .{
@@ -56,7 +56,7 @@ pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
     }
 }
 
-pub fn resize(allocator: Allocator, el: *EventLoop, setsize: int) !void {
+pub fn resize(allocator: Allocator, el: *EventLoop, setsize: i32) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     state.events = try allocator.realloc(
         state.events,
@@ -64,7 +64,7 @@ pub fn resize(allocator: Allocator, el: *EventLoop, setsize: int) !void {
     );
 }
 
-pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
+pub fn poll(el: *EventLoop, timeout_in_ms: ?i64) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     var retval: usize = undefined;
 
@@ -82,7 +82,7 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
     if (retval > 0) {
         numevents = retval;
         for (0..numevents) |i| {
-            var mask: int = 0;
+            var mask: i32 = 0;
             const e = state.events[i];
             if (e.filter == posix.system.EVFILT.READ) mask |= ae.READABLE;
             if (e.filter == posix.system.EVFILT.WRITE) mask |= ae.WRITABLE;
@@ -108,7 +108,4 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ae = @import("ae.zig");
 const EventLoop = ae.EventLoop;
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const long = ctypes.long;
 const posix = std.posix;

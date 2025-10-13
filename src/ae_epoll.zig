@@ -7,14 +7,14 @@ pub fn create(allocator: Allocator, el: *EventLoop) !void {
     const state = try allocator.create(State);
     errdefer allocator.destroy(state);
 
-    state.events = try allocator.alloc(linux.epoll_event, el.getSetSize());
+    state.events = try allocator.alloc(linux.epoll_event, @intCast(el.getSetSize()));
     errdefer allocator.free(state.events);
 
     state.epfd = try posix.epoll_create1(0);
     el.apidata = state;
 }
 
-pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn addEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const fi: usize = @intCast(fd);
     // If the fd was already monitored for some event, we need a MOD
     // operation. Otherwise we need an ADD operation.
@@ -38,7 +38,7 @@ pub fn addEvent(el: *EventLoop, fd: int, mask: int) !void {
     try posix.epoll_ctl(state.epfd, op, fd, &ee);
 }
 
-pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
+pub fn delEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const msk = el.events[@intCast(fd)].mask & (~mask);
     var ee: linux.epoll_event = .{
         .events = 0,
@@ -60,7 +60,7 @@ pub fn delEvent(el: *EventLoop, fd: int, mask: int) !void {
 pub fn resize(
     allocator: Allocator,
     el: *EventLoop,
-    setsize: int,
+    setsize: i32,
 ) !void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     state.events = try allocator.realloc(
@@ -69,7 +69,7 @@ pub fn resize(
     );
 }
 
-pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
+pub fn poll(el: *EventLoop, timeout_in_ms: ?i64) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
 
     const timeout: i32 = @intCast(timeout_in_ms orelse -1);
@@ -80,7 +80,7 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?long) !usize {
     );
     if (ready > 0) {
         for (0..ready) |i| {
-            var mask: int = 0;
+            var mask: i32 = 0;
             const e = state.events[i];
 
             if (e.events & linux.EPOLL.IN != 0) mask |= ae.READABLE;
@@ -110,8 +110,5 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ae = @import("ae.zig");
 const EventLoop = ae.EventLoop;
-const ctypes = @import("ctypes.zig");
-const int = ctypes.int;
-const long = ctypes.long;
 const linux = std.os.linux;
 const posix = std.posix;

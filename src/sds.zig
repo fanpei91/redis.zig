@@ -108,7 +108,7 @@ pub fn empty(allocator: Allocator) Allocator.Error!String {
 
 pub fn fromLonglong(
     allocator: Allocator,
-    num: longlong,
+    num: i64,
 ) Allocator.Error!String {
     var buf: [20]u8 = undefined;
     const digits = util.ll2string(&buf, num);
@@ -681,11 +681,11 @@ test empty {
 test fromLonglong {
     const allocator = testing.allocator;
 
-    const min = try fromLonglong(allocator, std.math.minInt(longlong));
+    const min = try fromLonglong(allocator, std.math.minInt(i64));
     defer free(allocator, min);
     try expectEqualStrings("-9223372036854775808", bufSlice(min));
 
-    const max = try fromLonglong(allocator, std.math.maxInt(longlong));
+    const max = try fromLonglong(allocator, std.math.maxInt(i64));
     defer free(allocator, max);
     try expectEqualStrings("9223372036854775807", bufSlice(max));
 }
@@ -1041,8 +1041,6 @@ test "cmp.lt" {
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const ctypes = @import("ctypes.zig");
-const longlong = ctypes.longlong;
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const testing = std.testing;

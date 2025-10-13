@@ -51,8 +51,8 @@ pub const Zset = struct {
 pub const SkipList = struct {
     header: *Node,
     tail: ?*Node,
-    length: ulong,
-    level: uint,
+    length: u64,
+    level: u32,
 
     const SizedNode = struct {
         size: usize,
@@ -66,12 +66,12 @@ pub const SkipList = struct {
 
         const Level = struct {
             forward: ?*Node,
-            span: ulong,
+            span: u64,
         };
 
         pub fn create(
             allocator: Allocator,
-            num_level: uint,
+            num_level: u32,
             score: f64,
             ele: ?sds.String,
         ) Allocator.Error!*Node {
@@ -131,7 +131,7 @@ pub const SkipList = struct {
     ) Allocator.Error!*Node {
         assert(!isNan(score));
 
-        var rank: [ZSKIPLIST_MAXLEVEL]ulong = undefined;
+        var rank: [ZSKIPLIST_MAXLEVEL]u64 = undefined;
         var update: [ZSKIPLIST_MAXLEVEL]*Node = undefined;
         var x = self.header;
         var i = self.level - 1;
@@ -221,7 +221,7 @@ pub const SkipList = struct {
     }
 
     pub fn getRank(self: *const SkipList, score: f64, ele: sds.String) usize {
-        var rank: ulong = 0;
+        var rank: u64 = 0;
         var x = self.header;
         var i = self.level - 1;
         while (i >= 0) {
@@ -420,9 +420,6 @@ const random = @import("random.zig");
 const isNan = std.math.isNan;
 const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
-const ctypes = @import("ctypes.zig");
-const ulong = ctypes.ulong;
-const uint = ctypes.uint;
 const sds = @import("sds.zig");
 const server = @import("server.zig");
 const shared = server.shared;
