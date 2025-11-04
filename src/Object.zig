@@ -39,9 +39,12 @@ pub const Encoding = enum(u4) {
 const Object = @This();
 type: Type,
 encoding: Encoding,
-// lru: std.meta.Int(.unsigned, server.LRU_BITS),
+//lru: std.meta.Int(.unsigned, Server.LRU_BITS),
 refcount: i32,
-ptr: *anyopaque,
+data: union {
+    ptr: *anyopaque,
+    int: i64,
+},
 
 pub fn create(
     allocator: Allocator,
@@ -51,7 +54,21 @@ pub fn create(
     const obj = try allocator.create(Object);
     obj.type = typ;
     obj.encoding = .raw;
-    obj.ptr = ptr;
+    obj.data = .{ .ptr = ptr };
+    obj.refcount = 1;
+
+    // TODO: lru
+    return obj;
+}
+
+pub fn createInt(
+    allocator: Allocator,
+    int: i64,
+) Allocator.Error!*Object {
+    const obj = try allocator.create(Object);
+    obj.type = .string;
+    obj.encoding = .int;
+    obj.data = .{ .int = int };
     obj.refcount = 1;
 
     // TODO: lru
@@ -114,7 +131,7 @@ fn createEmbeddedString(
     obj.encoding = .embstr;
     obj.refcount = 1;
     // TODO: obj.lru
-    obj.ptr = s;
+    obj.data = .{ .ptr = s };
 
     return obj;
 }
@@ -158,25 +175,22 @@ fn createStringFromLonglongWithOptions(
     from_shared: bool,
 ) Allocator.Error!*Object {
     var enabled = from_shared;
-    if (server.instance.maxmemory == 0 or
-        (server.instance.maxmemory_policy &
-            server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0)
+    if (Server.instance.maxmemory == 0 or
+        (Server.instance.maxmemory_policy &
+            Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0)
     {
         // If the maxmemory policy permits, we can still return shared integers
         // even if `from_shared` is false.
         enabled = true;
     }
-    if (value >= 0 and value < server.SHARED_INTEGERS and enabled) {
-        const o = server.shared.integers[@abs(value)];
+    if (value >= 0 and value < Server.SHARED_INTEGERS and enabled) {
+        const o = Server.shared.integers[@abs(value)];
         o.incrRefCount();
         return o;
     }
 
-    if (value >= minInt(isize) and value <= maxInt(isize)) {
-        const uv: usize = @bitCast(@as(isize, @intCast(value)));
-        const ptr: *allowzero usize = @ptrFromInt(uv);
-        const o = try create(allocator, .string, ptr);
-        o.encoding = .int;
+    if (value >= minInt(i64) and value <= maxInt(i64)) {
+        const o = try createInt(allocator, value);
         return o;
     }
 
@@ -205,18 +219,17 @@ pub fn dupeString(
         .raw => {
             return createRawString(
                 allocator,
-                sds.bufSlice(sds.cast(self.ptr)),
+                sds.asBytes(sds.cast(self.data.ptr)),
             );
         },
         .embstr => {
             return createEmbeddedString(
                 allocator,
-                sds.bufSlice(sds.cast(self.ptr)),
+                sds.asBytes(sds.cast(self.data.ptr)),
             );
         },
         .int => {
-            const o = try create(allocator, .string, self.ptr);
-            o.encoding = .int;
+            const o = try createInt(allocator, self.data.int);
             return o;
         },
         else => @panic("Wrong encoding."),
@@ -229,17 +242,24 @@ pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
 
     if (self == other) return .eq;
 
-    const a: sds.String = @ptrCast(self.ptr);
-    const b: sds.String = @ptrCast(other.ptr);
+    if (self.encoding == .int and other.encoding == .int) {
+        return std.math.order(
+            self.data.int,
+            other.data.int,
+        );
+    }
+
+    assert(self.encoding != .int);
+    assert(other.encoding != .int);
+
+    const a: sds.String = @ptrCast(self.data.ptr);
+    const b: sds.String = @ptrCast(other.data.ptr);
     return sds.cmp(a, b);
 }
 
 pub fn equalStrings(self: *Object, other: *Object) bool {
     if (self.encoding == .int and other.encoding == .int) {
-        // How does it store int in pointer address? Example:
-        // self.ptr  = @ptrFrontInt(100);
-        // other.ptr = @ptrFrontInt(100);
-        return self.ptr == other.ptr;
+        return self.data.int == other.data.int;
     }
     return self.compareStrings(other) == .eq;
 }
@@ -271,7 +291,7 @@ pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
 pub fn createSet(allocator: Allocator) Allocator.Error!*Object {
     const d = try Dict.create(
         allocator,
-        server.setDictVtable,
+        Server.setDictVTable,
         null,
     );
     errdefer d.destroy(allocator);
@@ -333,15 +353,13 @@ pub fn resetRefCount(self: *Object) *Object {
 pub fn stringLen(self: *Object) usize {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        return sds.getLen(sds.cast(self.ptr));
+        return sds.getLen(sds.cast(self.data.ptr));
     }
-    const sv: isize = @bitCast(@intFromPtr(self.ptr));
-    const v: i64 = @intCast(sv);
-    return util.sdigits10(v);
+    return util.sdigits10(self.data.int);
 }
 
 pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *i64) bool {
-    return util.string2ll(sds.bufSlice(s), llval);
+    return util.string2ll(sds.asBytes(s), llval);
 }
 
 /// Get a decoded version of an encoded object (returned as a new object).
@@ -355,10 +373,8 @@ pub fn getDecoded(
         return self;
     }
     if (self.type == .string and self.encoding == .int) {
-        const sv: isize = @bitCast(@intFromPtr(self.ptr));
-        const v: i64 = @truncate(sv);
         var buf: [20]u8 = undefined;
-        const digits = util.ll2string(&buf, v);
+        const digits = util.ll2string(&buf, self.data.int);
         return createString(allocator, digits);
     }
     @panic("Unknown encoding type");
@@ -374,23 +390,21 @@ pub fn tryEncoding(
     if (!self.sdsEncoded()) return self;
     if (self.refcount > 1) return self;
 
-    const slice = sds.bufSlice(sds.cast(self.ptr));
+    const slice = sds.asBytes(sds.cast(self.data.ptr));
     var value: i64 = undefined;
     if (slice.len <= 20 and util.string2l(slice, &value)) {
-        const use_shared_integers = (server.instance.maxmemory == 0 or
-            (server.instance.maxmemory_policy & server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
-        if (use_shared_integers and value > 0 and value < server.SHARED_INTEGERS) {
+        const use_shared_integers = (Server.instance.maxmemory == 0 or
+            (Server.instance.maxmemory_policy & Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
+        if (use_shared_integers and value > 0 and value < Server.SHARED_INTEGERS) {
             self.decrRefCount(allocator);
-            const obj = server.shared.integers[@as(usize, @intCast(value))];
+            const obj = Server.shared.integers[@as(usize, @intCast(value))];
             obj.incrRefCount();
             return obj;
         } else {
             if (self.encoding == .raw) {
-                sds.free(allocator, sds.cast(self.ptr));
+                sds.free(allocator, sds.cast(self.data.ptr));
                 self.encoding = .int;
-                const uv: usize = @bitCast(@as(isize, value));
-                const ptr: *allowzero usize = @ptrFromInt(uv);
-                self.ptr = ptr;
+                self.data = .{ .int = value };
                 return self;
             } else if (self.encoding == .embstr) {
                 self.decrRefCount(allocator);
@@ -434,46 +448,74 @@ pub fn trimStringIfNeeded(
     if (self.encoding != .raw) {
         return;
     }
-    const s = sds.cast(self.ptr);
+    var s = sds.cast(self.data.ptr);
     if (sds.getAvail(s) > sds.getLen(s) / 10) {
-        self.ptr = try sds.removeAvailSpace(allocator, s);
+        s = try sds.removeAvailSpace(allocator, s);
+        self.data = .{ .ptr = s };
     }
 }
 
-pub fn sdsEncoded(self: *Object) bool {
+pub fn sdsEncoded(self: *const Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
 
-pub fn getLongLong(self: *Object, llval: *i64) bool {
+pub fn getLongLong(self: *const Object, llval: *i64) bool {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
         return util.string2ll(
-            sds.bufSlice(sds.cast(self.ptr)),
+            sds.asBytes(sds.cast(self.data.ptr)),
             llval,
         );
     }
     if (self.encoding == .int) {
-        const sv: isize = @bitCast(@intFromPtr(self.ptr));
-        llval.* = sv;
+        llval.* = self.data.int;
         return true;
     }
     @panic("Unknown string encoding");
+}
+
+pub fn getLongLongOrReply(
+    self: *const Object,
+    cli: *Client,
+    target: *i64,
+    msg: ?[]const u8,
+) Allocator.Error!bool {
+    if (!self.getLongLong(target)) {
+        if (msg) |m| {
+            try cli.addReplyErr(m);
+        } else {
+            try cli.addReplyErr("value is not an integer or out of range");
+        }
+        return false;
+    }
+    return true;
 }
 
 pub fn strEncoding(self: *Object) []const u8 {
     return self.encoding.toString();
 }
 
+pub fn free(self: *Object, allocator: Allocator) void {
+    if (self.type == .string and self.encoding == .embstr) {
+        const s: sds.String = @ptrCast(self.data.ptr);
+        const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
+        const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
+        allocator.free(mem[0..mem_size]);
+        return;
+    }
+    allocator.destroy(self);
+}
+
 fn freeString(self: *Object, allocator: Allocator) void {
     if (self.encoding == .raw) {
-        const s: sds.String = @ptrCast(self.ptr);
+        const s: sds.String = @ptrCast(self.data.ptr);
         sds.free(allocator, s);
     }
 }
 
 fn freeList(self: *Object, allocator: Allocator) void {
     if (self.encoding == .quicklist) {
-        const ql: *QuickList = @ptrCast(@alignCast(self.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(self.data.ptr));
         ql.release(allocator);
     } else {
         @panic("Unknown list encoding type");
@@ -483,11 +525,11 @@ fn freeList(self: *Object, allocator: Allocator) void {
 fn freeSet(self: *Object, allocator: Allocator) void {
     switch (self.encoding) {
         .intset => {
-            const is: *IntSet = @ptrCast(@alignCast(self.ptr));
+            const is: *IntSet = @ptrCast(@alignCast(self.data.ptr));
             is.free(allocator);
         },
         .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.ptr));
+            const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
             d.destroy(allocator);
         },
         else => @panic("Unknown set encoding type"),
@@ -497,11 +539,11 @@ fn freeSet(self: *Object, allocator: Allocator) void {
 fn freeZset(self: *Object, allocator: Allocator) void {
     switch (self.encoding) {
         .skiplist => {
-            const zl: *Zset = @ptrCast(@alignCast(self.ptr));
+            const zl: *Zset = @ptrCast(@alignCast(self.data.ptr));
             zl.destroy(allocator);
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.ptr);
+            const zl: *ZipList = ZipList.cast(self.data.ptr);
             zl.free(allocator);
         },
         else => @panic("Unknown sorted set encoding type"),
@@ -511,34 +553,23 @@ fn freeZset(self: *Object, allocator: Allocator) void {
 fn freeHash(self: *Object, allocator: Allocator) void {
     switch (self.encoding) {
         .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.ptr));
+            const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
             d.destroy(allocator);
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.ptr);
+            const zl: *ZipList = ZipList.cast(self.data.ptr);
             zl.free(allocator);
         },
         else => @panic("Unknown hash encoding type"),
     }
 }
 
-fn free(self: *Object, allocator: Allocator) void {
-    if (self.type == .string and self.encoding == .embstr) {
-        const s: sds.String = @ptrCast(self.ptr);
-        const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
-        const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
-        allocator.free(mem[0..mem_size]);
-        return;
-    }
-    allocator.destroy(self);
-}
-
 test createEmbeddedString {
     const allocator = std.testing.allocator;
     var o = try createEmbeddedString(allocator, "hello");
     defer o.decrRefCount(allocator);
-    const s: sds.String = @ptrCast(o.ptr);
-    try expectEqualStrings("hello", sds.bufSlice(s));
+    const s: sds.String = @ptrCast(o.data.ptr);
+    try expectEqualStrings("hello", sds.asBytes(s));
 }
 
 test isSdsRepresentableAsLongLong {
@@ -562,7 +593,7 @@ const meta = std.meta;
 const Allocator = std.mem.Allocator;
 const sds = @import("sds.zig");
 const assert = std.debug.assert;
-const server = @import("server.zig");
+const Server = @import("Server.zig");
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectEqual = std.testing.expectEqual;
@@ -577,3 +608,4 @@ const QuickList = @import("QuickList.zig");
 const Dict = @import("Dict.zig");
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;
+const Client = @import("networking.zig").Client;

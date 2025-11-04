@@ -1,0 +1,423 @@
+const YES_NO_ARG_ERR = "argument must be 'yes' or 'no'";
+
+const configEnum = struct {
+    name: []const u8,
+    val: i32,
+};
+
+const maxmemory_policy_enum = [_]configEnum{
+    .{ .name = "volatile-lru", .val = Server.MAXMEMORY_VOLATILE_LRU },
+    .{ .name = "volatile-lfu", .val = Server.MAXMEMORY_VOLATILE_LFU },
+    .{ .name = "volatile-random", .val = Server.MAXMEMORY_VOLATILE_RANDOM },
+    .{ .name = "volatile-ttl", .val = Server.MAXMEMORY_VOLATILE_TTL },
+    .{ .name = "allkeys-lru", .val = Server.MAXMEMORY_ALLKEYS_LRU },
+    .{ .name = "allkeys-lfu", .val = Server.MAXMEMORY_ALLKEYS_LFU },
+    .{ .name = "allkeys-random", .val = Server.MAXMEMORY_ALLKEYS_RANDOM },
+    .{ .name = "noeviction", .val = Server.MAXMEMORY_NO_EVICTION },
+};
+
+/// Get enum value from name. If there is no match std.math.minInt(i32) is
+/// returned.
+fn configEnumGetValue(ce: []const configEnum, name: []const u8) i32 {
+    for (ce) |e| {
+        if (std.ascii.eqlIgnoreCase(e.name, name)) {
+            return e.val;
+        }
+    }
+    return std.math.minInt(i32);
+}
+
+/// Load the server configuration from the specified filename.
+/// The function appends the additional configuration directives stored
+/// in the 'options' string to the config file before loading.
+///
+/// Both filename and options can be null, in such a case are considered
+/// empty. This way load() can be used to just load a file or
+/// just load a string.
+pub fn load(
+    server: *Server,
+    filename: ?sds.String,
+    options: ?sds.String,
+) !void {
+    const allocator = server.allocator;
+    var config = try sds.empty(allocator);
+    defer sds.free(allocator, config);
+    var buf: [Server.CONFIG_MAX_LINE]u8 = undefined;
+
+    if (filename) |f| {
+        const filepath = sds.asBytes(f);
+        var fp: std.fs.File = undefined;
+        if (filepath.len == 1 and filepath[0] == '-') {
+            fp = std.fs.File.stdin();
+        } else {
+            fp = std.fs.openFileAbsolute(filepath, .{}) catch |err| {
+                log.warn("Can't open config file '{s}'", .{filepath});
+                return err;
+            };
+        }
+        defer fp.close();
+        while (true) {
+            const nread = try fp.read(&buf);
+            if (nread == 0) break;
+            config = try sds.cat(allocator, config, buf[0..nread]);
+        }
+    }
+
+    if (options) |o| {
+        config = try sds.cat(allocator, config, "\n");
+        config = try sds.cat(allocator, config, sds.asBytes(o));
+    }
+
+    return try loadFromString(server, config);
+}
+
+fn loadFromString(
+    server: *Server,
+    config: sds.String,
+) (Allocator.Error || error{InvalidConfig})!void {
+    const allocator = server.allocator;
+    const lines = try sds.split(allocator, sds.asBytes(config), "\n");
+    defer sds.freeSplitRes(allocator, lines);
+    var err: ?[]const u8 = null;
+    var i: usize = 0;
+    var linenum: usize = 0;
+    biz: {
+        for (lines, 0..) |line, x| {
+            i = x;
+            linenum = i + 1;
+
+            sds.trim(line, "\t\r\n");
+            const bytes = sds.asBytes(line);
+
+            //Skip comments and blank lines
+            if (bytes.len == 0 or bytes[0] == '#') continue;
+
+            // Split into arguments
+            const argv = try sds.splitArgs(allocator, bytes) orelse {
+                err = "Unbalanced quotes in configuration line";
+                break :biz;
+            };
+            defer sds.freeSplitRes(allocator, argv);
+            const argc = argv.len;
+
+            // Skip this line if the resulting command vector is empty.
+            if (argc == 0) continue;
+
+            // Execute config directives
+            sds.toLower(argv[0]);
+            const option = sds.asBytes(argv[0]);
+
+            if (eql(option, "hz") and argc == 2) {
+                server.config_hz = std.fmt.parseInt(
+                    u32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.config_hz < Server.CONFIG_MIN_HZ) {
+                    server.config_hz = Server.CONFIG_MIN_HZ;
+                }
+                if (server.config_hz > Server.CONFIG_MAX_HZ) {
+                    server.config_hz = Server.CONFIG_MAX_HZ;
+                }
+                continue;
+            }
+
+            if (eql(option, "dynamic-hz") and argc == 2) {
+                server.dynamic_hz = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "tcp-backlog") and argc == 2) {
+                server.tcp_backlog = std.fmt.parseInt(
+                    u32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch {
+                    err = "Invalid backlog value";
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "protected-mode") and argc == 2) {
+                server.protected_mode = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "requirepass") and argc == 2) {
+                const pass = sds.asBytes(argv[1]);
+                if (pass.len > Server.CONFIG_AUTHPASS_MAX_LEN) {
+                    err = "Password is longer than CONFIG_AUTHPASS_MAX_LEN";
+                    break :biz;
+                }
+                server.requirepass = pwd: {
+                    if (pass.len == 0) {
+                        break :pwd null;
+                    } else {
+                        break :pwd try allocator.dupe(u8, pass);
+                    }
+                };
+                continue;
+            }
+
+            if (eql(option, "bind") and argc >= 2) {
+                const addresses = argc - 1;
+                if (addresses > Server.CONFIG_BINDADDR_MAX) {
+                    err = "Too many bind addresses specified";
+                    break :biz;
+                }
+                for (0..addresses) |j| {
+                    server.bindaddr[j] = try allocator.dupe(
+                        u8,
+                        sds.asBytes(argv[j + 1]),
+                    );
+                }
+                server.bindaddr_count = addresses;
+                continue;
+            }
+
+            if (eql(option, "unixsocket") and argc == 2) {
+                server.unixsocket = try allocator.dupe(
+                    u8,
+                    sds.asBytes(argv[1]),
+                );
+                continue;
+            }
+
+            if (eql(option, "unixsocketperm") and argc == 2) {
+                err = "Invalid socket file permissions";
+                const v = std.fmt.parseInt(
+                    std.posix.mode_t,
+                    sds.asBytes(argv[1]),
+                    8,
+                ) catch {
+                    break :biz;
+                };
+                if (v > 0o777) {
+                    break :biz;
+                }
+                server.unixsocketperm = v;
+                continue;
+            }
+
+            if (eql(option, "port") and argc == 2) {
+                server.port = std.fmt.parseInt(
+                    u16,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch {
+                    err = "Invalid port";
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "databases") and argc == 2) {
+                server.dbnum = std.fmt.parseInt(
+                    u32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.dbnum < 1) {
+                    err = "Invalid number of databases";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "tcp-keepalive") and argc == 2) {
+                server.tcpkeepalive = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch -1;
+                if (server.tcpkeepalive < 0) {
+                    err = "Invalid tcp-keepalive value";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "client-query-buffer-limit") and argc == 2) {
+                server.client_max_querybuf_len = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+
+            if (eql(option, "proto-max-bulk-len") and argc == 2) {
+                server.proto_max_bulk_len = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+
+            if (eql(option, "maxclients") and argc == 2) {
+                server.maxclients = std.fmt.parseInt(
+                    u32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.maxclients < 1) {
+                    err = "Invalid max clients limit";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "maxmemory") and argc == 2) {
+                server.maxmemory = memtosize(sds.asBytes(argv[1])) catch 0;
+                continue;
+            }
+
+            if (eql(option, "maxmemory-policy") and argc == 2) {
+                server.maxmemory_policy = configEnumGetValue(
+                    &maxmemory_policy_enum,
+                    sds.asBytes(argv[1]),
+                );
+                if (server.maxmemory_policy == std.math.minInt(i32)) {
+                    err = "Invalid maxmemory policy";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "maxmemory-samples") and argc == 2) {
+                server.maxmemory_samples = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.maxmemory_samples <= 0) {
+                    err = "maxmemory-samples must be 1 or greater";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "timeout") and argc == 2) {
+                server.maxidletime = std.fmt.parseInt(
+                    u32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch {
+                    err = "Invalid timeout value";
+                    break :biz;
+                };
+                continue;
+            }
+
+            err = "Bad directive or wrong number of arguments";
+            break :biz;
+        }
+        return;
+    }
+    log.err("*** CONFIG FILE ERROR ***", .{});
+    log.err("Reading the configuration file, at line {}", .{linenum});
+    log.err(">>> '{s}'", .{sds.asBytes(lines[i])});
+    if (err) |e| {
+        log.err("{s}", .{e});
+    }
+    return error.InvalidConfig;
+}
+
+inline fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn parseYesNo(s: []const u8) error{InvalidArgument}!bool {
+    if (std.ascii.eqlIgnoreCase(s, "yes")) {
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(s, "no")) {
+        return false;
+    }
+    return error.InvalidArgument;
+}
+
+/// Convert a string representing an amount of memory into the number of
+/// bytes, so for instance memtoll("1Gb") will return 1073741824 that is
+/// (1024*1024*1024).
+fn memtosize(
+    s: []const u8,
+) (error{InvalidUnit} || std.fmt.ParseIntError)!usize {
+    if (s.len == 0) return error.InvalidUnit;
+    var mem = s;
+    if (mem[0] == '-') mem = mem[1..];
+    if (mem.len == 0) return error.InvalidUnit;
+
+    var i: usize = 0;
+    for (mem, 0..) |c, j| {
+        if (!std.ascii.isDigit(c)) {
+            i = j;
+            break;
+        }
+    }
+    const caseEql = std.ascii.eqlIgnoreCase;
+    var mul: usize = 0;
+    const unit = mem[i..];
+    if (i == 0 or caseEql(unit, "b")) {
+        mul = 1;
+    } else if (caseEql(unit, "k")) {
+        mul = 1000;
+    } else if (caseEql(unit, "kb")) {
+        mul = 1024;
+    } else if (caseEql(unit, "m")) {
+        mul = 1000 * 1000;
+    } else if (caseEql(unit, "mb")) {
+        mul = 1024 * 1024;
+    } else if (caseEql(unit, "g")) {
+        mul = 1000 * 1000 * 1000;
+    } else if (caseEql(unit, "gb")) {
+        mul = 1024 * 1024 * 1024;
+    } else if (caseEql(unit, "t")) {
+        mul = 1000 * 1000 * 1000 * 1000;
+    } else if (caseEql(unit, "tb")) {
+        mul = 1024 * 1024 * 1024 * 1024;
+    } else {
+        return error.InvalidUnit;
+    }
+    const digits = if (i == 0) mem[0..] else mem[0..i];
+    const val = try std.fmt.parseInt(usize, digits, 10);
+    return val * mul;
+}
+
+test memtosize {
+    try expectEqual(
+        2 * 1024 * 1024,
+        try memtosize("2mb"),
+    );
+    try expectEqual(
+        2,
+        try memtosize("2"),
+    );
+    try expectEqual(
+        2,
+        try memtosize("-2"),
+    );
+    try std.testing.expectError(
+        std.fmt.ParseIntError.InvalidCharacter,
+        memtosize("mb"),
+    );
+    try std.testing.expectError(
+        error.InvalidUnit,
+        memtosize(""),
+    );
+    try std.testing.expectError(
+        error.InvalidUnit,
+        memtosize("-"),
+    );
+}
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const sds = @import("sds.zig");
+const Server = @import("Server.zig");
+const log = std.log.scoped(.config);
+const expectEqual = std.testing.expectEqual;

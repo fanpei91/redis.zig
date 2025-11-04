@@ -30,7 +30,7 @@ pub fn genHash(key: []const u8) Hash {
     );
 }
 
-pub const Vtable = struct {
+pub const VTable = struct {
     hash: *const fn (priv_data: PrivData, key: Key) Hash,
     eql: ?*const fn (priv_data: PrivData, key1: Key, key2: Key) bool,
     dupeKey: ?*const fn (priv_data: PrivData, Allocator, key: Key) Allocator.Error!Key,
@@ -115,7 +115,7 @@ pub const Iterator = struct {
 
 const Context = struct {
     priv_data: PrivData,
-    vtable: *const Vtable,
+    vtable: *const VTable,
 
     fn eql(self: *Context, key1: Key, key2: Key) bool {
         if (self.vtable.eql) |cmp| {
@@ -251,7 +251,7 @@ pub fn iterator(self: *Dict, safe: bool) Iterator {
 
 pub fn create(
     allocator: Allocator,
-    vtable: *const Vtable,
+    vtable: *const VTable,
     priv_data: PrivData,
 ) Allocator.Error!*Dict {
     const self = try allocator.create(Dict);
@@ -906,18 +906,18 @@ test "add() | addOrFind() || find() | fetchVal()" {
         const found = dict.find(allocator, skey);
         try expect(found != null);
         try expectEqualStrings(
-            sds.bufSlice(skey),
-            sds.bufSlice(sds.cast(found.?.key)),
+            sds.asBytes(skey),
+            sds.asBytes(sds.cast(found.?.key)),
         );
         try expectEqualStrings(
-            sds.bufSlice(sval),
-            sds.bufSlice(sds.cast(found.?.v.val.?)),
+            sds.asBytes(sval),
+            sds.asBytes(sds.cast(found.?.v.val.?)),
         );
 
         const fetched_val = dict.fetchValue(allocator, skey);
         try expectEqualStrings(
-            sds.bufSlice(sval),
-            sds.bufSlice(sds.cast(fetched_val.?)),
+            sds.asBytes(sval),
+            sds.asBytes(sds.cast(fetched_val.?)),
         );
     }
 
@@ -930,8 +930,8 @@ test "add() | addOrFind() || find() | fetchVal()" {
     const existing_entry = try dict.addOrFind(allocator, key);
     try expectEqual(new_entry, existing_entry);
     try expectEqualStrings(
-        sds.bufSlice(val),
-        sds.bufSlice(sds.cast(existing_entry.v.val.?)),
+        sds.asBytes(val),
+        sds.asBytes(sds.cast(existing_entry.v.val.?)),
     );
 }
 
@@ -983,7 +983,7 @@ test "replace()" {
     try expectEqual(.replace, ret);
 
     const found = dict.find(allocator, key);
-    try expectEqualStrings("v2", sds.bufSlice(sds.cast(found.?.v.val.?)));
+    try expectEqualStrings("v2", sds.asBytes(sds.cast(found.?.v.val.?)));
 }
 
 test "delete()" {
@@ -1105,7 +1105,7 @@ test "scan()" {
 const TestSdsVtable = struct {
     const Self = @This();
 
-    const vtable: *const Vtable = &.{
+    const vtable: *const VTable = &.{
         .hash = hash,
         .eql = eql,
         .dupeKey = null,
@@ -1144,13 +1144,13 @@ const TestSdsVtable = struct {
     fn eql(_: PrivData, key: Key, other: Key) bool {
         return std.mem.eql(
             u8,
-            sds.bufSlice(sds.cast(key)),
-            sds.bufSlice(sds.cast(other)),
+            sds.asBytes(sds.cast(key)),
+            sds.asBytes(sds.cast(other)),
         );
     }
 
     fn hash(_: PrivData, key: Key) Hash {
-        return genHash(sds.bufSlice(sds.cast(key)));
+        return genHash(sds.asBytes(sds.cast(key)));
     }
 
     fn releaseKey(_: PrivData, allocator: Allocator, key: Key) void {

@@ -57,6 +57,50 @@ pub fn digits10(v: u64) u32 {
     return 12 + digits10(v / 1000000000000);
 }
 
+/// Given the filename, return the absolute path as an SDS string, or NULL
+/// if it fails for some reason. Note that "filename" may be an absolute path
+/// already, this will be detected and handled correctly.
+pub fn getAbsolutePath(
+    allocator: Allocator,
+    filename: []const u8,
+) !sds.String {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = try std.fs.realpath(filename, &buffer);
+    return try sds.new(allocator, realpath);
+}
+
+/// Return true if strings are the same, false if they are not.
+/// The comparison is performed in a way that prevents an attacker to obtain
+/// information about the nature of the strings just monitoring the execution
+/// time of the function.
+///
+/// Note that limiting the comparison length to strings up to max_len bytes we
+/// can avoid leaking any information about the password length and any
+/// possible branch misprediction related leak.
+pub fn timeIndependentEql(
+    comptime max_len: usize,
+    a: []const u8,
+    b: []const u8,
+) bool {
+    if (a.len > max_len or b.len > max_len) {
+        return false;
+    }
+
+    var bufa: [max_len]u8 = @splat(0);
+    var bufb: [max_len]u8 = @splat(0);
+
+    @memcpy(bufa[0..a.len], a);
+    @memcpy(bufb[0..b.len], b);
+
+    var diff: usize = 0;
+    for (0..max_len) |i| {
+        diff |= (bufa[i] ^ bufb[i]);
+    }
+
+    diff |= (a.len ^ b.len);
+    return diff == 0;
+}
+
 test sdigits10 {
     try expectEqual(20, sdigits10(std.math.minInt(i64)));
     try expectEqual(19, sdigits10(std.math.maxInt(i64)));
@@ -76,3 +120,5 @@ const std = @import("std");
 const expectEqualStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
+const sds = @import("sds.zig");
+const Allocator = std.mem.Allocator;

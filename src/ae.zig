@@ -20,7 +20,7 @@ const CALL_AFTER_SLEEP = 8;
 const NOMORE = -1;
 const DELETED_EVENT_ID = -1;
 
-pub const ClientData = *anyopaque;
+pub const ClientData = ?*anyopaque;
 
 pub const FileEvent = struct {
     /// one of (READABLE|WRITABLE|BARRIER)
@@ -41,7 +41,7 @@ pub const TimeEvent = struct {
     when_ms: i64,
     timeProc: TimeProc,
     finalizerProc: ?EventFinalizerProc,
-    client_data: ?ClientData,
+    client_data: ClientData,
     prev: ?*TimeEvent,
     next: ?*TimeEvent,
 };
@@ -73,6 +73,7 @@ pub const BeforeSleepProc = *const fn (
 ) anyerror!void;
 
 pub const EventLoop = struct {
+    allocator: Allocator,
     /// highest file descriptor currently registered
     maxfd: i32,
     /// This is used for polling API specific data
@@ -97,6 +98,7 @@ pub const EventLoop = struct {
 
         const el = try allocator.create(EventLoop);
         errdefer allocator.destroy(el);
+        el.allocator = allocator;
 
         el.events = try allocator.alloc(FileEvent, @intCast(setsize));
         errdefer allocator.free(el.events);
@@ -128,15 +130,14 @@ pub const EventLoop = struct {
     /// Otherwise true is returned and the operation is successful.
     pub fn resizeSetSize(
         self: *EventLoop,
-        allocator: Allocator,
         setsize: i32,
     ) !bool {
         if (setsize == self.events.len) return true;
         if (self.maxfd >= setsize) return false;
 
-        try api.resize(allocator, self, setsize);
-        self.events = try allocator.realloc(self.events, @intCast(setsize));
-        self.fired = try allocator.realloc(self.fired, @intCast(setsize));
+        try api.resize(self.allocator, self, setsize);
+        self.events = try self.allocator.realloc(self.events, @intCast(setsize));
+        self.fired = try self.allocator.realloc(self.fired, @intCast(setsize));
 
         // Make sure that if we created new slots, they are initialized with
         // an NONE mask.
@@ -166,8 +167,8 @@ pub const EventLoop = struct {
         mask: i32,
         proc: FileProc,
         client_data: ClientData,
-    ) !bool {
-        if (fd >= self.getSetSize()) return false;
+    ) !void {
+        if (fd >= self.getSetSize()) return error.InvalidFileDescriptor;
         try api.addEvent(self, fd, mask);
 
         const fe: *FileEvent = &self.events[@intCast(fd)];
@@ -177,7 +178,6 @@ pub const EventLoop = struct {
         fe.client_data = client_data;
 
         if (fd > self.maxfd) self.maxfd = fd;
-        return true;
     }
 
     pub fn deleteFileEvent(self: *EventLoop, fd: i32, mask: i32) !void {
@@ -210,16 +210,15 @@ pub const EventLoop = struct {
 
     pub fn createTimeEvent(
         self: *EventLoop,
-        allocator: Allocator,
         milliseconds: i64,
         proc: TimeProc,
-        client_data: ?ClientData,
+        client_data: ClientData,
         finalizerProc: ?EventFinalizerProc,
     ) !i64 {
         const id = self.time_event_next_id;
         self.time_event_next_id += 1;
 
-        const te = try allocator.create(TimeEvent);
+        const te = try self.allocator.create(TimeEvent);
         te.id = id;
         addMillisecondsToNow(milliseconds, &te.when_sec, &te.when_ms);
         te.timeProc = proc;
@@ -264,7 +263,6 @@ pub const EventLoop = struct {
     /// The function returns the number of events processed.
     pub fn processEvents(
         self: *EventLoop,
-        allocator: Allocator,
         flags: i32,
     ) !usize {
         var processed: usize = 0;
@@ -308,7 +306,7 @@ pub const EventLoop = struct {
             const numevents: usize = try api.poll(self, timeout);
 
             if (self.afterSleep != null and flags & CALL_AFTER_SLEEP != 0) {
-                try self.afterSleep.?(allocator, self);
+                try self.afterSleep.?(self.allocator, self);
             }
 
             for (0..numevents) |i| {
@@ -339,14 +337,26 @@ pub const EventLoop = struct {
                 // Fire the readable event if the call sequence is not
                 // inverted.
                 if (!invert and fe.mask & mask & READABLE != 0) {
-                    try fe.rfileProc(allocator, self, fd, fe.client_data, mask);
+                    try fe.rfileProc(
+                        self.allocator,
+                        self,
+                        fd,
+                        fe.client_data,
+                        mask,
+                    );
                     fired += 1;
                 }
 
                 // Fire the writable event.
                 if (fe.mask & mask & WRITABLE != 0) {
                     if (fired == 0 or fe.wfileProc != fe.rfileProc) {
-                        try fe.wfileProc(allocator, self, fd, fe.client_data, mask);
+                        try fe.wfileProc(
+                            self.allocator,
+                            self,
+                            fd,
+                            fe.client_data,
+                            mask,
+                        );
                         fired += 1;
                     }
                 }
@@ -355,7 +365,13 @@ pub const EventLoop = struct {
                 // after the writable one.
                 if (invert and fe.mask & mask & READABLE != 0) {
                     if (fired == 0 or fe.wfileProc != fe.rfileProc) {
-                        try fe.rfileProc(allocator, self, fd, fe.client_data, mask);
+                        try fe.rfileProc(
+                            self.allocator,
+                            self,
+                            fd,
+                            fe.client_data,
+                            mask,
+                        );
                         fired += 1;
                     }
                 }
@@ -366,19 +382,19 @@ pub const EventLoop = struct {
 
         // Check time events
         if (flags & TIME_EVENTS != 0) {
-            processed += try self.processTimeEvents(allocator);
+            processed += try self.processTimeEvents();
         }
 
         return processed;
     }
 
-    pub fn main(self: *EventLoop, allocator: Allocator) !void {
+    pub fn main(self: *EventLoop) !void {
         self.stopped = false;
         while (!self.stopped) {
             if (self.beforeSleep) |beforeSleep| {
-                try beforeSleep(allocator, self);
+                try beforeSleep(self.allocator, self);
             }
-            self.processEvents(ALL_EVENTS | CALL_AFTER_SLEEP);
+            _ = try self.processEvents(ALL_EVENTS | CALL_AFTER_SLEEP);
         }
     }
 
@@ -396,11 +412,11 @@ pub const EventLoop = struct {
         self.afterSleep = afterSleep;
     }
 
-    pub fn destroy(self: *EventLoop, allocator: Allocator) void {
-        api.free(allocator, self);
-        allocator.free(self.events);
-        allocator.free(self.fired);
-        allocator.destroy(self);
+    pub fn destroy(self: *EventLoop) void {
+        api.free(self.allocator, self);
+        self.allocator.free(self.events);
+        self.allocator.free(self.fired);
+        self.allocator.destroy(self);
     }
 
     /// Search the first timer to fire.
@@ -428,7 +444,7 @@ pub const EventLoop = struct {
         return nearest;
     }
 
-    fn processTimeEvents(self: *EventLoop, allocator: Allocator) !usize {
+    fn processTimeEvents(self: *EventLoop) !usize {
         // If the system clock is moved to the future, and then set back to the
         // right value, time events may be delayed in a random way. Often this
         // means that scheduled operations will not be performed soon enough.
@@ -461,10 +477,10 @@ pub const EventLoop = struct {
                     next.prev = te.prev;
                 }
                 if (te.finalizerProc) |finalizer| {
-                    try finalizer(allocator, self, te.client_data);
+                    try finalizer(self.allocator, self, te.client_data);
                 }
                 curr_event = te.next;
-                allocator.destroy(te);
+                self.allocator.destroy(te);
                 continue;
             }
 
@@ -483,7 +499,7 @@ pub const EventLoop = struct {
                 (now.sec == te.when_sec and now.ms > te.when_ms))
             {
                 const retval = try te.timeProc(
-                    allocator,
+                    self.allocator,
                     self,
                     te.id,
                     te.client_data,

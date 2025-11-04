@@ -34,7 +34,7 @@ pub const Zset = struct {
         errdefer allocator.destroy(z);
         z.dict = try Dict.create(
             allocator,
-            server.zsetDictVtable,
+            Server.zsetDictVtable,
             null,
         );
         z.zsl = try SkipList.create(allocator);
@@ -421,6 +421,5 @@ const isNan = std.math.isNan;
 const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
 const sds = @import("sds.zig");
-const server = @import("server.zig");
-const shared = server.shared;
+const Server = @import("Server.zig");
 const Dict = @import("Dict.zig");

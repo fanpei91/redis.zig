@@ -4,9 +4,9 @@ pub fn List(
 ) type {
     return struct {
         pub const Vtable = struct {
-            eql: ?*const fn (key: SearchKey, val: Value) bool,
-            dupe: ?*const fn (Allocator, val: Value) Allocator.Error!Value,
-            free: ?*const fn (Allocator, val: Value) void,
+            eql: ?*const fn (key: SearchKey, val: Value) bool = null,
+            dupe: ?*const fn (Allocator, val: Value) Allocator.Error!Value = null,
+            free: ?*const fn (Allocator, val: Value) void = null,
         };
 
         pub const Node = struct {
@@ -106,7 +106,7 @@ pub fn List(
         const LinkedList = @This();
         first: ?*Node = null,
         last: ?*Node = null,
-        len: u64 = 0,
+        len: usize = 0,
         ctx: Context,
 
         pub fn create(

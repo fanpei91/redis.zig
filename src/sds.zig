@@ -83,27 +83,42 @@ pub fn cast(ptr: *anyopaque) String {
 }
 
 pub fn new(allocator: Allocator, init: []const u8) Allocator.Error!String {
-    // Empty strings are usually created in order to append. Use type 8
-    // since type 5 is not good at this.
-    var typ = reqType(init.len);
-    if (typ == TYPE_5 and init.len == 0) {
-        typ = TYPE_8;
-    }
-
-    const hdr_len = hdrSize(typ);
-    const mem_size = hdr_len + init.len;
-    const mem = try allocator.alloc(u8, mem_size);
-
-    const s: String = mem.ptr + hdr_len;
-    setType(s, typ);
-    setLength(s, init.len);
-    setAlloc(s, init.len);
-    setBuf(s, init);
-    return s;
+    return newLen(allocator, init.ptr, init.len);
 }
 
 pub fn empty(allocator: Allocator) Allocator.Error!String {
     return new(allocator, "");
+}
+
+/// Create a new sds string with the content specified by the 'init' pointer
+/// and 'initlen'.
+///
+/// If init is null, the buffer is left uninitialized;
+pub fn newLen(
+    allocator: Allocator,
+    init: ?[*]const u8,
+    initlen: usize,
+) Allocator.Error!String {
+    // Empty strings are usually created in order to append. Use type 8
+    // since type 5 is not good at this.
+    var typ = reqType(initlen);
+    if (typ == TYPE_5 and initlen == 0) {
+        typ = TYPE_8;
+    }
+
+    const hdr_len = hdrSize(typ);
+    const mem_size = hdr_len + initlen;
+    const mem = try allocator.alloc(u8, mem_size);
+
+    const s: String = mem.ptr + hdr_len;
+    setType(s, typ);
+    setLength(s, initlen);
+    setAlloc(s, initlen);
+    if (init) |data| {
+        @branchHint(.likely);
+        setBuf(s, data[0..initlen]);
+    }
+    return s;
 }
 
 pub fn fromLonglong(
@@ -119,10 +134,20 @@ pub fn dupe(allocator: Allocator, s: String) Allocator.Error!String {
     return new(allocator, s[0..getLen(s)]);
 }
 
+/// Modify an sds string in-place to make it empty (zero length).
+/// However all the existing buffer is not discarded but set as free space
+/// so that next append operations will not require allocations up to the
+/// number of bytes previously available.
 pub fn clear(s: String) void {
     setLength(s, 0);
 }
 
+/// Enlarge the free space at the end of the sds string so that the caller
+/// is sure that after calling this function can overwrite up to addlen
+/// bytes after the end of the string, plus one more byte for nul term.
+///
+/// Note: this does not change the *length* of the sds string as returned
+/// by getLen(), but only the free buffer space we have.
 pub fn makeRoomFor(
     allocator: Allocator,
     s: String,
@@ -267,6 +292,28 @@ pub fn removeAvailSpace(
     return ns;
 }
 
+/// Increment the sds length and decrements the left free space at the
+/// end of the string according to 'incr'. Also set the null term
+/// in the new end of the string.
+///
+/// This function is used in order to fix the string length after the
+/// user calls makeRoomFor(), writes something after the end of
+/// the current string, and finally needs to set the new length.
+///
+/// Note: it is possible to use a negative increment in order to
+/// right-trim the string.
+///
+/// Usage example:
+///
+/// Using IncrLen() and makeRoomFor() it is possible to mount the
+/// following schema, to cat bytes coming from the kernel to the end of an
+/// sds string without copying into an intermediate buffer:
+///
+/// oldlen = getLen(s);
+/// s = makeRoomFor(s, BUFFER_SIZE);
+/// nread = read(fd, s+oldlen, BUFFER_SIZE);
+/// ... check for nread <= 0 and handle it ...
+/// incrLen(s, nread);
 pub fn incrLen(s: String, incr: isize) void {
     const len = getLen(s);
     const alloc = getAlloc(s);
@@ -355,6 +402,23 @@ pub fn split(
     return tokens.toOwnedSlice(allocator);
 }
 
+/// Split a line into arguments, where every argument can be in the
+/// following programming-language REPL-alike form:
+///
+/// foo bar "newline are supported\n" and "\xff\x00otherstuff"
+///
+/// An array of arguments of String is returned.
+///
+/// The caller should free the resulting array of sds strings with
+/// freeSplitRes().
+///
+/// Note that catRepr() is able to convert back a string into
+/// a quoted string in the same format splitArgs() is able to parse.
+///
+/// The function returns the allocated tokens on success, even when the
+/// input string is empty, or NULL if the input contains unbalanced
+/// quotes or closed quotes followed by non space characters
+/// as in: "foo"bar or "foo'
 pub fn splitArgs(
     allocator: Allocator,
     line: []const u8,
@@ -476,11 +540,26 @@ pub fn freeSplitRes(allocator: Allocator, tokens: []String) void {
 }
 
 pub fn trim(s: String, values_to_strip: []const u8) void {
-    const trimed = std.mem.trim(u8, bufSlice(s), values_to_strip);
+    const trimed = std.mem.trim(u8, asBytes(s), values_to_strip);
     memmove(s, trimed, trimed.len);
     setLength(s, trimed.len);
 }
 
+/// Turn the string into a smaller (or equal) string containing only the
+/// substring specified by the 'start' and 'end' indexes.
+///
+/// start and end can be negative, where -1 means the last character of the
+/// string, -2 the penultimate character, and so forth.
+///
+/// The interval is inclusive, so the start and end characters will be part
+/// of the resulting string.
+///
+/// The string is modified in-place.
+///
+/// Example:
+///
+/// s = new("Hello World");
+/// range(s,1,-1); => "ello World"
 pub fn range(s: String, start: isize, endinc: isize) void {
     const len = getLen(s);
     if (len == 0) return;
@@ -522,22 +601,22 @@ pub fn range(s: String, start: isize, endinc: isize) void {
 }
 
 pub fn toLower(s: String) void {
-    const slice = bufSlice(s);
+    const slice = asBytes(s);
     for (slice, 0..) |c, i| {
         slice[i] = std.ascii.toLower(c);
     }
 }
 
 pub fn toUpper(s: String) void {
-    const slice = bufSlice(s);
+    const slice = asBytes(s);
     for (slice, 0..) |c, i| {
         slice[i] = std.ascii.toUpper(c);
     }
 }
 
 pub fn cmp(s1: String, s2: String) std.math.Order {
-    const lhs = bufSlice(s1);
-    const rhs = bufSlice(s2);
+    const lhs = asBytes(s1);
+    const rhs = asBytes(s2);
 
     return std.mem.order(u8, lhs, rhs);
 }
@@ -579,7 +658,7 @@ pub fn getAllocMemSize(s: String) usize {
     return hdrSize(getType(s)) + getAlloc(s);
 }
 
-pub inline fn bufSlice(s: String) []u8 {
+pub inline fn asBytes(s: String) []u8 {
     return s[0..getLen(s)];
 }
 
@@ -660,13 +739,13 @@ test new {
     defer free(allocator, s);
 
     try expectEqual(init.len, getLen(s));
-    try expectEqualStrings(init, bufSlice(s));
+    try expectEqualStrings(init, asBytes(s));
 
     const long_str = "hello" ** 100;
     const long_s = try new(allocator, long_str);
     defer free(allocator, long_s);
     try expectEqual(long_str.len, getLen(long_s));
-    try expectEqualStrings(long_str, bufSlice(long_s));
+    try expectEqualStrings(long_str, asBytes(long_s));
 }
 
 test empty {
@@ -675,7 +754,7 @@ test empty {
     defer free(allocator, s);
 
     try expectEqual(0, getLen(s));
-    try expectStringEndsWith("", bufSlice(s));
+    try expectStringEndsWith("", asBytes(s));
 }
 
 test fromLonglong {
@@ -683,11 +762,11 @@ test fromLonglong {
 
     const min = try fromLonglong(allocator, std.math.minInt(i64));
     defer free(allocator, min);
-    try expectEqualStrings("-9223372036854775808", bufSlice(min));
+    try expectEqualStrings("-9223372036854775808", asBytes(min));
 
     const max = try fromLonglong(allocator, std.math.maxInt(i64));
     defer free(allocator, max);
-    try expectEqualStrings("9223372036854775807", bufSlice(max));
+    try expectEqualStrings("9223372036854775807", asBytes(max));
 }
 
 test dupe {
@@ -699,7 +778,7 @@ test dupe {
     const dup = try dupe(allocator, s);
     defer free(allocator, dup);
 
-    try expectEqualStrings(bufSlice(s), bufSlice(dup));
+    try expectEqualStrings(asBytes(s), asBytes(dup));
 }
 
 test clear {
@@ -709,7 +788,7 @@ test clear {
 
     clear(s);
     try expectEqual(0, getLen(s));
-    try expectEqualStrings("", bufSlice(s));
+    try expectEqualStrings("", asBytes(s));
 }
 
 test makeRoomFor {
@@ -719,7 +798,7 @@ test makeRoomFor {
     defer free(allocator, s1);
 
     try expectEqual(5, getLen(s1));
-    try expectEqualStrings("hello", bufSlice(s1));
+    try expectEqualStrings("hello", asBytes(s1));
 }
 
 test removeAvailSpace {
@@ -741,7 +820,7 @@ test cat {
     defer free(allocator, ns);
 
     try expectEqual(10, getLen(ns));
-    try expectEqualStrings("helloworld", bufSlice(ns));
+    try expectEqualStrings("helloworld", asBytes(ns));
 }
 
 test catPrintf {
@@ -749,7 +828,7 @@ test catPrintf {
     const s = try new(allocator, "hello");
     const ns = try catPrintf(allocator, s, " {s} {d}", .{ "world", 2025 });
     defer free(allocator, ns);
-    try expectEqualStrings("hello world 2025", bufSlice(ns));
+    try expectEqualStrings("hello world 2025", asBytes(ns));
 }
 
 test catRepr {
@@ -759,7 +838,7 @@ test catRepr {
     const ns = try catRepr(allocator, s, input);
     defer free(allocator, ns);
 
-    try expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", bufSlice(ns));
+    try expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", asBytes(ns));
 }
 
 test getAllocMemSize {
@@ -798,7 +877,7 @@ test growZero {
     try expectEqualSlices(
         u8,
         &.{ 'h', 'e', 'l', 'l', 'o', 0, 0, 0, 0, 0 },
-        bufSlice(ns),
+        asBytes(ns),
     );
 }
 
@@ -808,13 +887,13 @@ test copy {
 
     var cp = try copy(allocator, s, "world");
     try expectEqual(getLen(cp), 5);
-    try expectEqualStrings("world", bufSlice(cp));
+    try expectEqualStrings("world", asBytes(cp));
     try expectEqual(s, cp);
 
     cp = try copy(allocator, cp, "world!");
     defer free(allocator, cp);
     try expectEqual(getLen(cp), 6);
-    try expectEqualStrings("world!", bufSlice(cp));
+    try expectEqualStrings("world!", asBytes(cp));
     try expect(s != cp);
 }
 
@@ -824,7 +903,7 @@ test mapChars {
     defer free(allocator, s);
 
     s = mapChars(s, "eoi\r\n", "EOI  ");
-    try expectEqualSlices(u8, "hEllO  zIg", bufSlice(s));
+    try expectEqualSlices(u8, "hEllO  zIg", asBytes(s));
 }
 
 test join {
@@ -839,7 +918,7 @@ test join {
     const joined = try join(allocator, tokens.items, "|");
     defer free(allocator, joined);
 
-    try expectEqualSlices(u8, "hello|world|zig", bufSlice(joined));
+    try expectEqualSlices(u8, "hello|world|zig", asBytes(joined));
 }
 
 test split {
@@ -848,9 +927,9 @@ test split {
     defer freeSplitRes(allocator, tokens);
 
     try expect(tokens.len == 3);
-    try expectEqualStrings("hello", bufSlice(tokens[0]));
-    try expectEqualStrings("world", bufSlice(tokens[1]));
-    try expectEqualStrings("zig", bufSlice(tokens[2]));
+    try expectEqualStrings("hello", asBytes(tokens[0]));
+    try expectEqualStrings("world", asBytes(tokens[1]));
+    try expectEqualStrings("zig", asBytes(tokens[2]));
 }
 
 test splitArgs {
@@ -858,44 +937,44 @@ test splitArgs {
 
     var tokens = (try splitArgs(allocator, " \n SET  \r key \t 1")).?;
     try expect(tokens.len == 3);
-    try expectEqualStrings("SET", bufSlice(tokens[0]));
-    try expectEqualStrings("key", bufSlice(tokens[1]));
-    try expectEqualStrings("1", bufSlice(tokens[2]));
+    try expectEqualStrings("SET", asBytes(tokens[0]));
+    try expectEqualStrings("key", asBytes(tokens[1]));
+    try expectEqualStrings("1", asBytes(tokens[2]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "\"1\"")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("1", bufSlice(tokens[0]));
+    try expectEqualStrings("1", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "\"line1\\nline2\"")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("line1\nline2", bufSlice(tokens[0]));
+    try expectEqualStrings("line1\nline2", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "\"ABC\\x41XYZ\"")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("ABCAXYZ", bufSlice(tokens[0]));
+    try expectEqualStrings("ABCAXYZ", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "'abc'")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("abc", bufSlice(tokens[0]));
+    try expectEqualStrings("abc", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "'I\\'m here'")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("I'm here", bufSlice(tokens[0]));
+    try expectEqualStrings("I'm here", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "\"a\\tb\"")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("a\tb", bufSlice(tokens[0]));
+    try expectEqualStrings("a\tb", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "\"abc\\xGZ\"")).?;
     try expect(tokens.len == 1);
-    try expectEqualStrings("abcxGZ", bufSlice(tokens[0]));
+    try expectEqualStrings("abcxGZ", asBytes(tokens[0]));
     freeSplitRes(allocator, tokens);
 
     tokens = (try splitArgs(allocator, "")).?;
@@ -919,10 +998,10 @@ test trim {
     defer free(allocator, s);
 
     trim(s, "Aa. :");
-    try expectEqualStrings("HelloWorld", bufSlice(s));
+    try expectEqualStrings("HelloWorld", asBytes(s));
 
     trim(s, "d");
-    try expectEqualStrings("HelloWorl", bufSlice(s));
+    try expectEqualStrings("HelloWorl", asBytes(s));
 }
 
 test "range(1, 1)" {
@@ -931,7 +1010,7 @@ test "range(1, 1)" {
     defer free(allocator, s);
     range(s, 1, 1);
 
-    try expectEqualStrings("h", bufSlice(s));
+    try expectEqualStrings("h", asBytes(s));
 }
 
 test "range(1, -1)" {
@@ -940,7 +1019,7 @@ test "range(1, -1)" {
     defer free(allocator, s);
     range(s, 1, -1);
 
-    try expectEqualStrings("hello!", bufSlice(s));
+    try expectEqualStrings("hello!", asBytes(s));
 }
 
 test "range(-2, -1)" {
@@ -949,7 +1028,7 @@ test "range(-2, -1)" {
     defer free(allocator, s);
     range(s, -2, -1);
 
-    try expectEqualStrings("o!", bufSlice(s));
+    try expectEqualStrings("o!", asBytes(s));
 }
 
 test "range(2, 1)" {
@@ -958,7 +1037,7 @@ test "range(2, 1)" {
     defer free(allocator, s);
     range(s, 2, 1);
 
-    try expectEqualStrings("", bufSlice(s));
+    try expectEqualStrings("", asBytes(s));
 }
 
 test "range(1, 100)" {
@@ -967,7 +1046,7 @@ test "range(1, 100)" {
     defer free(allocator, s);
     range(s, 1, 100);
 
-    try expectEqualStrings("hello!", bufSlice(s));
+    try expectEqualStrings("hello!", asBytes(s));
 }
 
 test "range(100, 100)" {
@@ -976,7 +1055,7 @@ test "range(100, 100)" {
     defer free(allocator, s);
     range(s, 100, 100);
 
-    try expectEqualStrings("", bufSlice(s));
+    try expectEqualStrings("", asBytes(s));
 }
 
 test "range(0, 1)" {
@@ -985,7 +1064,7 @@ test "range(0, 1)" {
     defer free(allocator, s);
     range(s, 0, 1);
 
-    try expectEqualStrings("!h", bufSlice(s));
+    try expectEqualStrings("!h", asBytes(s));
 }
 
 test toLower {
@@ -994,7 +1073,7 @@ test toLower {
     defer free(allocator, s);
     toLower(s);
 
-    try expectEqualStrings("hello1", bufSlice(s));
+    try expectEqualStrings("hello1", asBytes(s));
 }
 
 test toUpper {
@@ -1003,7 +1082,7 @@ test toUpper {
     defer free(allocator, s);
     toUpper(s);
 
-    try expectEqualStrings("HELLO1", bufSlice(s));
+    try expectEqualStrings("HELLO1", asBytes(s));
 }
 
 test "cmp.gt" {

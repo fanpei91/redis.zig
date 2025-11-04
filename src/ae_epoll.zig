@@ -18,7 +18,7 @@ pub fn addEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     const fi: usize = @intCast(fd);
     // If the fd was already monitored for some event, we need a MOD
     // operation. Otherwise we need an ADD operation.
-    const op = if (el.events[fi].mask == ae.NONE)
+    const op: u32 = if (el.events[fi].mask == ae.NONE)
         linux.EPOLL.CTL_ADD
     else
         linux.EPOLL.CTL_MOD;

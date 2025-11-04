@@ -2,7 +2,7 @@
     .name = .redis,
     .version = "0.0.0",
     .fingerprint = 0x7b25d01756d2e933,
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{
         "build.zig",

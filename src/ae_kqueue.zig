@@ -73,9 +73,9 @@ pub fn poll(el: *EventLoop, timeout_in_ms: ?i64) !usize {
             .sec = @divTrunc(ms, std.time.ms_per_s),
             .nsec = @rem(ms, std.time.ms_per_s) * std.time.ns_per_ms,
         };
-        retval = try posix.kevent(state.kqfd, &.{}, &state.events, &timeout);
+        retval = try posix.kevent(state.kqfd, &.{}, state.events, &timeout);
     } else {
-        retval = try posix.kevent(state.kqfd, &.{}, &state.events, null);
+        retval = try posix.kevent(state.kqfd, &.{}, state.events, null);
     }
 
     var numevents: usize = 0;
