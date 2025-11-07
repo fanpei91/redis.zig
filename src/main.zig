@@ -1,6 +1,6 @@
 pub fn main() void {
     errdefer |err| {
-        log.err("Failed to start server: {}", .{err});
+        log.err("Error: {}", .{err});
         std.process.exit(1);
     }
 
@@ -119,7 +119,7 @@ fn printUsage() void {
     std.debug.print("       ./redis-server /etc/redis/6399.conf\n", .{});
     std.debug.print("       ./redis-server --port 7777\n", .{});
     std.debug.print("       ./redis-server /etc/myredis.conf --loglevel verbose\n", .{});
-    std.process.exit(1);
+    std.process.exit(0);
 }
 
 const std = @import("std");

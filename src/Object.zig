@@ -39,7 +39,7 @@ pub const Encoding = enum(u4) {
 const Object = @This();
 type: Type,
 encoding: Encoding,
-//lru: std.meta.Int(.unsigned, Server.LRU_BITS),
+lru: std.meta.Int(.unsigned, Server.LRU_BITS),
 refcount: i32,
 data: union {
     ptr: *anyopaque,
@@ -54,10 +54,16 @@ pub fn create(
     const obj = try allocator.create(Object);
     obj.type = typ;
     obj.encoding = .raw;
-    obj.data = .{ .ptr = ptr };
+    // Set the LRU to the current lruclock (minutes resolution), or
+    // alternatively the LFU counter.
+    if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
+        obj.lru = @intCast((evict.LFUGetTimeInMinutes() << 8) | evict.LFU_INIT_VAL);
+    } else {
+        obj.lru = @intCast(evict.LRUClock());
+    }
     obj.refcount = 1;
+    obj.data = .{ .ptr = ptr };
 
-    // TODO: lru
     return obj;
 }
 
@@ -68,10 +74,14 @@ pub fn createInt(
     const obj = try allocator.create(Object);
     obj.type = .string;
     obj.encoding = .int;
-    obj.data = .{ .int = int };
+    if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
+        obj.lru = @intCast((evict.LFUGetTimeInMinutes() << 8) | evict.LFU_INIT_VAL);
+    } else {
+        obj.lru = @intCast(evict.LRUClock());
+    }
     obj.refcount = 1;
+    obj.data = .{ .int = int };
 
-    // TODO: lru
     return obj;
 }
 
@@ -129,8 +139,12 @@ fn createEmbeddedString(
     const obj: *Object = @ptrCast(@alignCast(mem));
     obj.type = .string;
     obj.encoding = .embstr;
+    if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
+        obj.lru = @intCast((evict.LFUGetTimeInMinutes() << 8) | evict.LFU_INIT_VAL);
+    } else {
+        obj.lru = @intCast(evict.LRUClock());
+    }
     obj.refcount = 1;
-    // TODO: obj.lru
     obj.data = .{ .ptr = s };
 
     return obj;
@@ -183,7 +197,7 @@ fn createStringFromLonglongWithOptions(
         // even if `from_shared` is false.
         enabled = true;
     }
-    if (value >= 0 and value < Server.SHARED_INTEGERS and enabled) {
+    if (value >= 0 and value < Server.OBJ_SHARED_INTEGERS and enabled) {
         const o = Server.shared.integers[@abs(value)];
         o.incrRefCount();
         return o;
@@ -395,7 +409,7 @@ pub fn tryEncoding(
     if (slice.len <= 20 and util.string2l(slice, &value)) {
         const use_shared_integers = (Server.instance.maxmemory == 0 or
             (Server.instance.maxmemory_policy & Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
-        if (use_shared_integers and value > 0 and value < Server.SHARED_INTEGERS) {
+        if (use_shared_integers and value > 0 and value < Server.OBJ_SHARED_INTEGERS) {
             self.decrRefCount(allocator);
             const obj = Server.shared.integers[@as(usize, @intCast(value))];
             obj.incrRefCount();
@@ -566,6 +580,10 @@ fn freeHash(self: *Object, allocator: Allocator) void {
 
 test createEmbeddedString {
     const allocator = std.testing.allocator;
+
+    try Server.create(allocator, null, null);
+    defer Server.destroy();
+
     var o = try createEmbeddedString(allocator, "hello");
     defer o.decrRefCount(allocator);
     const s: sds.String = @ptrCast(o.data.ptr);
@@ -609,3 +627,5 @@ const Dict = @import("Dict.zig");
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;
 const Client = @import("networking.zig").Client;
+const evict = @import("evict.zig");
+const server = &Server.instance;

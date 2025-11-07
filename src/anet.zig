@@ -111,10 +111,7 @@ pub fn keepAlive(fd: posix.fd_t, interval: i32) !void {
 
 pub fn nonBlock(fd: posix.fd_t) !void {
     const current_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-    var new_flags = @as(
-        posix.O,
-        @bitCast(@as(u32, @intCast(current_flags))),
-    );
+    var new_flags: posix.O = @bitCast(@as(u32, @intCast(current_flags)));
     new_flags.NONBLOCK = true;
     const arg: u32 = @bitCast(new_flags);
     _ = try posix.fcntl(fd, posix.F.SETFL, arg);

@@ -62,7 +62,7 @@ pub const Client = struct {
 
         fn buf(self: *ReplyBlock) []u8 {
             const hd = @sizeOf(ReplyBlock);
-            return self.asBytes()[hd .. hd + self.size];
+            return self.asBytes()[hd..];
         }
     };
 
@@ -76,7 +76,7 @@ pub const Client = struct {
     querybuf_peak: usize, // Recent (100ms or more) peak of querybuf size.
     querybuf: sds.String, // Buffer we use to accumulate client queries.
     qb_pos: usize, // The position we have read in querybuf.
-    argv: ?[*]*Object, // Arguments of current command.
+    argv: ?[]*Object, // Arguments of current command.
     argc: usize, // Num of arguments of current command.
     cmd: ?*const Server.Command,
     multibulklen: i32, // Number of multi bulk arguments left to read.
@@ -87,8 +87,8 @@ pub const Client = struct {
     reply: *List(void, *ReplyBlock), // List of reply objects to send to the client.
     reply_bytes: usize, // Total bytes of objects in reply list.
     sentlen: usize, // Amount of bytes already sent in the current buffer or object being sent.
-    bufpos: usize,
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
+    bufpos: usize,
 
     pub fn create(allocator: Allocator, fd: i32, flags: i32) !*Client {
         const cli = try allocator.create(Client);
@@ -138,8 +138,8 @@ pub const Client = struct {
         errdefer cli.reply.release(cli.allocator);
         cli.reply_bytes = 0;
         cli.sentlen = 0;
-        cli.bufpos = 0;
         cli.buf = undefined;
+        cli.bufpos = 0;
         if (fd != -1) try cli.link();
         return cli;
     }
@@ -253,29 +253,27 @@ pub const Client = struct {
             linefeed += 1;
         }
         const query = querybuf[self.qb_pos .. self.qb_pos + newline];
-        const argv = try sds.splitArgs(self.allocator, query) orelse {
+        const args = try sds.splitArgs(self.allocator, query) orelse {
             try self.addReplyErr(
                 "Protocol error: unbalanced quotes in request",
             );
             self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
             return false;
         };
-        defer sds.freeSplitRes(self.allocator, argv);
+        defer self.allocator.free(args); // don't free sds.String
 
         // Move querybuffer position to the next query in the buffer.
         self.qb_pos += newline + linefeed;
 
         // Create redis objects for all arguments.
-        if (argv.len != 0) {
-            const m = try self.allocator.alloc(*Object, argv.len);
-            self.argv = m.ptr;
+        if (args.len != 0) {
+            self.argv = try self.allocator.alloc(*Object, args.len);
+            self.argc = 0;
+            for (args, 0..) |arg, i| {
+                self.argv.?[i] = try Object.create(self.allocator, .string, arg);
+                self.argc += 1;
+            }
         }
-        self.argc = 0;
-        for (argv, 0..) |str, i| {
-            self.argv.?[i] = try Object.create(self.allocator, .string, str);
-            self.argc += 1;
-        }
-
         return true;
     }
 
@@ -340,11 +338,10 @@ pub const Client = struct {
 
             self.multibulklen = @intCast(multibulklen);
 
-            const argv = try self.allocator.alloc(
+            self.argv = try self.allocator.alloc(
                 *Object,
                 @intCast(self.multibulklen),
             );
-            self.argv = argv.ptr;
         }
 
         const argv = self.argv.?;
@@ -484,10 +481,12 @@ pub const Client = struct {
     }
 
     fn freeArgv(self: *Client) void {
-        for (0..self.argc) |i| {
-            self.argv.?[i].decrRefCount(self.allocator);
+        if (self.argv) |argv| {
+            for (0..self.argc) |i| {
+                argv[i].decrRefCount(self.allocator);
+            }
+            self.allocator.free(argv);
         }
-        if (self.argv) |argv| self.allocator.free(argv[0..self.argc]);
         self.argv = null;
         self.argc = 0;
         self.cmd = null;
@@ -761,7 +760,7 @@ pub fn acceptHandler(
             }
             return;
         };
-        var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        var buffer: [64]u8 = undefined;
         const addr = try csk.getAddr(&buffer);
         var flags: i32 = 0;
         if (csk.addr.any.family == posix.AF.UNIX) {
@@ -877,6 +876,7 @@ fn readQueryFromClient(
     _ = allocator;
 
     const cli: *Client = @ptrCast(@alignCast(client_data.?));
+
     var readlen: usize = Server.PROTO_IOBUF_LEN;
 
     // If this is a multi bulk request, and we are processing a bulk reply

@@ -11,6 +11,8 @@ pub const CONFIG_DEFAULT_MAX_CLIENTS = 10000;
 pub const CONFIG_DEFAULT_DBNUM = 16;
 pub const CONFIG_DEFAULT_MAXMEMORY = 0;
 pub const CONFIG_DEFAULT_MAXMEMORY_SAMPLES = 5;
+pub const CONFIG_DEFAULT_LFU_LOG_FACTOR = 10;
+pub const CONFIG_DEFAULT_LFU_DECAY_TIME = 1;
 pub const CONFIG_MIN_RESERVED_FDS = 32;
 pub const CONFIG_DEFAULT_UNIX_SOCKET_PERM = 0;
 pub const CONFIG_BINDADDR_MAX = 16;
@@ -39,6 +41,10 @@ pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
 pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
 
+// Units
+pub const UNIT_SECONDS = 0;
+pub const UNIT_MILLISECONDS = 1;
+
 // SHUTDOWN flags
 pub const SHUTDOWN_NOFLAGS = 0; // No flags.
 
@@ -65,6 +71,9 @@ pub const MAXMEMORY_NO_EVICTION = 7 << 8;
 
 pub const CONFIG_DEFAULT_MAXMEMORY_POLICY = MAXMEMORY_NO_EVICTION;
 
+pub const LOOKUP_NONE = 0;
+pub const LOOKUP_NOTOUCH = (1 << 0);
+
 // When configuring the server eventloop, we setup it so that the total number
 // of file descriptors we can handle are server.maxclients + RESERVED_FDS +
 // a few more to stay safe. Since RESERVED_FDS defaults to 32, we add 96
@@ -85,11 +94,12 @@ pub const Command = struct {
 ///
 /// name: a string representing the command name.
 /// proc: pointer to the function implementing the command.
-/// arity: number of arguments, it is possible to use -N to say >= N
+/// arity: number of arguments, it is possible to use -N to say >= N.
 const commandTables = [_]Command{
     .{ .name = "ping", .proc = pingCommand, .arity = -1 },
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
     .{ .name = "select", .proc = selectCommand, .arity = 2 },
+    .{ .name = "set", .proc = setCommand, .arity = -3 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -303,6 +313,16 @@ pub const dbDictVTable: *const Dict.VTable = &.{
     .freeVal = dictObjectFree,
 };
 
+// Database.expires
+pub const expireDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = null,
+    .freeVal = null,
+};
+
 /// Set dictionary type. Keys are SDS strings, values are ot used.
 pub const setDictVTable: *const Dict.VTable = &.{
     .hash = dictSdsHash,
@@ -357,6 +377,7 @@ unixsocket: ?[]u8, // UNIX socket path
 sofd: i32, // Unix socket file descriptor
 unixsocketperm: std.posix.mode_t, // UNIX socket permission
 protected_mode: bool, // Don't accept external connections.
+fixed_time_expire: i64, // If > 0, expire keys against server.mstime.
 // Configuration
 active_expire_enabled: bool, // Can be disabled for testing purposes.
 maxidletime: u32, // Client timeout in seconds
@@ -369,6 +390,8 @@ maxmemory: u64, // Max number of memory bytes to use
 maxmemory_policy: i32, // Policy for key eviction
 maxmemory_samples: i32, // Pricision of random sampling
 proto_max_bulk_len: usize, // Protocol bulk length maximum size.
+lfu_log_factor: i32, // LFU logarithmic counter factor.
+lfu_decay_time: i32, // LFU counter decay factor.
 // time cache
 unixtime: atomic.Value(i64), // Unix time sampled every cron cycle.
 mstime: i64, // 'unixtime' in milliseconds.
@@ -406,6 +429,7 @@ pub fn create(
     server.sofd = -1;
     server.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
     server.protected_mode = CONFIG_DEFAULT_PROTECTED_MODE;
+    server.fixed_time_expire = 0;
     server.active_expire_enabled = true;
     server.maxidletime = CONFIG_DEFAULT_CLIENT_TIMEOUT;
     server.dbnum = CONFIG_DEFAULT_DBNUM;
@@ -416,6 +440,8 @@ pub fn create(
     server.maxmemory_policy = CONFIG_DEFAULT_MAXMEMORY_POLICY;
     server.maxmemory_samples = CONFIG_DEFAULT_MAXMEMORY_SAMPLES;
     server.proto_max_bulk_len = CONFIG_DEFAULT_PROTO_MAX_BULK_LEN;
+    server.lfu_log_factor = CONFIG_DEFAULT_LFU_LOG_FACTOR;
+    server.lfu_decay_time = CONFIG_DEFAULT_LFU_DECAY_TIME;
     server.lruclock = .init(0);
     server.lruclock.store(evict.getLRUClock());
     server.unixtime = .init(0);
@@ -424,10 +450,6 @@ pub fn create(
     try config.load(server, configfile, options);
     server.hz = server.config_hz;
 
-    // Zig can't compile c.SIG_IGN
-    const SIG_IGN: *const fn (c_int) callconv(.c) void = @ptrFromInt(1);
-    _ = c.signal(c.SIGHUP, SIG_IGN);
-    _ = c.signal(c.SIGPIPE, SIG_IGN);
     setupSignalHandlers();
 
     server.clients = try ClientList.create(allocator, &.{});
@@ -616,6 +638,11 @@ fn listenToPort(self: *Server) !void {
 }
 
 fn setupSignalHandlers() void {
+    // Zig can't compile c.SIG_IGN
+    const SIG_IGN: *const fn (c_int) callconv(.c) void = @ptrFromInt(1);
+    _ = c.signal(c.SIGHUP, SIG_IGN);
+    _ = c.signal(c.SIGPIPE, SIG_IGN);
+
     var act: posix.Sigaction = .{
         .handler = .{
             .handler = sigShutdownHandler,
@@ -708,7 +735,7 @@ fn serverCron(
     server.updateCachedTime();
 
     // Adapt the server.hz value to the number of configured clients. If we have
-    // many clients, we want to call serverCron() with an higher frequency. */
+    // many clients, we want to call serverCron() with an higher frequency.
     if (server.dynamic_hz) {
         while (server.clients.len / server.hz > MAX_CLIENTS_PER_CLOCK_TICK) {
             server.hz *= 2;
@@ -748,6 +775,9 @@ fn serverCron(
 
     // We need to do a few operations on clients asynchronously.
     try clientsCron();
+
+    // Handle background operations on Redis databases.
+    try databaseCron();
 
     // Close clients that need to be closed asynchronous.
     networking.freeClientsInAsyncFreeQueue();
@@ -873,6 +903,13 @@ fn clientsCronResizeQueryBuffer(cli: *Client) Allocator.Error!bool {
     return false;
 }
 
+/// This function handles 'background' operations we are required to do
+/// incrementally in Redis databases, such as active key expiring, resizing,
+/// rehashing.
+fn databaseCron() Allocator.Error!void {
+    // TODO:
+}
+
 /// If this function gets called we already read a whole
 /// command, arguments are in the client argv/argc fields.
 /// processCommand() execute the command or prepare the
@@ -882,7 +919,7 @@ fn clientsCronResizeQueryBuffer(cli: *Client) Allocator.Error!bool {
 /// other operations can be performed by the caller. Otherwise
 /// if false is returned the client was destroyed (i.e. after QUIT).
 pub fn processCommand(self: *Server, cli: *Client) !bool {
-    const cmd: sds.String = @ptrCast(cli.argv.?[0].data.ptr);
+    const cmd: sds.String = sds.cast(cli.argv.?[0].data.ptr);
     if (std.ascii.eqlIgnoreCase(sds.asBytes(cmd), "quit")) {
         try cli.addReply(shared.ok);
         cli.flags |= CLIENT_CLOSE_AFTER_REPLY;
@@ -968,8 +1005,10 @@ fn populateCommandTable(self: *Server) Allocator.Error!void {
 
 pub fn call(self: *Server, cli: *Client, flags: i32) !void {
     _ = flags;
+    self.fixed_time_expire +%= 1;
     self.updateCachedTime();
     try cli.cmd.?.proc(cli);
+    self.fixed_time_expire -%= 1;
 }
 
 pub fn destroy() void {
@@ -1010,7 +1049,7 @@ pub fn destroy() void {
         posix.unlink(unixsocket) catch {};
         allocator.free(unixsocket);
     }
-    if (server.sofd != -1) posix.close(@intCast(server.sofd));
+    if (server.sofd != -1) posix.close(server.sofd);
 
     SharedObjects.destroy();
     instance = undefined;
@@ -1075,7 +1114,8 @@ fn pingCommand(cli: *Client) Allocator.Error!void {
     }
 }
 
-const selectCommand = @import("db.zig").selectCommand;
+const selectCommand = dbc.selectCommand;
+const setCommand = stringc.setCommand;
 
 test {
     _ = @import("sds.zig");
@@ -1113,3 +1153,5 @@ const Rax = @import("rax/Rax.zig");
 const c = @cImport({
     @cInclude("sys/signal.h");
 });
+const stringc = @import("t_string.zig");
+const dbc = @import("db.zig");

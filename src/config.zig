@@ -301,6 +301,32 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "lfu-log-factor") and argc == 2) {
+                server.lfu_log_factor = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.lfu_log_factor < 0) {
+                    err = "lfu-log-factor must be 0 or greater";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "lfu-decay-time") and argc == 2) {
+                server.lfu_decay_time = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                if (server.lfu_decay_time < 0) {
+                    err = "lfu-decay-time must be 0 or greater";
+                    break :biz;
+                }
+                continue;
+            }
+
             if (eql(option, "timeout") and argc == 2) {
                 server.maxidletime = std.fmt.parseInt(
                     u32,
