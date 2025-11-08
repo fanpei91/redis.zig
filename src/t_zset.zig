@@ -14,14 +14,20 @@ pub const Range = struct {
         range: *const Range,
         value: f64,
     ) bool {
-        return if (range.minex) range.min < value else range.min <= value;
+        return if (range.minex)
+            range.min < value
+        else
+            range.min <= value;
     }
 
     pub fn maxGte(
         range: *const Range,
         value: f64,
     ) bool {
-        return if (range.maxex) range.max > value else range.max >= value;
+        return if (range.maxex)
+            range.max > value
+        else
+            range.max >= value;
     }
 };
 
@@ -29,21 +35,19 @@ pub const Zset = struct {
     zsl: *SkipList,
     dict: *Dict,
 
-    pub fn create(allocator: Allocator) Allocator.Error!*Zset {
-        const z = try allocator.create(Zset);
-        errdefer allocator.destroy(z);
-        z.dict = try Dict.create(
-            allocator,
+    pub fn create() *Zset {
+        const z = allocator.create(Zset);
+        z.dict = Dict.create(
             Server.zsetDictVtable,
             null,
         );
-        z.zsl = try SkipList.create(allocator);
+        z.zsl = SkipList.create();
         return z;
     }
 
-    pub fn destroy(self: *Zset, allocator: Allocator) void {
-        self.dict.destroy(allocator);
-        self.zsl.free(allocator);
+    pub fn destroy(self: *Zset) void {
+        self.dict.destroy();
+        self.zsl.free();
         allocator.destroy(self);
     }
 };
@@ -69,14 +73,9 @@ pub const SkipList = struct {
             span: u64,
         };
 
-        pub fn create(
-            allocator: Allocator,
-            num_level: u32,
-            score: f64,
-            ele: ?sds.String,
-        ) Allocator.Error!*Node {
+        pub fn create(num_level: u32, score: f64, ele: ?sds.String) *Node {
             const mem_size: usize = @sizeOf(SizedNode) + num_level * @sizeOf(Level);
-            const mem = try allocator.alignedAlloc(
+            const mem = allocator.alignedAlloc(
                 u8,
                 .of(SizedNode),
                 mem_size,
@@ -96,9 +95,9 @@ pub const SkipList = struct {
             return @ptrFromInt(@intFromPtr(self) + offset);
         }
 
-        pub fn free(self: *Node, allocator: Allocator) void {
+        pub fn free(self: *Node) void {
             if (self.ele) |ele| {
-                sds.free(allocator, ele);
+                sds.free(ele);
             }
             const parent: *SizedNode = @fieldParentPtr("node", self);
             const mem: [*]align(@alignOf(SizedNode)) u8 = @ptrCast(@alignCast(parent));
@@ -106,9 +105,9 @@ pub const SkipList = struct {
         }
     };
 
-    pub fn create(allocator: Allocator) Allocator.Error!*SkipList {
-        const sl = try allocator.create(SkipList);
-        const header = try Node.create(allocator, ZSKIPLIST_MAXLEVEL, 0, null);
+    pub fn create() *SkipList {
+        const sl = allocator.create(SkipList);
+        const header = Node.create(ZSKIPLIST_MAXLEVEL, 0, null);
         for (0..ZSKIPLIST_MAXLEVEL) |i| {
             const lvl = header.level(i);
             lvl.forward = null;
@@ -125,10 +124,9 @@ pub const SkipList = struct {
 
     pub fn insert(
         self: *SkipList,
-        allocator: Allocator,
         score: f64,
         ele: sds.String,
-    ) Allocator.Error!*Node {
+    ) *Node {
         assert(!isNan(score));
 
         var rank: [ZSKIPLIST_MAXLEVEL]u64 = undefined;
@@ -161,7 +159,7 @@ pub const SkipList = struct {
             self.level = level;
         }
 
-        x = try Node.create(allocator, level, score, ele);
+        x = Node.create(level, score, ele);
         i = 0;
         while (i < level) : (i += 1) {
             x.level(i).forward = update[i].level(i).forward;
@@ -188,7 +186,6 @@ pub const SkipList = struct {
 
     pub fn delete(
         self: *SkipList,
-        allocator: Allocator,
         score: f64,
         ele: sds.String,
     ) bool {
@@ -213,7 +210,7 @@ pub const SkipList = struct {
         if (x.level(0).forward) |f| {
             if (score == f.score and sds.cmp(f.ele.?, ele) == .eq) {
                 self.deleteNode(f, &update);
-                f.free(allocator);
+                f.free();
                 return true;
             }
         }
@@ -285,12 +282,12 @@ pub const SkipList = struct {
         return x;
     }
 
-    pub fn free(self: *SkipList, allocator: Allocator) void {
+    pub fn free(self: *SkipList) void {
         var node = self.header.level(0).forward;
-        self.header.free(allocator);
+        self.header.free();
         while (node) |n| {
             node = n.level(0).forward;
-            n.free(allocator);
+            n.free();
         }
         allocator.destroy(self);
     }
@@ -351,14 +348,12 @@ test zslRandomLevel {
 }
 
 test SkipList {
-    const allocator = testing.allocator;
-    var sl = try SkipList.create(allocator);
-    defer sl.free(allocator);
+    var sl = SkipList.create();
+    defer sl.free();
 
-    var ele = try sds.new(allocator, "score 1");
+    var ele = sds.new("score 1");
     try expect(sl.getRank(1, ele) == 0);
-    const score1 = try sl.insert(
-        allocator,
+    const score1 = sl.insert(
         1,
         ele,
     );
@@ -366,9 +361,8 @@ test SkipList {
     try expect(sl.length == 1);
     try expect(sl.getRank(1, ele) == 1);
 
-    ele = try sds.new(allocator, "score 2");
-    var score2 = try sl.insert(
-        allocator,
+    ele = sds.new("score 2");
+    var score2 = sl.insert(
         2,
         ele,
     );
@@ -393,25 +387,24 @@ test SkipList {
     try expect(last != null);
     try expect(last.? == score1);
 
-    score2 = try sl.insert(
-        allocator,
+    score2 = sl.insert(
         2,
-        try sds.new(allocator, "score 2.0"),
+        sds.new("score 2.0"),
     );
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
 
-    ele = try sds.new(allocator, "deleted");
-    _ = try sl.insert(allocator, 3, ele);
+    ele = sds.new("deleted");
+    _ = sl.insert(3, ele);
     try expect(sl.length == 4);
-    const deleted = sl.delete(allocator, 3, ele);
+    const deleted = sl.delete(3, ele);
     try expect(deleted);
     try expect(sl.length == 3);
     try expect(sl.tail.?.score == 2);
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const testing = std.testing;
 const expect = testing.expect;
 const expectEqual = testing.expectEqual;

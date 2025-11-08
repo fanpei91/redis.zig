@@ -47,7 +47,6 @@ pub const TimeEvent = struct {
 };
 
 pub const FileProc = *const fn (
-    Allocator,
     *EventLoop,
     fd: i32,
     client_data: ClientData,
@@ -55,25 +54,21 @@ pub const FileProc = *const fn (
 ) anyerror!void;
 
 pub const TimeProc = *const fn (
-    Allocator,
     *EventLoop,
     id: i64,
     clicent_data: ClientData,
 ) anyerror!i32;
 
 pub const EventFinalizerProc = *const fn (
-    Allocator,
     *EventLoop,
     clicent_data: ClientData,
 ) anyerror!void;
 
 pub const BeforeSleepProc = *const fn (
-    Allocator,
     *EventLoop,
 ) anyerror!void;
 
 pub const EventLoop = struct {
-    allocator: Allocator,
     /// highest file descriptor currently registered
     maxfd: i32,
     /// This is used for polling API specific data
@@ -90,20 +85,16 @@ pub const EventLoop = struct {
     beforeSleep: ?BeforeSleepProc,
     afterSleep: ?BeforeSleepProc,
 
-    pub fn create(
-        allocator: Allocator,
-        setsize: i32,
-    ) !*EventLoop {
+    pub fn create(setsize: i32) !*EventLoop {
         std.debug.assert(setsize > 0);
 
-        const el = try allocator.create(EventLoop);
+        const el = allocator.create(EventLoop);
         errdefer allocator.destroy(el);
-        el.allocator = allocator;
 
-        el.events = try allocator.alloc(FileEvent, @intCast(setsize));
+        el.events = allocator.alloc(FileEvent, @intCast(setsize));
         errdefer allocator.free(el.events);
 
-        el.fired = try allocator.alloc(FiredEvent, @intCast(setsize));
+        el.fired = allocator.alloc(FiredEvent, @intCast(setsize));
         errdefer allocator.free(el.fired);
 
         el.last_time = std.time.timestamp();
@@ -114,7 +105,7 @@ pub const EventLoop = struct {
         el.beforeSleep = null;
         el.afterSleep = null;
 
-        try api.create(allocator, el);
+        try api.create(el);
         for (0..el.events.len) |i| {
             el.events[i].mask = NONE;
         }
@@ -128,16 +119,13 @@ pub const EventLoop = struct {
     /// performed at all.
     ///
     /// Otherwise true is returned and the operation is successful.
-    pub fn resizeSetSize(
-        self: *EventLoop,
-        setsize: i32,
-    ) !bool {
+    pub fn resizeSetSize(self: *EventLoop, setsize: i32) !bool {
         if (setsize == self.events.len) return true;
         if (self.maxfd >= setsize) return false;
 
-        try api.resize(self.allocator, self, setsize);
-        self.events = try self.allocator.realloc(self.events, @intCast(setsize));
-        self.fired = try self.allocator.realloc(self.fired, @intCast(setsize));
+        api.resize(self, setsize);
+        self.events = allocator.realloc(self.events, @intCast(setsize));
+        self.fired = allocator.realloc(self.fired, @intCast(setsize));
 
         // Make sure that if we created new slots, they are initialized with
         // an NONE mask.
@@ -214,11 +202,11 @@ pub const EventLoop = struct {
         proc: TimeProc,
         client_data: ClientData,
         finalizerProc: ?EventFinalizerProc,
-    ) !i64 {
+    ) i64 {
         const id = self.time_event_next_id;
         self.time_event_next_id += 1;
 
-        const te = try self.allocator.create(TimeEvent);
+        const te = allocator.create(TimeEvent);
         te.id = id;
         addMillisecondsToNow(milliseconds, &te.when_sec, &te.when_ms);
         te.timeProc = proc;
@@ -261,10 +249,7 @@ pub const EventLoop = struct {
     /// 6) if flags has CALL_AFTER_SLEEP set, the aftersleep callback is called.
     ///
     /// The function returns the number of events processed.
-    pub fn processEvents(
-        self: *EventLoop,
-        flags: i32,
-    ) !usize {
+    pub fn processEvents(self: *EventLoop, flags: i32) !usize {
         var processed: usize = 0;
 
         // Nothing to do? return ASAP
@@ -306,7 +291,7 @@ pub const EventLoop = struct {
             const numevents: usize = try api.poll(self, timeout);
 
             if (self.afterSleep != null and flags & CALL_AFTER_SLEEP != 0) {
-                try self.afterSleep.?(self.allocator, self);
+                try self.afterSleep.?(self);
             }
 
             for (0..numevents) |i| {
@@ -338,7 +323,6 @@ pub const EventLoop = struct {
                 // inverted.
                 if (!invert and fe.mask & mask & READABLE != 0) {
                     try fe.rfileProc(
-                        self.allocator,
                         self,
                         fd,
                         fe.client_data,
@@ -351,7 +335,6 @@ pub const EventLoop = struct {
                 if (fe.mask & mask & WRITABLE != 0) {
                     if (fired == 0 or fe.wfileProc != fe.rfileProc) {
                         try fe.wfileProc(
-                            self.allocator,
                             self,
                             fd,
                             fe.client_data,
@@ -366,7 +349,6 @@ pub const EventLoop = struct {
                 if (invert and fe.mask & mask & READABLE != 0) {
                     if (fired == 0 or fe.wfileProc != fe.rfileProc) {
                         try fe.rfileProc(
-                            self.allocator,
                             self,
                             fd,
                             fe.client_data,
@@ -392,7 +374,7 @@ pub const EventLoop = struct {
         self.stopped = false;
         while (!self.stopped) {
             if (self.beforeSleep) |beforeSleep| {
-                try beforeSleep(self.allocator, self);
+                try beforeSleep(self);
             }
             _ = try self.processEvents(ALL_EVENTS | CALL_AFTER_SLEEP);
         }
@@ -413,10 +395,10 @@ pub const EventLoop = struct {
     }
 
     pub fn destroy(self: *EventLoop) void {
-        api.free(self.allocator, self);
-        self.allocator.free(self.events);
-        self.allocator.free(self.fired);
-        self.allocator.destroy(self);
+        api.free(self);
+        allocator.free(self.events);
+        allocator.free(self.fired);
+        allocator.destroy(self);
     }
 
     /// Search the first timer to fire.
@@ -477,10 +459,10 @@ pub const EventLoop = struct {
                     next.prev = te.prev;
                 }
                 if (te.finalizerProc) |finalizer| {
-                    try finalizer(self.allocator, self, te.client_data);
+                    try finalizer(self, te.client_data);
                 }
                 curr_event = te.next;
-                self.allocator.destroy(te);
+                allocator.destroy(te);
                 continue;
             }
 
@@ -499,7 +481,6 @@ pub const EventLoop = struct {
                 (now.sec == te.when_sec and now.ms > te.when_ms))
             {
                 const retval = try te.timeProc(
-                    self.allocator,
                     self,
                     te.id,
                     te.client_data,
@@ -578,7 +559,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const posix = std.posix;
 const expect = std.testing.expect;
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const api = switch (builtin.os.tag) {
     .linux => @import("ae_epoll.zig"),
     .macos, .netbsd, .freebsd, .dragonfly, .openbsd => @import("ae_kqueue.zig"),

@@ -28,8 +28,8 @@ pub const Client = struct {
         used: usize,
         buffer: [0]u8,
 
-        fn create(allocator: Allocator, size: usize) Allocator.Error!*ReplyBlock {
-            const ptr = try allocator.alignedAlloc(
+        fn create(size: usize) *ReplyBlock {
+            const ptr = allocator.alignedAlloc(
                 u8,
                 .of(ReplyBlock),
                 @sizeOf(ReplyBlock) + size,
@@ -40,18 +40,15 @@ pub const Client = struct {
             return reply;
         }
 
-        fn dupe(
-            allocator: Allocator,
-            reply: *ReplyBlock,
-        ) Allocator.Error!*ReplyBlock {
+        fn dupe(reply: *ReplyBlock) *ReplyBlock {
             const old_bytes = reply.asBytes();
-            const new = try ReplyBlock.create(allocator, reply.size);
+            const new = ReplyBlock.create(reply.size);
             const new_bytes = new.asBytes();
             @memcpy(new_bytes, old_bytes);
             return @ptrCast(@alignCast(new_bytes));
         }
 
-        fn free(allocator: Allocator, reply: *ReplyBlock) void {
+        fn free(reply: *ReplyBlock) void {
             allocator.free(reply.asBytes());
         }
 
@@ -66,7 +63,6 @@ pub const Client = struct {
         }
     };
 
-    allocator: Allocator,
     id: usize, // Client incremental unique ID.
     fd: i32, // Client socket.
     flags: i32, // Client flags: Server.CLIENT_* constants.
@@ -90,10 +86,9 @@ pub const Client = struct {
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
     bufpos: usize,
 
-    pub fn create(allocator: Allocator, fd: i32, flags: i32) !*Client {
-        const cli = try allocator.create(Client);
+    pub fn create(fd: i32, flags: i32) !*Client {
+        const cli = allocator.create(Client);
         errdefer allocator.destroy(cli);
-        cli.allocator = allocator;
 
         // passing -1 as fd it is possible to create a non connected client.
         // This is useful since all the commands needs to be executed
@@ -121,8 +116,7 @@ pub const Client = struct {
         cli.client_list_node = null;
         cli.reqtype = 0;
         cli.querybuf_peak = 0;
-        cli.querybuf = try sds.empty(cli.allocator);
-        errdefer sds.free(cli.allocator, cli.querybuf);
+        cli.querybuf = sds.empty();
         cli.qb_pos = 0;
         cli.argv = null;
         cli.argc = 0;
@@ -131,23 +125,22 @@ pub const Client = struct {
         cli.bulklen = -1;
         cli.authenticated = false;
         cli.lastinteraction = server.unixtime.get();
-        cli.reply = try .create(cli.allocator, &.{
+        cli.reply = .create(&.{
             .free = ReplyBlock.free,
             .dupe = ReplyBlock.dupe,
         });
-        errdefer cli.reply.release(cli.allocator);
         cli.reply_bytes = 0;
         cli.sentlen = 0;
         cli.buf = undefined;
         cli.bufpos = 0;
-        if (fd != -1) try cli.link();
+        if (fd != -1) cli.link();
         return cli;
     }
 
     /// This function links the client to the global linked list of clients.
     /// unlink() does the opposite, among other things.
-    pub fn link(self: *Client) Allocator.Error!void {
-        try server.clients.append(self.allocator, self);
+    pub fn link(self: *Client) void {
+        server.clients.append(self);
         self.client_list_node = server.clients.last;
         _ = server.clients_index.insert(std.mem.asBytes(&self.id), self);
     }
@@ -160,11 +153,14 @@ pub const Client = struct {
             // Remove from the list of active clients.
             if (self.client_list_node) |node| {
                 _ = server.clients_index.remove(std.mem.asBytes(&self.id));
-                server.clients.removeNode(server.allocator, node);
+                server.clients.removeNode(node);
                 self.client_list_node = null;
             }
             // Unregister async I/O handlers and close the socket.
-            server.el.deleteFileEvent(self.fd, ae.READABLE | ae.WRITABLE) catch {};
+            server.el.deleteFileEvent(
+                self.fd,
+                ae.READABLE | ae.WRITABLE,
+            ) catch {};
             posix.close(self.fd);
             self.fd = -1;
         }
@@ -173,7 +169,7 @@ pub const Client = struct {
         if (self.flags & Server.CLIENT_PENDING_WRITE != 0) {
             const ln = server.clients_pending_write.search(self);
             std.debug.assert(ln != null);
-            server.clients_pending_write.removeNode(server.allocator, ln.?);
+            server.clients_pending_write.removeNode(ln.?);
             self.flags &= ~@as(i32, Server.CLIENT_PENDING_WRITE);
         }
     }
@@ -182,7 +178,7 @@ pub const Client = struct {
     /// more query buffer to process, because we read more data from the socket
     /// or because a client was blocked and later reactivated, so there could be
     /// pending query buffer, already representing a full command, to process.
-    pub fn processInputBuffer(self: *Client) !void {
+    pub fn processInputBuffer(self: *Client) void {
         while (self.qb_pos < sds.getLen(self.querybuf)) {
             // CLIENT_CLOSE_AFTER_REPLY closes the connection once the reply is
             // written to the client. Make sure to not let the reply grow after
@@ -203,10 +199,10 @@ pub const Client = struct {
             }
 
             if (self.reqtype == Server.PROTO_REQ_INLINE) {
-                const ok = try self.processInlineBuffer();
+                const ok = self.processInlineBuffer();
                 if (!ok) break;
             } else if (self.reqtype == Server.PROTO_REQ_MULTIBULK) {
-                const ok = try self.processMultibulkBuffer();
+                const ok = self.processMultibulkBuffer();
                 if (!ok) break;
             } else {
                 @panic("Unknown request type");
@@ -215,7 +211,7 @@ pub const Client = struct {
             if (self.argc == 0) {
                 self.reset();
             } else {
-                if (try server.processCommand(self)) {
+                if (server.processCommand(self)) {
                     self.reset();
                 }
             }
@@ -235,12 +231,12 @@ pub const Client = struct {
     /// have a well formed command. The function also returns false when there is
     /// a protocol error: in such a case the client structure is setup to reply
     /// with the error and close the connection.
-    fn processInlineBuffer(self: *Client) Allocator.Error!bool {
+    fn processInlineBuffer(self: *Client) bool {
         const querybuf = sds.asBytes(self.querybuf);
 
         var newline = std.mem.indexOfScalar(u8, querybuf[self.qb_pos..], '\n') orelse {
             if (querybuf.len - self.qb_pos > Server.PROTO_INLINE_MAX_SIZE) {
-                try self.addReplyErr(
+                self.addReplyErr(
                     "Protocol error: too big inline request",
                 );
                 self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -253,24 +249,24 @@ pub const Client = struct {
             linefeed += 1;
         }
         const query = querybuf[self.qb_pos .. self.qb_pos + newline];
-        const args = try sds.splitArgs(self.allocator, query) orelse {
-            try self.addReplyErr(
+        const args = sds.splitArgs(query) orelse {
+            self.addReplyErr(
                 "Protocol error: unbalanced quotes in request",
             );
             self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
             return false;
         };
-        defer self.allocator.free(args); // don't free sds.String
+        defer allocator.free(args); // don't free sds.String
 
         // Move querybuffer position to the next query in the buffer.
         self.qb_pos += newline + linefeed;
 
         // Create redis objects for all arguments.
         if (args.len != 0) {
-            self.argv = try self.allocator.alloc(*Object, args.len);
+            self.argv = allocator.alloc(*Object, args.len);
             self.argc = 0;
             for (args, 0..) |arg, i| {
-                self.argv.?[i] = try Object.create(self.allocator, .string, arg);
+                self.argv.?[i] = Object.create(.string, arg);
                 self.argc += 1;
             }
         }
@@ -288,7 +284,7 @@ pub const Client = struct {
     /// This function is called if processInputBuffer() detects that the next
     /// command is in RESP format, so the first byte in the command is found
     /// to be '*'. Otherwise for inline commands processInlineBuffer() is called.
-    fn processMultibulkBuffer(self: *Client) Allocator.Error!bool {
+    fn processMultibulkBuffer(self: *Client) bool {
         var querybuf = sds.asBytes(self.querybuf);
         if (self.multibulklen == 0) {
             std.debug.assert(self.argc == 0);
@@ -299,7 +295,7 @@ pub const Client = struct {
                 '\r',
             ) orelse {
                 if (querybuf.len - self.qb_pos > Server.PROTO_INLINE_MAX_SIZE) {
-                    try self.addReplyErr(
+                    self.addReplyErr(
                         "Protocol error: too big mbulk count string",
                     );
                     self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -318,7 +314,7 @@ pub const Client = struct {
                 &multibulklen,
             );
             if (!ok or multibulklen > 1024 * 1024) {
-                try self.addReplyErr(
+                self.addReplyErr(
                     "Protocol error: invalid multibulk length",
                 );
                 self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -326,7 +322,7 @@ pub const Client = struct {
             } else if (multibulklen > 10 and
                 server.requirepass != null and !self.authenticated)
             {
-                try self.addReplyErr(
+                self.addReplyErr(
                     "Protocol error: unauthenticated multibulk length",
                 );
                 self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -338,7 +334,7 @@ pub const Client = struct {
 
             self.multibulklen = @intCast(multibulklen);
 
-            self.argv = try self.allocator.alloc(
+            self.argv = allocator.alloc(
                 *Object,
                 @intCast(self.multibulklen),
             );
@@ -356,7 +352,7 @@ pub const Client = struct {
                     '\r',
                 ) orelse {
                     if (querybuf.len - self.qb_pos > Server.PROTO_INLINE_MAX_SIZE) {
-                        try self.addReplyErr(
+                        self.addReplyErr(
                             "Protocol error: too big bulk count string",
                         );
                         self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -370,7 +366,7 @@ pub const Client = struct {
                 }
 
                 if (querybuf[self.qb_pos] != '$') {
-                    try self.addReplyErrFormat(
+                    self.addReplyErrFormat(
                         "Protocol error: expected '$', got '{c}'",
                         .{querybuf[self.qb_pos]},
                     );
@@ -384,7 +380,7 @@ pub const Client = struct {
                     &bulklen,
                 );
                 if (!ok or bulklen < 0 or bulklen > server.proto_max_bulk_len) {
-                    try self.addReplyErr(
+                    self.addReplyErr(
                         "Protocol error: invalid bulk length",
                     );
                     self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -392,7 +388,7 @@ pub const Client = struct {
                 } else if (bulklen > 16384 and
                     server.requirepass != null and !self.authenticated)
                 {
-                    try self.addReplyErr(
+                    self.addReplyErr(
                         "Protocol error: unauthenticated bulk length",
                     );
                     self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
@@ -414,8 +410,7 @@ pub const Client = struct {
                         self.qb_pos = 0;
                         // Hint the sds library about the amount of bytes this
                         // string is going to contain.
-                        self.querybuf = try sds.makeRoomFor(
-                            self.allocator,
+                        self.querybuf = sds.makeRoomFor(
                             self.querybuf,
                             @intCast(bulklen + 2),
                         );
@@ -437,8 +432,7 @@ pub const Client = struct {
                 self.bulklen >= Server.PROTO_MBULK_BIG_ARG and
                 querybuf.len == self.bulklen + 2)
             {
-                argv[self.argc] = try Object.create(
-                    self.allocator,
+                argv[self.argc] = Object.create(
                     .string,
                     self.querybuf,
                 );
@@ -446,16 +440,14 @@ pub const Client = struct {
                 self.argc += 1;
                 // Assume that if we saw a fat argument we'll see another one
                 // likely...
-                self.querybuf = try sds.newLen(
-                    self.allocator,
+                self.querybuf = sds.newLen(
                     null,
                     @intCast(self.bulklen + 2),
                 );
                 sds.clear(self.querybuf);
                 querybuf = sds.asBytes(self.querybuf);
             } else {
-                argv[self.argc] = try Object.createString(
-                    self.allocator,
+                argv[self.argc] = Object.createString(
                     self.querybuf[self.qb_pos .. self.qb_pos + @as(usize, @intCast(self.bulklen))],
                 );
                 self.qb_pos += @as(usize, @intCast(self.bulklen)) + 2;
@@ -483,9 +475,9 @@ pub const Client = struct {
     fn freeArgv(self: *Client) void {
         if (self.argv) |argv| {
             for (0..self.argc) |i| {
-                argv[i].decrRefCount(self.allocator);
+                argv[i].decrRefCount();
             }
-            self.allocator.free(argv);
+            allocator.free(argv);
         }
         self.argv = null;
         self.argc = 0;
@@ -493,7 +485,7 @@ pub const Client = struct {
     }
 
     /// Add the object 'obj' string representation to the client output buffer.
-    pub fn addReply(self: *Client, obj: *Object) Allocator.Error!void {
+    pub fn addReply(self: *Client, obj: *Object) void {
         var buf: [20]u8 = undefined;
         var s: []u8 = undefined;
 
@@ -505,17 +497,17 @@ pub const Client = struct {
             @panic("Wrong obj.encoding in addReply()");
         }
 
-        try self.addReplyString(s);
+        self.addReplyString(s);
     }
 
     pub fn addReplyErrFormat(
         self: *Client,
         comptime fmt: []const u8,
         args: anytype,
-    ) Allocator.Error!void {
-        var s = try sds.empty(self.allocator);
-        defer sds.free(self.allocator, s);
-        s = try sds.catPrintf(self.allocator, s, fmt, args);
+    ) void {
+        var s = sds.empty();
+        defer sds.free(s);
+        s = sds.catPrintf(s, fmt, args);
         const bytes = sds.asBytes(s);
         // Make sure there are no newlines in the string, otherwise invalid protocol
         // is emitted.
@@ -524,23 +516,23 @@ pub const Client = struct {
                 bytes[i] = ' ';
             }
         }
-        try self.addReplyErr(bytes);
+        self.addReplyErr(bytes);
     }
 
-    pub fn addReplyErr(self: *Client, err: []const u8) Allocator.Error!void {
+    pub fn addReplyErr(self: *Client, err: []const u8) void {
         if (err.len == 0 or err[0] != '-') {
-            try self.addReplyString("-ERR ");
+            self.addReplyString("-ERR ");
         }
-        try self.addReplyString(err);
-        try self.addReplyString("\r\n");
+        self.addReplyString(err);
+        self.addReplyString("\r\n");
     }
 
-    fn addReplyString(self: *Client, s: []const u8) Allocator.Error!void {
-        if (!try self.prepareClientToWrite()) return;
+    fn addReplyString(self: *Client, s: []const u8) void {
+        if (!self.prepareClientToWrite()) return;
         if (self.addReplyStringToBuffer(s)) {
             return;
         }
-        try self.addReplyStringToList(s);
+        self.addReplyStringToList(s);
     }
 
     fn addReplyStringToBuffer(self: *Client, s: []const u8) bool {
@@ -565,7 +557,7 @@ pub const Client = struct {
         return true;
     }
 
-    fn addReplyStringToList(self: *Client, s: []const u8) Allocator.Error!void {
+    fn addReplyStringToList(self: *Client, s: []const u8) void {
         var len = s.len;
         var pos: usize = 0;
         const tail = if (self.reply.last) |last| last.value else null;
@@ -588,21 +580,20 @@ pub const Client = struct {
                 Server.PROTO_REPLY_CHUNK_BYTES
             else
                 len;
-            const block = try ReplyBlock.create(self.allocator, size);
-            errdefer ReplyBlock.free(self.allocator, block);
+            const block = ReplyBlock.create(size);
             const buf = block.buf();
             memcpy(buf, s[pos..], len);
             block.used = len;
-            try self.reply.append(self.allocator, block);
+            self.reply.append(block);
             self.reply_bytes += block.size;
         }
     }
 
-    fn prepareClientToWrite(self: *Client) Allocator.Error!bool {
+    fn prepareClientToWrite(self: *Client) bool {
         // Schedule the client to write the output buffers to the socket, unless
         // it should already be setup to do so (it has already pending data).
         if (!self.hasPendingReplies()) {
-            try self.installWriteHandler();
+            self.installWriteHandler();
         }
         return true;
     }
@@ -611,7 +602,7 @@ pub const Client = struct {
         return self.bufpos > 0 or self.reply.len > 0;
     }
 
-    fn installWriteHandler(self: *Client) Allocator.Error!void {
+    fn installWriteHandler(self: *Client) void {
         if (self.flags & Server.CLIENT_PENDING_WRITE == 0) {
             // Here instead of installing the write handler, we just flag the
             // client and put it into a list of clients that have something
@@ -620,10 +611,7 @@ pub const Client = struct {
             // a system call. We'll only really install the write handler if
             // we'll not be able to write the whole reply at once.
             self.flags |= Server.CLIENT_PENDING_WRITE;
-            try server.clients_pending_write.append(
-                server.allocator,
-                self,
-            );
+            server.clients_pending_write.append(self);
         }
     }
 
@@ -658,7 +646,7 @@ pub const Client = struct {
                 const objlen = obj.used;
                 if (objlen == 0) {
                     self.reply_bytes -= obj.size;
-                    self.reply.removeNode(self.allocator, first);
+                    self.reply.removeNode(first);
                     continue;
                 }
                 const bytes = obj.buf()[self.sentlen..objlen];
@@ -676,7 +664,7 @@ pub const Client = struct {
                 // If we fully sent the object on head go to the next one
                 if (self.sentlen == objlen) {
                     self.reply_bytes -= obj.size;
-                    self.reply.removeNode(self.allocator, first);
+                    self.reply.removeNode(first);
                     self.sentlen = 0;
                     // If there are no longer objects in the list, we expect
                     // the count of reply bytes to be exactly zero.
@@ -719,14 +707,14 @@ pub const Client = struct {
     }
 
     pub fn free(self: *Client) void {
-        sds.free(self.allocator, self.querybuf);
+        sds.free(self.querybuf);
         self.querybuf = undefined;
 
-        self.reply.release(self.allocator);
+        self.reply.release();
         self.freeArgv();
         self.unlink();
 
-        self.allocator.destroy(self);
+        allocator.destroy(self);
     }
 
     /// Schedule a client to free it at a safe time in the Server.serverCron()
@@ -734,15 +722,14 @@ pub const Client = struct {
     /// but we are in a context where calling Client.free() is not possible,
     /// because the client should be valid for the continuation of the flow
     /// of the program.
-    pub fn freeAsync(self: *Client) Allocator.Error!void {
+    pub fn freeAsync(self: *Client) void {
         if (self.flags & Server.CLIENT_CLOSE_ASAP != 0) return;
         self.flags |= Server.CLIENT_CLOSE_ASAP;
-        try server.clients_to_close.append(server.allocator, self);
+        server.clients_to_close.append(self);
     }
 };
 
 pub fn acceptHandler(
-    allocator: Allocator,
     el: *ae.EventLoop,
     fd: i32,
     client_data: ae.ClientData,
@@ -771,7 +758,6 @@ pub fn acceptHandler(
         }
 
         const c = Client.create(
-            allocator,
             csk.fd,
             flags,
         ) catch |err| {
@@ -822,7 +808,6 @@ pub fn freeClientsInAsyncFreeQueue() void {
         cli.flags &= ~@as(i32, Server.CLIENT_CLOSE_ASAP);
         cli.free();
         server.clients_to_close.removeNode(
-            server.allocator,
             ln,
         );
     }
@@ -840,7 +825,6 @@ pub fn handleClientsWithPendingWrites() !usize {
         const cli = ln.value;
         cli.flags &= ~@as(i32, Server.CLIENT_PENDING_WRITE);
         server.clients_pending_write.removeNode(
-            server.allocator,
             ln,
         );
 
@@ -856,7 +840,7 @@ pub fn handleClientsWithPendingWrites() !usize {
                 sendReplyToClient,
                 cli,
             ) catch {
-                try cli.freeAsync();
+                cli.freeAsync();
             };
         }
     }
@@ -865,7 +849,6 @@ pub fn handleClientsWithPendingWrites() !usize {
 }
 
 fn readQueryFromClient(
-    allocator: Allocator,
     el: *ae.EventLoop,
     fd: i32,
     client_data: ae.ClientData,
@@ -873,7 +856,6 @@ fn readQueryFromClient(
 ) !void {
     _ = el;
     _ = mask;
-    _ = allocator;
 
     const cli: *Client = @ptrCast(@alignCast(client_data.?));
 
@@ -901,7 +883,7 @@ fn readQueryFromClient(
     if (cli.querybuf_peak < qblen) {
         cli.querybuf_peak = qblen;
     }
-    cli.querybuf = try sds.makeRoomFor(cli.allocator, cli.querybuf, readlen);
+    cli.querybuf = sds.makeRoomFor(cli.querybuf, readlen);
     const nread = posix.read(
         fd,
         cli.querybuf[qblen .. qblen + readlen],
@@ -923,9 +905,9 @@ fn readQueryFromClient(
     cli.lastinteraction = server.unixtime.get();
     if (sds.getLen(cli.querybuf) > server.client_max_querybuf_len) {
         defer cli.free();
-        var bytes = try sds.empty(cli.allocator);
-        defer sds.free(cli.allocator, bytes);
-        bytes = try sds.catRepr(cli.allocator, bytes, cli.querybuf[0..64]);
+        var bytes = sds.empty();
+        defer sds.free(bytes);
+        bytes = sds.catRepr(bytes, cli.querybuf[0..64]);
         log.warn(
             "Closing client that reached max query buffer length (qbuf initial bytes: {s})",
             .{sds.asBytes(bytes)},
@@ -933,18 +915,16 @@ fn readQueryFromClient(
         return;
     }
 
-    try cli.processInputBuffer();
+    cli.processInputBuffer();
 }
 
 /// Write event handler. Just send data to the client.
 fn sendReplyToClient(
-    allocator: Allocator,
     el: *ae.EventLoop,
     fd: i32,
     client_data: ae.ClientData,
     mask: i32,
 ) !void {
-    _ = allocator;
     _ = el;
     _ = fd;
     _ = mask;
@@ -953,7 +933,7 @@ fn sendReplyToClient(
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const ae = @import("ae.zig");
 const posix = std.posix;
 const anet = @import("anet.zig");

@@ -9,21 +9,17 @@ numbers: [0]u8, // Little Endian.
 const IntSet = @This();
 pub const Value = i64;
 
-pub fn new(allocator: Allocator) Allocator.Error!*IntSet {
-    const s = try allocator.create(IntSet);
+pub fn new() *IntSet {
+    const s = allocator.create(IntSet);
     s.encoding.set(ENC_INT16);
     s.length.set(0);
     return s;
 }
 
-pub fn add(
-    s: *IntSet,
-    allocator: Allocator,
-    value: Value,
-) Allocator.Error!struct { set: *IntSet, success: bool } {
+pub fn add(s: *IntSet, value: Value) struct { set: *IntSet, success: bool } {
     const enc = valueEncoding(value);
     if (enc > s.encoding.get()) {
-        const ns = try s.upgradeAdd(allocator, value);
+        const ns = s.upgradeAdd(value);
         return .{
             .set = ns,
             .success = true,
@@ -40,7 +36,7 @@ pub fn add(
 
     const cur_len = s.length.get();
     const new_length = cur_len + 1;
-    const ns = try s.resize(allocator, new_length, null);
+    const ns = s.resize(new_length, null);
     const pos = res.pos;
     if (pos < cur_len) ns.moveTail(pos, pos + 1, cur_len - pos);
     ns.setAt(pos, value);
@@ -50,11 +46,7 @@ pub fn add(
     };
 }
 
-pub fn remove(
-    s: *IntSet,
-    allocator: Allocator,
-    value: Value,
-) Allocator.Error!struct { set: *IntSet, success: bool } {
+pub fn remove(s: *IntSet, value: Value) struct { set: *IntSet, success: bool } {
     const enc = valueEncoding(value);
     if (enc > s.encoding.get()) {
         return .{
@@ -77,7 +69,7 @@ pub fn remove(
         const from = pos + 1;
         s.moveTail(from, pos, len - from);
     }
-    const ns = try s.resize(allocator, len - 1, null);
+    const ns = s.resize(len - 1, null);
     return .{
         .set = ns,
         .success = true,
@@ -111,7 +103,7 @@ pub fn blobLen(s: *IntSet) usize {
     return @sizeOf(IntSet) + length * encoding;
 }
 
-pub fn free(s: *IntSet, allocator: Allocator) void {
+pub fn free(s: *IntSet) void {
     allocator.free(s.toBytes());
 }
 
@@ -181,18 +173,14 @@ fn search(s: *IntSet, value: Value) struct { pos: u32, found: bool } {
     };
 }
 
-fn upgradeAdd(
-    s: *IntSet,
-    allocator: Allocator,
-    value: Value,
-) Allocator.Error!*IntSet {
+fn upgradeAdd(s: *IntSet, value: Value) *IntSet {
     const curr_enc = s.encoding.get();
     const new_enc = valueEncoding(value);
     std.debug.assert(new_enc > curr_enc);
 
     const old_length = s.length.get();
     const new_length = old_length + 1;
-    const ns = try s.resize(allocator, new_length, new_enc);
+    const ns = s.resize(new_length, new_enc);
 
     const prepend = value < 0;
     var length = old_length;
@@ -238,15 +226,10 @@ fn getAtEncoded(s: *IntSet, pos: u32, encoding: u32) Value {
     return littleToNative(i16, s.numbersPtr(i16)[pos]);
 }
 
-fn resize(
-    s: *IntSet,
-    allocator: Allocator,
-    new_len: u32,
-    new_enc: ?u32,
-) Allocator.Error!*IntSet {
+fn resize(s: *IntSet, new_len: u32, new_enc: ?u32) *IntSet {
     const encoding = new_enc orelse s.encoding.get();
     const new_mem_size = @sizeOf(IntSet) + new_len * encoding;
-    const new_mem = try allocator.realloc(
+    const new_mem = allocator.realloc(
         s.toBytes(),
         new_mem_size,
     );
@@ -279,21 +262,20 @@ inline fn toBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
 test IntSet {
     rand.seed(@bitCast(std.time.microTimestamp()));
 
-    const allocator = testing.allocator;
-    var s = try new(allocator);
-    defer s.free(allocator);
+    var s = new();
+    defer s.free();
 
-    var add_res = try s.add(allocator, 1);
+    var add_res = s.add(1);
     s = add_res.set;
     try expect(add_res.success);
 
-    add_res = try s.add(allocator, 1);
+    add_res = s.add(1);
     s = add_res.set;
     try expect(add_res.success == false);
     try expect(s.find(1));
 
     const max32 = std.math.maxInt(i32);
-    add_res = try s.add(allocator, max32);
+    add_res = s.add(max32);
     s = add_res.set;
     try expect(add_res.success);
     try expect(s.find(max32));
@@ -301,7 +283,7 @@ test IntSet {
     try expectEqual(2, s.length.get());
 
     const min64 = std.math.minInt(i64);
-    add_res = try s.add(allocator, min64);
+    add_res = s.add(min64);
     s = add_res.set;
     try expect(add_res.success);
     try expect(s.find(min64));
@@ -309,7 +291,7 @@ test IntSet {
     try expect(s.find(1));
     try expectEqual(3, s.length.get());
 
-    var remove_res = try s.remove(allocator, 1);
+    var remove_res = s.remove(1);
     s = remove_res.set;
     try expect(remove_res.success);
     try expectEqual(2, s.length.get());
@@ -324,10 +306,10 @@ test IntSet {
     try expectEqual(24, bytes);
 
     const max64 = std.math.maxInt(i64);
-    add_res = try s.add(allocator, max64);
+    add_res = s.add(max64);
     s = add_res.set;
     const min32 = std.math.minInt(i32);
-    add_res = try s.add(allocator, min32);
+    add_res = s.add(min32);
     s = add_res.set;
     try expectEqual(4, s.length.get());
     try expectEqualSlices(
@@ -344,7 +326,7 @@ test IntSet {
     try expectEqual(s.encoding.val, ptr[0]);
     try expectEqual(s.length.val, ptr[1]);
 
-    remove_res = try s.remove(allocator, min32);
+    remove_res = s.remove(min32);
     s = remove_res.set;
     try expect(remove_res.success);
     try expect(s.find(min32) == false);
@@ -356,7 +338,7 @@ test IntSet {
 
 const std = @import("std");
 const testing = std.testing;
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const maxInt = std.math.maxInt;
 const minInt = std.math.minInt;
 const nativeToLittle = std.mem.nativeToLittle;

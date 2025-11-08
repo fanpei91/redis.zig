@@ -7,9 +7,8 @@ const State = struct {
     _wfds: c.fd_set,
 };
 
-pub fn create(allocator: Allocator, el: *EventLoop) !void {
-    const state = try allocator.create(State);
-    errdefer allocator.destroy(state);
+pub fn create(el: *EventLoop) !void {
+    const state = allocator.create(State);
 
     c.FD_ZERO(&state.rfds);
     c.FD_ZERO(&state.wfds);
@@ -28,12 +27,7 @@ pub fn delEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     if (mask & ae.WRITABLE != 0) c.FD_CLR(fd, &state.wfds);
 }
 
-pub fn resize(_: Allocator, _: *EventLoop, setsize: i32) !void {
-    // Just ensure we have enough room in the fd_set type.
-    if (setsize >= c.FD_SETSIZE) {
-        return error.SetSizeTooLarge;
-    }
-}
+pub fn resize(_: *EventLoop, _: i32) void {}
 
 pub fn poll(el: *EventLoop, timeout_in_ms: ?i64) !usize {
     const state: *State = @ptrCast(@alignCast(el.apidata));
@@ -86,13 +80,13 @@ pub fn name() []const u8 {
     return "select";
 }
 
-pub fn free(allocator: Allocator, el: *EventLoop) void {
+pub fn free(el: *EventLoop) void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     allocator.destroy(state);
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const ae = @import("ae.zig");
 const EventLoop = ae.EventLoop;
 const c = @cImport({

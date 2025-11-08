@@ -33,10 +33,10 @@ pub fn genHash(key: []const u8) Hash {
 pub const VTable = struct {
     hash: *const fn (priv_data: PrivData, key: Key) Hash,
     eql: ?*const fn (priv_data: PrivData, key1: Key, key2: Key) bool,
-    dupeKey: ?*const fn (priv_data: PrivData, Allocator, key: Key) Allocator.Error!Key,
-    dupeVal: ?*const fn (priv_data: PrivData, Allocator, val: Value) Allocator.Error!Value,
-    freeKey: ?*const fn (priv_data: PrivData, Allocator, key: Key) void,
-    freeVal: ?*const fn (priv_data: PrivData, Allocator, val: Value) void,
+    dupeKey: ?*const fn (priv_data: PrivData, key: Key) Key,
+    dupeVal: ?*const fn (priv_data: PrivData, val: Value) Value,
+    freeKey: ?*const fn (priv_data: PrivData, key: Key) void,
+    freeVal: ?*const fn (priv_data: PrivData, val: Value) void,
 };
 
 pub const Entry = struct {
@@ -51,11 +51,10 @@ pub const Entry = struct {
 
     fn destroy(
         self: *Entry,
-        allocator: Allocator,
         ctx: *Context,
     ) void {
-        ctx.freeKey(allocator, self.key);
-        ctx.freeVal(allocator, self.v.val);
+        ctx.freeKey(self.key);
+        ctx.freeVal(self.v.val);
         allocator.destroy(self);
     }
 };
@@ -128,37 +127,29 @@ const Context = struct {
         return self.vtable.hash(self.priv_data, key);
     }
 
-    fn dupeKey(
-        self: *Context,
-        allocator: Allocator,
-        key: Key,
-    ) Allocator.Error!Key {
+    fn dupeKey(self: *Context, key: Key) Key {
         if (self.vtable.dupeKey) |dupe| {
-            return dupe(self.priv_data, allocator, key);
+            return dupe(self.priv_data, key);
         }
         return key;
     }
 
-    fn dupeVal(
-        self: *Context,
-        allocator: Allocator,
-        val: Value,
-    ) Allocator.Error!Value {
+    fn dupeVal(self: *Context, val: Value) Value {
         if (self.vtable.dupeVal) |dupe| {
-            return dupe(self.priv_data, allocator, val);
+            return dupe(self.priv_data, val);
         }
         return val;
     }
 
-    fn freeKey(self: *Context, allocator: Allocator, key: Key) void {
+    fn freeKey(self: *Context, key: Key) void {
         if (self.vtable.freeKey) |free| {
-            free(self.priv_data, allocator, key);
+            free(self.priv_data, key);
         }
     }
 
-    fn freeVal(self: *Context, allocator: Allocator, val: Value) void {
+    fn freeVal(self: *Context, val: Value) void {
         if (self.vtable.freeVal) |free| {
-            free(self.priv_data, allocator, val);
+            free(self.priv_data, val);
         }
     }
 };
@@ -169,11 +160,8 @@ const HashTable = struct {
     sizemask: u64 = 0, // size - 1
     table: ?[*]?*Entry = null,
 
-    fn create(
-        allocator: Allocator,
-        len: usize,
-    ) Allocator.Error!HashTable {
-        const mem = try allocator.alloc(?*Entry, len);
+    fn create(len: usize) HashTable {
+        const mem = allocator.alloc(?*Entry, len);
         @memset(mem, null);
         return .{
             .used = 0,
@@ -193,7 +181,6 @@ const HashTable = struct {
 
     fn free(
         self: *HashTable,
-        allocator: Allocator,
         ctx: *Context,
         callback: ?*const fn (priv_data: PrivData) void,
     ) void {
@@ -208,11 +195,11 @@ const HashTable = struct {
             var entry = self.table.?[i];
             while (entry) |ent| {
                 entry = ent.next;
-                ent.destroy(allocator, ctx);
+                ent.destroy(ctx);
                 self.used -= 1;
             }
         }
-        self.freeTable(allocator);
+        self.freeTable();
         self.reset();
     }
 
@@ -223,7 +210,7 @@ const HashTable = struct {
         self.table = null;
     }
 
-    fn freeTable(self: *HashTable, allocator: Allocator) void {
+    fn freeTable(self: *HashTable) void {
         if (self.table) |table| {
             allocator.free(table[0..self.size]);
         }
@@ -249,12 +236,8 @@ pub fn iterator(self: *Dict, safe: bool) Iterator {
     return it;
 }
 
-pub fn create(
-    allocator: Allocator,
-    vtable: *const VTable,
-    priv_data: PrivData,
-) Allocator.Error!*Dict {
-    const self = try allocator.create(Dict);
+pub fn create(vtable: *const VTable, priv_data: PrivData) *Dict {
+    const self = allocator.create(Dict);
     self.* = .{
         .ctx = .{ .priv_data = priv_data, .vtable = vtable },
     };
@@ -265,40 +248,22 @@ pub fn create(
 /// Return `.add` if the key was added from scratch, `.replace` if
 /// there was already an element with such key and replace() just
 /// performed a value update operation.
-pub fn replace(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-    val: Value,
-) Allocator.Error!enum { replace, add } {
+pub fn replace(self: *Dict, key: Key, val: Value) enum { replace, add } {
     var existing: ?*Entry = null;
-    const entry = try self.addRaw(allocator, key, &existing);
+    const entry = self.addRaw(key, &existing);
     if (entry) |ent| {
-        errdefer {
-            self.freeKey(allocator, ent);
-            allocator.destroy(ent);
-        }
-        try self.setVal(allocator, ent, val);
+        self.setVal(ent, val);
         return .add;
     }
-    self.freeVal(allocator, existing.?);
-    try self.setVal(allocator, existing.?, val);
+    self.freeVal(existing.?);
+    self.setVal(existing.?, val);
     return .replace;
 }
 
-pub fn add(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-    val: Value,
-) Allocator.Error!bool {
-    const entry = try self.addRaw(allocator, key, null);
+pub fn add(self: *Dict, key: Key, val: Value) bool {
+    const entry = self.addRaw(key, null);
     if (entry) |ent| {
-        errdefer {
-            self.freeKey(allocator, ent);
-            allocator.destroy(ent);
-        }
-        try self.setVal(allocator, ent, val);
+        self.setVal(ent, val);
         return true;
     }
     return false;
@@ -309,24 +274,18 @@ pub fn add(
 ///
 /// If key was added, the hash entry is returned to be manipulated by
 /// the caller.
-pub fn addRaw(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-    existing: ?*?*Entry,
-) Allocator.Error!?*Entry {
-    if (self.isRehashing()) self.rehashStep(allocator);
-    if (try self.expandIfNeeded(allocator) == false) {
+pub fn addRaw(self: *Dict, key: Key, existing: ?*?*Entry) ?*Entry {
+    if (self.isRehashing()) self.rehashStep();
+    if (self.expandIfNeeded() == false) {
         return null;
     }
 
     const index = self.keyIndex(key, existing) orelse return null;
     var ht: *HashTable = if (self.isRehashing()) &self.ht[1] else &self.ht[0];
 
-    const entry = try allocator.create(Entry);
-    errdefer allocator.destroy(entry);
+    const entry = allocator.create(Entry);
 
-    try self.setKey(allocator, entry, key);
+    self.setKey(entry, key);
     entry.next = ht.get(index);
 
     ht.set(index, entry);
@@ -337,26 +296,18 @@ pub fn addRaw(
 /// A version of `addRaw()` that always returns the hash entry of the
 /// specified key, even if the key already exists and can't be
 /// added (in that case the entry of the already existing key is returned.)
-pub fn addOrFind(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-) Allocator.Error!*Entry {
+pub fn addOrFind(self: *Dict, key: Key) *Entry {
     var existing: ?*Entry = null;
-    const entry = try self.addRaw(allocator, key, &existing);
+    const entry = self.addRaw(key, &existing);
     if (entry) |ent| {
         return ent;
     }
     return existing.?;
 }
 
-pub fn find(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-) ?*Entry {
+pub fn find(self: *Dict, key: Key) ?*Entry {
     if (self.ht[0].size == 0) return null;
-    if (self.isRehashing()) self.rehashStep(allocator);
+    if (self.isRehashing()) self.rehashStep();
 
     const hash: Hash = self.ctx.hash(key);
     for (0..self.ht.len) |i| {
@@ -374,18 +325,14 @@ pub fn find(
     return null;
 }
 
-pub fn fetchValue(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-) Value {
-    const entry = self.find(allocator, key) orelse return null;
+pub fn fetchValue(self: *Dict, key: Key) Value {
+    const entry = self.find(key) orelse return null;
     return entry.v.val;
 }
 
-pub fn getRandom(self: *Dict, allocator: Allocator) ?*Entry {
+pub fn getRandom(self: *Dict) ?*Entry {
     if (self.size() == 0) return null;
-    if (self.isRehashing()) self.rehashStep(allocator);
+    if (self.isRehashing()) self.rehashStep();
 
     const h0 = &self.ht[0];
     const h1 = &self.ht[1];
@@ -420,26 +367,21 @@ pub fn getRandom(self: *Dict, allocator: Allocator) ?*Entry {
     return entry;
 }
 
-pub fn getSome(
-    self: *Dict,
-    allocator: Allocator,
-    n: u32,
-) Allocator.Error![]*Entry {
+pub fn getSome(self: *Dict, n: u32) []*Entry {
     const count: u64 = @min(self.size(), n);
 
     for (0..count) |_| {
         if (self.isRehashing()) {
-            self.rehashStep(allocator);
+            self.rehashStep();
         } else {
             break;
         }
     }
 
-    var items = try std.ArrayList(*Entry).initCapacity(
-        allocator,
+    var items = std.ArrayList(*Entry).initCapacity(
+        allocator.allocator(),
         count,
-    );
-    errdefer items.deinit(allocator);
+    ) catch allocator.oom();
 
     const h0 = &self.ht[0];
     const h1 = &self.ht[1];
@@ -471,7 +413,10 @@ pub fn getSome(
             } else {
                 empty_visits = 0;
                 while (entry) |ent| {
-                    try items.append(allocator, ent);
+                    items.append(
+                        allocator.allocator(),
+                        ent,
+                    ) catch allocator.oom();
                     entry = ent.next;
                     stored += 1;
                     if (stored == count) break :outer;
@@ -481,7 +426,7 @@ pub fn getSome(
         i = (i + 1) & max_sizemask; // Increment index by 1.
     }
 
-    return try items.toOwnedSlice(allocator);
+    return items.toOwnedSlice(allocator.allocator()) catch allocator.oom();
 }
 
 pub const scanEntryFunc = *const fn (priv_data: PrivData, e: *const Entry) void;
@@ -555,35 +500,22 @@ pub fn scan(
     return v;
 }
 
-pub fn delete(self: *Dict, allocator: Allocator, key: Key) bool {
-    const deleted = self.genericDelete(allocator, key, true);
+pub fn delete(self: *Dict, key: Key) bool {
+    const deleted = self.genericDelete(key, true);
     return deleted != null;
 }
 
-pub fn unlink(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-) ?*Entry {
-    return self.genericDelete(allocator, key, false);
+pub fn unlink(self: *Dict, key: Key) ?*Entry {
+    return self.genericDelete(key, false);
 }
 
-pub fn freeUnlinkedEntry(
-    self: *Dict,
-    allocator: Allocator,
-    entry: *Entry,
-) void {
-    entry.destroy(allocator, &self.ctx);
+pub fn freeUnlinkedEntry(self: *Dict, entry: *Entry) void {
+    entry.destroy(&self.ctx);
 }
 
-fn genericDelete(
-    self: *Dict,
-    allocator: Allocator,
-    key: Key,
-    free: bool,
-) ?*Entry {
+fn genericDelete(self: *Dict, key: Key, free: bool) ?*Entry {
     if (self.ht[0].used == 0 and self.ht[1].used == 0) return null;
-    if (self.isRehashing()) self.rehashStep(allocator);
+    if (self.isRehashing()) self.rehashStep();
 
     const hash: Hash = self.ctx.hash(key);
     for (0..self.ht.len) |i| {
@@ -598,7 +530,7 @@ fn genericDelete(
                 } else {
                     ht.set(idx, ent.next);
                 }
-                if (free) ent.destroy(allocator, &self.ctx);
+                if (free) ent.destroy(&self.ctx);
                 ht.used -= 1;
                 return ent;
             }
@@ -614,11 +546,7 @@ pub fn isRehashing(self: *Dict) bool {
     return self.rehashidx != -1;
 }
 
-pub fn expand(
-    self: *Dict,
-    allocator: Allocator,
-    len: u64,
-) Allocator.Error!bool {
+pub fn expand(self: *Dict, len: u64) bool {
     if (self.isRehashing() or self.ht[0].used > len) {
         return false;
     }
@@ -628,7 +556,7 @@ pub fn expand(
         return false;
     }
 
-    const n = try HashTable.create(allocator, real_size);
+    const n = HashTable.create(real_size);
 
     // First initialization.
     if (self.ht[0].size == 0) {
@@ -654,11 +582,10 @@ pub fn rehashMilliseconds(self: *Dict, ms: usize) void {
 
 pub fn empty(
     self: *Dict,
-    allocator: Allocator,
     callback: ?*const fn (priv_data: PrivData) void,
 ) void {
-    self.ht[0].free(allocator, &self.ctx, callback);
-    self.ht[1].free(allocator, &self.ctx, callback);
+    self.ht[0].free(&self.ctx, callback);
+    self.ht[1].free(&self.ctx, callback);
     self.iterators = 0;
     self.rehashidx = -1;
 }
@@ -671,45 +598,27 @@ pub fn slots(self: *Dict) u64 {
     return self.ht[0].size + self.ht[1].size;
 }
 
-pub fn setKey(
-    self: *Dict,
-    allocator: Allocator,
-    entry: *Entry,
-    key: Key,
-) Allocator.Error!void {
-    entry.key = try self.ctx.dupeKey(allocator, key);
+pub fn setKey(self: *Dict, entry: *Entry, key: Key) void {
+    entry.key = self.ctx.dupeKey(key);
 }
 
-pub fn freeKey(
-    self: *Dict,
-    allocator: Allocator,
-    entry: *Entry,
-) void {
-    self.ctx.freeKey(allocator, entry.key);
+pub fn freeKey(self: *Dict, entry: *Entry) void {
+    self.ctx.freeKey(entry.key);
 }
 
-pub fn setVal(
-    self: *Dict,
-    allocator: Allocator,
-    entry: *Entry,
-    val: Value,
-) Allocator.Error!void {
+pub fn setVal(self: *Dict, entry: *Entry, val: Value) void {
     entry.v = .{
-        .val = try self.ctx.dupeVal(allocator, val),
+        .val = self.ctx.dupeVal(val),
     };
 }
 
-pub fn freeVal(
-    self: *Dict,
-    allocator: Allocator,
-    entry: *Entry,
-) void {
-    self.ctx.freeVal(allocator, entry.v.val);
+pub fn freeVal(self: *Dict, entry: *Entry) void {
+    self.ctx.freeVal(entry.v.val);
 }
 
-pub fn destroy(self: *Dict, allocator: Allocator) void {
-    self.ht[0].free(allocator, &self.ctx, null);
-    self.ht[1].free(allocator, &self.ctx, null);
+pub fn destroy(self: *Dict) void {
+    self.ht[0].free(&self.ctx, null);
+    self.ht[1].free(&self.ctx, null);
     allocator.destroy(self);
 }
 
@@ -736,14 +645,11 @@ fn keyIndex(self: *Dict, key: Key, existing: ?*?*Entry) ?u64 {
     return idx;
 }
 
-fn expandIfNeeded(
-    self: *Dict,
-    allocator: Allocator,
-) Allocator.Error!bool {
+fn expandIfNeeded(self: *Dict) bool {
     if (self.isRehashing()) return true;
     const h0 = &self.ht[0];
     if (h0.size == 0) {
-        return self.expand(allocator, HT_INITIAL_SIZE);
+        return self.expand(HT_INITIAL_SIZE);
     }
 
     const hused = h0.used;
@@ -751,18 +657,18 @@ fn expandIfNeeded(
     const ratio = hused / hsize;
     const force_resize = ratio > force_resize_ratio;
     if (hused >= hsize and (dict_can_resize or force_resize)) {
-        return self.expand(allocator, hused * 2);
+        return self.expand(hused * 2);
     }
     return true;
 }
 
-fn rehashStep(self: *Dict, allocator: Allocator) void {
+fn rehashStep(self: *Dict) void {
     if (self.iterators != 0) return;
-    _ = self.rehash(allocator, 1);
+    _ = self.rehash(1);
 }
 
 /// More to rehash if returning true.
-fn rehash(self: *Dict, allocator: Allocator, n: usize) bool {
+fn rehash(self: *Dict, n: usize) bool {
     if (!self.isRehashing()) return false;
 
     var empty_visits = n * 10;
@@ -790,7 +696,7 @@ fn rehash(self: *Dict, allocator: Allocator, n: usize) bool {
     }
 
     if (h0.used == 0) {
-        h0.freeTable(allocator);
+        h0.freeTable();
         h0.* = h1.*;
         h1.reset();
         self.rehashidx = -1;
@@ -842,41 +748,37 @@ fn nextPower(sz: u64) u64 {
 }
 
 test "add() | addOrFind() || find() | fetchVal()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
     const cnt = 100;
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator,
+            allocator.allocator(),
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator,
+            allocator.allocator(),
             "val-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = try sds.new(allocator, key);
-        const sval = try sds.new(allocator, val);
-        var added = try dict.add(
-            allocator,
+        const skey = sds.new(key);
+        const sval = sds.new(val);
+        var added = dict.add(
             skey,
             sval,
         );
         try expect(added);
 
-        added = try dict.add(
-            allocator,
+        added = dict.add(
             skey,
             sval,
         );
@@ -885,25 +787,25 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator,
+            allocator.allocator(),
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator,
+            allocator.allocator(),
             "val-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = try sds.new(allocator, key);
-        defer sds.free(allocator, skey);
-        const sval = try sds.new(allocator, val);
-        defer sds.free(allocator, sval);
+        const skey = sds.new(key);
+        defer sds.free(skey);
+        const sval = sds.new(val);
+        defer sds.free(sval);
 
-        const found = dict.find(allocator, skey);
+        const found = dict.find(skey);
         try expect(found != null);
         try expectEqualStrings(
             sds.asBytes(skey),
@@ -914,7 +816,7 @@ test "add() | addOrFind() || find() | fetchVal()" {
             sds.asBytes(sds.cast(found.?.v.val.?)),
         );
 
-        const fetched_val = dict.fetchValue(allocator, skey);
+        const fetched_val = dict.fetchValue(skey);
         try expectEqualStrings(
             sds.asBytes(sval),
             sds.asBytes(sds.cast(fetched_val.?)),
@@ -923,11 +825,11 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     try expectEqual(cnt, dict.size());
 
-    const key = try sds.new(allocator, "addOrFind");
-    const new_entry = try dict.addOrFind(allocator, key);
-    const val = try sds.new(allocator, "value");
-    try dict.setVal(allocator, new_entry, val);
-    const existing_entry = try dict.addOrFind(allocator, key);
+    const key = sds.new("addOrFind");
+    const new_entry = dict.addOrFind(key);
+    const val = sds.new("value");
+    dict.setVal(new_entry, val);
+    const existing_entry = dict.addOrFind(key);
     try expectEqual(new_entry, existing_entry);
     try expectEqualStrings(
         sds.asBytes(val),
@@ -936,113 +838,101 @@ test "add() | addOrFind() || find() | fetchVal()" {
 }
 
 test "getRandom()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    try expect(dict.getRandom(allocator) == null);
+    try expect(dict.getRandom() == null);
 
-    try TestSdsVtable.batchAdd(dict, allocator, 100);
+    TestSdsVtable.batchAdd(dict, 100);
 
-    const entry = dict.getRandom(allocator);
+    const entry = dict.getRandom();
     try expect(entry != null);
 }
 
 test "getSome()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    try TestSdsVtable.batchAdd(dict, allocator, 100);
+    TestSdsVtable.batchAdd(dict, 100);
 
-    const items = try dict.getSome(allocator, 10);
+    const items = dict.getSome(10);
     defer allocator.free(items);
     try expectEqual(10, items.len);
 }
 
 test "replace()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    const key = try sds.new(allocator, "k1");
-    _ = try dict.add(allocator, key, try sds.new(allocator, "v1"));
-    const ret = try dict.replace(allocator, key, try sds.new(allocator, "v2"));
+    const key = sds.new("k1");
+    _ = dict.add(key, sds.new("v1"));
+    const ret = dict.replace(key, sds.new("v2"));
     try expectEqual(.replace, ret);
 
-    const found = dict.find(allocator, key);
+    const found = dict.find(key);
     try expectEqualStrings("v2", sds.asBytes(sds.cast(found.?.v.val.?)));
 }
 
 test "delete()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    const key = try sds.new(allocator, "k1");
-    _ = try dict.add(allocator, key, try sds.new(allocator, "v1"));
-    const deleted = dict.delete(allocator, key);
+    const key = sds.new("k1");
+    _ = dict.add(key, sds.new("v1"));
+    const deleted = dict.delete(key);
 
     try expect(deleted);
     try expectEqual(0, dict.size());
 }
 
 test "unlink() | freeUnlinkedEntry()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    const key = try sds.new(allocator, "key1");
-    _ = try dict.add(allocator, key, try sds.new(allocator, "val2"));
-    const unlinked = dict.unlink(allocator, key);
+    const key = sds.new("key1");
+    _ = dict.add(key, sds.new("val2"));
+    const unlinked = dict.unlink(key);
     try expect(unlinked != null);
     try expectEqual(0, dict.size());
-    dict.freeUnlinkedEntry(allocator, unlinked.?);
+    dict.freeUnlinkedEntry(unlinked.?);
 }
 
 test "expand() | rehash()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    var expanded = try dict.expand(allocator, 1023);
+    var expanded = dict.expand(1023);
     try expect(expanded);
     try expectEqual(1024, dict.ht[0].size);
     try expectEqual(0, dict.ht[1].size);
 
-    try TestSdsVtable.batchAdd(dict, allocator, 1);
+    TestSdsVtable.batchAdd(dict, 1);
 
-    expanded = try dict.expand(allocator, 2045);
+    expanded = dict.expand(2045);
     try expect(expanded);
     try expect(dict.isRehashing());
     try expectEqual(1024, dict.ht[0].size);
     try expectEqual(2048, dict.ht[1].size);
 
-    const more = dict.rehash(allocator, 1024);
+    const more = dict.rehash(1024);
     try expect(more == false);
     try expectEqual(2048, dict.ht[0].size);
     try expectEqual(1, dict.ht[0].used);
@@ -1052,16 +942,14 @@ test "expand() | rehash()" {
 }
 
 test "iterator() | fingerprint()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
     const count = 10;
-    try TestSdsVtable.batchAdd(dict, allocator, count);
+    TestSdsVtable.batchAdd(dict, count);
 
     var iter = dict.iterator(false);
 
@@ -1073,24 +961,22 @@ test "iterator() | fingerprint()" {
     try expectEqual(count, iters);
     iter.release();
 
-    const key = try sds.new(allocator, "nokey");
-    defer sds.free(allocator, key);
-    _ = dict.find(allocator, key);
+    const key = sds.new("nokey");
+    defer sds.free(key);
+    _ = dict.find(key);
     try expect(fp != dict.fingerprint());
 }
 
 test "scan()" {
-    const allocator = testing.allocator;
-    const dict = try Dict.create(
-        allocator,
+    const dict = Dict.create(
         TestSdsVtable.vtable,
         null,
     );
-    defer dict.destroy(allocator);
+    defer dict.destroy();
 
-    try TestSdsVtable.batchAdd(dict, allocator, 3);
+    TestSdsVtable.batchAdd(dict, 3);
 
-    _ = try dict.expand(allocator, 8);
+    _ = dict.expand(8);
 
     var times: usize = 0;
     var cursor: usize = 0;
@@ -1114,29 +1000,24 @@ const TestSdsVtable = struct {
         .freeVal = releaseVal,
     };
 
-    fn batchAdd(
-        dict: *Dict,
-        allocator: Allocator,
-        cnt: usize,
-    ) Allocator.Error!void {
+    fn batchAdd(dict: *Dict, cnt: usize) void {
         for (0..cnt) |i| {
             const key = std.fmt.allocPrint(
-                allocator,
+                allocator.allocator(),
                 "key-{}",
                 .{i},
             ) catch unreachable;
             defer allocator.free(key);
 
             const val = std.fmt.allocPrint(
-                allocator,
+                allocator.allocator(),
                 "val-{}",
                 .{i},
             ) catch unreachable;
             defer allocator.free(val);
-            _ = try dict.add(
-                allocator,
-                try sds.new(allocator, key),
-                try sds.new(allocator, val),
+            _ = dict.add(
+                sds.new(key),
+                sds.new(val),
             );
         }
     }
@@ -1153,17 +1034,17 @@ const TestSdsVtable = struct {
         return genHash(sds.asBytes(sds.cast(key)));
     }
 
-    fn releaseKey(_: PrivData, allocator: Allocator, key: Key) void {
-        sds.free(allocator, sds.cast(key));
+    fn releaseKey(_: PrivData, key: Key) void {
+        sds.free(sds.cast(key));
     }
 
-    fn releaseVal(_: PrivData, allocator: Allocator, val: Value) void {
-        sds.free(allocator, sds.cast(val.?));
+    fn releaseVal(_: PrivData, val: Value) void {
+        sds.free(sds.cast(val.?));
     }
 };
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const testing = std.testing;
 const rand = @import("random.zig");
 const expectEqual = testing.expectEqual;

@@ -46,12 +46,8 @@ data: union {
     int: i64,
 },
 
-pub fn create(
-    allocator: Allocator,
-    typ: Type,
-    ptr: *anyopaque,
-) Allocator.Error!*Object {
-    const obj = try allocator.create(Object);
+pub fn create(typ: Type, ptr: *anyopaque) *Object {
+    const obj = allocator.create(Object);
     obj.type = typ;
     obj.encoding = .raw;
     // Set the LRU to the current lruclock (minutes resolution), or
@@ -67,11 +63,8 @@ pub fn create(
     return obj;
 }
 
-pub fn createInt(
-    allocator: Allocator,
-    int: i64,
-) Allocator.Error!*Object {
-    const obj = try allocator.create(Object);
+pub fn createInt(int: i64) *Object {
+    const obj = allocator.create(Object);
     obj.type = .string;
     obj.encoding = .int;
     if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
@@ -103,31 +96,21 @@ pub fn makeShared(self: *Object) *Object {
 // TODO: This needs to be adjusted according to the allocator used.
 // For now, just use the 44 that Redis has chosen for jemalloc.
 const ENCODING_EMBSTR_SIZE_LIMIT = 44;
-pub fn createString(
-    allocator: Allocator,
-    str: []const u8,
-) Allocator.Error!*Object {
+pub fn createString(str: []const u8) *Object {
     if (str.len <= ENCODING_EMBSTR_SIZE_LIMIT) {
-        return createEmbeddedString(allocator, str);
+        return createEmbeddedString(str);
     }
-    return createRawString(allocator, str);
+    return createRawString(str);
 }
 
-pub fn createRawString(
-    allocator: Allocator,
-    str: []const u8,
-) Allocator.Error!*Object {
-    const s = try sds.new(allocator, str);
-    errdefer sds.free(allocator, s);
-    return try create(allocator, .string, s);
+pub fn createRawString(str: []const u8) *Object {
+    const s = sds.new(str);
+    return create(.string, s);
 }
 
-fn createEmbeddedString(
-    allocator: Allocator,
-    str: []const u8,
-) Allocator.Error!*Object {
+fn createEmbeddedString(str: []const u8) *Object {
     const mem_size = @sizeOf(Object) + @sizeOf(sds.Hdr8) + str.len;
-    const mem = try allocator.alignedAlloc(u8, .of(Object), mem_size);
+    const mem = allocator.alignedAlloc(u8, .of(Object), mem_size);
 
     const sh: *sds.Hdr8 = @ptrFromInt(@intFromPtr(mem.ptr) + @sizeOf(Object));
     sh.len = @intCast(str.len);
@@ -151,12 +134,8 @@ fn createEmbeddedString(
 }
 
 /// Always demanding to create a shared object if possible.
-pub fn createStringFromLonglong(
-    allocator: Allocator,
-    value: i64,
-) Allocator.Error!*Object {
+pub fn createStringFromLonglong(value: i64) *Object {
     return createStringFromLonglongWithOptions(
-        allocator,
         value,
         true,
     );
@@ -165,12 +144,8 @@ pub fn createStringFromLonglong(
 /// Avoiding a shared object when LFU/LRU info are needed, that is, when the
 /// object is used as a value in the key space, and Redis is configured to evict
 /// based on LFU/LRU.
-pub fn createStringFromLonglongForValue(
-    allocator: Allocator,
-    value: i64,
-) Allocator.Error!*Object {
+pub fn createStringFromLonglongForValue(value: i64) *Object {
     return createStringFromLonglongWithOptions(
-        allocator,
         value,
         false,
     );
@@ -183,11 +158,7 @@ pub fn createStringFromLonglongForValue(
 /// integer, because the object is going to be used as value in the Redis key
 /// space (for instance when the INCR command is used), so we want LFU/LRU
 /// values specific for each key.
-fn createStringFromLonglongWithOptions(
-    allocator: Allocator,
-    value: i64,
-    from_shared: bool,
-) Allocator.Error!*Object {
+fn createStringFromLonglongWithOptions(value: i64, from_shared: bool) *Object {
     var enabled = from_shared;
     if (Server.instance.maxmemory == 0 or
         (Server.instance.maxmemory_policy &
@@ -204,46 +175,36 @@ fn createStringFromLonglongWithOptions(
     }
 
     if (value >= minInt(i64) and value <= maxInt(i64)) {
-        const o = try createInt(allocator, value);
+        const o = createInt(value);
         return o;
     }
 
-    const s = try sds.fromLonglong(allocator, value);
-    errdefer sds.free(allocator, s);
-    return try create(allocator, .string, s);
+    const s = sds.fromLonglong(value);
+    return create(.string, s);
 }
 
-pub fn createStringFromLongDouble(
-    allocator: Allocator,
-    value: f80,
-    humanfriendly: bool,
-) Allocator.Error!*Object {
+pub fn createStringFromLongDouble(value: f80, humanfriendly: bool) *Object {
     var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
     const str = util.ld2string(&buf, value, humanfriendly);
-    return createString(allocator, str);
+    return createString(str);
 }
 
-pub fn dupeString(
-    self: *const Object,
-    allocator: Allocator,
-) Allocator.Error!*Object {
+pub fn dupeString(self: *const Object) *Object {
     assert(self.type == .string);
 
     switch (self.encoding) {
         .raw => {
             return createRawString(
-                allocator,
                 sds.asBytes(sds.cast(self.data.ptr)),
             );
         },
         .embstr => {
             return createEmbeddedString(
-                allocator,
                 sds.asBytes(sds.cast(self.data.ptr)),
             );
         },
         .int => {
-            const o = try createInt(allocator, self.data.int);
+            const o = createInt(self.data.int);
             return o;
         },
         else => @panic("Wrong encoding."),
@@ -278,77 +239,69 @@ pub fn equalStrings(self: *Object, other: *Object) bool {
     return self.compareStrings(other) == .eq;
 }
 
-pub fn createQuickList(allocator: Allocator) Allocator.Error!*Object {
-    const ql = try QuickList.create(allocator);
-    errdefer ql.release(allocator);
-    const obj = try create(allocator, .list, ql);
+pub fn createQuickList() *Object {
+    const ql = QuickList.create();
+    const obj = create(.list, ql);
     obj.encoding = .quicklist;
     return obj;
 }
 
-pub fn createZipList(allocator: Allocator) Allocator.Error!*Object {
-    const zl = try ZipList.new(allocator);
-    errdefer zl.free(allocator);
-    const obj = try create(allocator, .list, zl);
+pub fn createZipList() *Object {
+    const zl = ZipList.new();
+    const obj = create(.list, zl);
     obj.encoding = .ziplist;
     return obj;
 }
 
-pub fn createIntSet(allocator: Allocator) Allocator.Error!*Object {
-    const is = try IntSet.new(allocator);
-    errdefer is.free(allocator);
-    const obj = try create(allocator, .set, is);
+pub fn createIntSet() *Object {
+    const is = IntSet.new();
+    const obj = create(.set, is);
     obj.encoding = .intset;
     return obj;
 }
 
-pub fn createSet(allocator: Allocator) Allocator.Error!*Object {
-    const d = try Dict.create(
-        allocator,
+pub fn createSet() *Object {
+    const d = Dict.create(
         Server.setDictVTable,
         null,
     );
-    errdefer d.destroy(allocator);
-    const obj = try create(allocator, .set, d);
+    const obj = create(.set, d);
     obj.encoding = .ht;
     return obj;
 }
 
-pub fn createHash(allocator: Allocator) Allocator.Error!*Object {
-    const zl = try ZipList.new(allocator);
-    errdefer zl.free(allocator);
-    const obj = try create(allocator, .hash, zl);
+pub fn createHash() *Object {
+    const zl = ZipList.new();
+    const obj = create(.hash, zl);
     obj.encoding = .ziplist;
     return obj;
 }
 
-pub fn createZset(allocator: Allocator) Allocator.Error!*Object {
-    const zs = try Zset.create(allocator);
-    errdefer zs.destroy(allocator);
-    const obj = try create(allocator, .zset, zs);
+pub fn createZset() *Object {
+    const zs = Zset.create();
+    const obj = create(.zset, zs);
     obj.encoding = .skiplist;
     return obj;
 }
 
-pub fn createZsetZipList(allocator: Allocator) Allocator.Error!*Object {
-    const zl = try ZipList.new(allocator);
-    errdefer zl.free(allocator);
-    const obj = try create(allocator, .zset, zl);
+pub fn createZsetZipList() *Object {
+    const zl = ZipList.new();
+    const obj = create(.zset, zl);
     obj.encoding = .ziplist;
     return obj;
 }
 
-pub fn decrRefCount(self: *Object, allocator: Allocator) void {
+pub fn decrRefCount(self: *Object) void {
     if (self.refcount == 1) {
         switch (self.type) {
-            .string => self.freeString(allocator),
-            .list => self.freeList(allocator),
-            .set => self.freeSet(allocator),
-            .zset => self.freeZset(allocator),
-            .hash => self.freeHash(allocator),
+            .string => self.freeString(),
+            .list => self.freeList(),
+            .set => self.freeSet(),
+            .zset => self.freeZset(),
+            .hash => self.freeHash(),
             else => unreachable, // TODO: complete all branch
         }
-        self.free(allocator);
+        self.free();
         return;
     }
     if (self.refcount <= 0) @panic("Object.decrRefCount against refcount <= 0");
@@ -378,10 +331,7 @@ pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *i64) bool {
 
 /// Get a decoded version of an encoded object (returned as a new object).
 /// If the object is already raw-encoded just increment the ref count.
-pub fn getDecoded(
-    self: *Object,
-    allocator: Allocator,
-) Allocator.Error!*Object {
+pub fn getDecoded(self: *Object) *Object {
     if (self.sdsEncoded()) {
         self.incrRefCount();
         return self;
@@ -389,16 +339,13 @@ pub fn getDecoded(
     if (self.type == .string and self.encoding == .int) {
         var buf: [20]u8 = undefined;
         const digits = util.ll2string(&buf, self.data.int);
-        return createString(allocator, digits);
+        return createString(digits);
     }
     @panic("Unknown encoding type");
 }
 
 /// Try to encode a string object in order to save space.
-pub fn tryEncoding(
-    self: *Object,
-    allocator: Allocator,
-) Allocator.Error!*Object {
+pub fn tryEncoding(self: *Object) *Object {
     assert(self.type == .string);
 
     if (!self.sdsEncoded()) return self;
@@ -410,19 +357,19 @@ pub fn tryEncoding(
         const use_shared_integers = (Server.instance.maxmemory == 0 or
             (Server.instance.maxmemory_policy & Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
         if (use_shared_integers and value > 0 and value < Server.OBJ_SHARED_INTEGERS) {
-            self.decrRefCount(allocator);
+            self.decrRefCount();
             const obj = Server.shared.integers[@as(usize, @intCast(value))];
             obj.incrRefCount();
             return obj;
         } else {
             if (self.encoding == .raw) {
-                sds.free(allocator, sds.cast(self.data.ptr));
+                sds.free(sds.cast(self.data.ptr));
                 self.encoding = .int;
                 self.data = .{ .int = value };
                 return self;
             } else if (self.encoding == .embstr) {
-                self.decrRefCount(allocator);
-                return createStringFromLonglongForValue(allocator, value);
+                self.decrRefCount();
+                return createStringFromLonglongForValue(value);
             }
         }
     }
@@ -432,8 +379,8 @@ pub fn tryEncoding(
     // in the same chunk of memory to save space and cache misses.
     if (slice.len <= ENCODING_EMBSTR_SIZE_LIMIT) {
         if (self.encoding == .embstr) return self;
-        const emb = try createEmbeddedString(allocator, slice);
-        self.decrRefCount(allocator);
+        const emb = createEmbeddedString(slice);
+        self.decrRefCount();
         return emb;
     }
 
@@ -446,7 +393,7 @@ pub fn tryEncoding(
     // We do that only for relatively large strings as this branch
     // is only entered if the length of the string is greater than
     // ENCODING_EMBSTR_SIZE_LIMIT.
-    try self.trimStringIfNeeded(allocator);
+    self.trimStringIfNeeded();
 
     return self;
 }
@@ -455,16 +402,13 @@ pub fn tryEncoding(
 /// in case there is more than 10% of free space at the end of the SDS
 /// string. This happens because SDS strings tend to overallocate to avoid
 /// wasting too much time in allocations when appending to the string.
-pub fn trimStringIfNeeded(
-    self: *Object,
-    allocator: Allocator,
-) Allocator.Error!void {
+pub fn trimStringIfNeeded(self: *Object) void {
     if (self.encoding != .raw) {
         return;
     }
     var s = sds.cast(self.data.ptr);
     if (sds.getAvail(s) > sds.getLen(s) / 10) {
-        s = try sds.removeAvailSpace(allocator, s);
+        s = sds.removeAvailSpace(s);
         self.data = .{ .ptr = s };
     }
 }
@@ -493,12 +437,12 @@ pub fn getLongLongOrReply(
     cli: *Client,
     target: *i64,
     msg: ?[]const u8,
-) Allocator.Error!bool {
+) bool {
     if (!self.getLongLong(target)) {
         if (msg) |m| {
-            try cli.addReplyErr(m);
+            cli.addReplyErr(m);
         } else {
-            try cli.addReplyErr("value is not an integer or out of range");
+            cli.addReplyErr("value is not an integer or out of range");
         }
         return false;
     }
@@ -509,7 +453,7 @@ pub fn strEncoding(self: *Object) []const u8 {
     return self.encoding.toString();
 }
 
-pub fn free(self: *Object, allocator: Allocator) void {
+pub fn free(self: *Object) void {
     if (self.type == .string and self.encoding == .embstr) {
         const s: sds.String = @ptrCast(self.data.ptr);
         const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
@@ -520,95 +464,93 @@ pub fn free(self: *Object, allocator: Allocator) void {
     allocator.destroy(self);
 }
 
-fn freeString(self: *Object, allocator: Allocator) void {
+fn freeString(self: *Object) void {
     if (self.encoding == .raw) {
         const s: sds.String = @ptrCast(self.data.ptr);
-        sds.free(allocator, s);
+        sds.free(s);
     }
 }
 
-fn freeList(self: *Object, allocator: Allocator) void {
+fn freeList(self: *Object) void {
     if (self.encoding == .quicklist) {
         const ql: *QuickList = @ptrCast(@alignCast(self.data.ptr));
-        ql.release(allocator);
+        ql.release();
     } else {
         @panic("Unknown list encoding type");
     }
 }
 
-fn freeSet(self: *Object, allocator: Allocator) void {
+fn freeSet(self: *Object) void {
     switch (self.encoding) {
         .intset => {
             const is: *IntSet = @ptrCast(@alignCast(self.data.ptr));
-            is.free(allocator);
+            is.free();
         },
         .ht => {
             const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
-            d.destroy(allocator);
+            d.destroy();
         },
         else => @panic("Unknown set encoding type"),
     }
 }
 
-fn freeZset(self: *Object, allocator: Allocator) void {
+fn freeZset(self: *Object) void {
     switch (self.encoding) {
         .skiplist => {
             const zl: *Zset = @ptrCast(@alignCast(self.data.ptr));
-            zl.destroy(allocator);
+            zl.destroy();
         },
         .ziplist => {
             const zl: *ZipList = ZipList.cast(self.data.ptr);
-            zl.free(allocator);
+            zl.free();
         },
         else => @panic("Unknown sorted set encoding type"),
     }
 }
 
-fn freeHash(self: *Object, allocator: Allocator) void {
+fn freeHash(self: *Object) void {
     switch (self.encoding) {
         .ht => {
             const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
-            d.destroy(allocator);
+            d.destroy();
         },
         .ziplist => {
             const zl: *ZipList = ZipList.cast(self.data.ptr);
-            zl.free(allocator);
+            zl.free();
         },
         else => @panic("Unknown hash encoding type"),
     }
 }
 
 test createEmbeddedString {
-    const allocator = std.testing.allocator;
-
-    try Server.create(allocator, null, null);
+    try Server.create(null, null);
     defer Server.destroy();
 
-    var o = try createEmbeddedString(allocator, "hello");
-    defer o.decrRefCount(allocator);
+    var o = createEmbeddedString("hello");
+    defer o.decrRefCount();
     const s: sds.String = @ptrCast(o.data.ptr);
     try expectEqualStrings("hello", sds.asBytes(s));
 }
 
 test isSdsRepresentableAsLongLong {
     var llval: i64 = undefined;
-    const allocator = std.testing.allocator;
-    var s = try sds.new(allocator, "123456789");
-    defer sds.free(allocator, s);
+
+    var s = sds.new("123456789");
+    defer sds.free(s);
 
     var ok = isSdsRepresentableAsLongLong(s, &llval);
     try expect(ok);
     try expectEqual(123456789, llval);
 
     sds.clear(s);
-    s = try sds.cat(allocator, s, "abc1");
+    s = sds.cat(s, "abc1");
     ok = isSdsRepresentableAsLongLong(s, &llval);
     try expect(!ok);
 }
 
 const std = @import("std");
 const meta = std.meta;
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
 const assert = std.debug.assert;
 const Server = @import("Server.zig");

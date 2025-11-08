@@ -5,8 +5,8 @@ pub fn List(
     return struct {
         pub const Vtable = struct {
             eql: ?*const fn (key: SearchKey, val: Value) bool = null,
-            dupe: ?*const fn (Allocator, val: Value) Allocator.Error!Value = null,
-            free: ?*const fn (Allocator, val: Value) void = null,
+            dupe: ?*const fn (val: Value) Value = null,
+            free: ?*const fn (val: Value) void = null,
         };
 
         pub const Node = struct {
@@ -14,18 +14,15 @@ pub fn List(
             prev: ?*Node = null,
             next: ?*Node = null,
 
-            fn create(
-                allocator: Allocator,
-                value: Value,
-            ) Allocator.Error!*Node {
-                const n = try allocator.create(Node);
+            fn create(value: Value) *Node {
+                const n = allocator.create(Node);
                 n.* = .{
                     .value = value,
                 };
                 return n;
             }
 
-            fn destroy(self: *Node, allocator: Allocator) void {
+            fn destroy(self: *Node) void {
                 allocator.destroy(self);
             }
         };
@@ -85,20 +82,16 @@ pub fn List(
                 return std.meta.eql(key, val);
             }
 
-            fn dupe(
-                self: *Context,
-                allocator: Allocator,
-                val: Value,
-            ) Allocator.Error!Value {
+            fn dupe(self: *Context, val: Value) Value {
                 if (self.vtable.dupe) |d| {
-                    return d(allocator, val);
+                    return d(val);
                 }
                 return val;
             }
 
-            fn free(self: *Context, allocator: Allocator, val: Value) void {
+            fn free(self: *Context, val: Value) void {
                 if (self.vtable.free) |f| {
-                    f(allocator, val);
+                    f(val);
                 }
             }
         };
@@ -109,42 +102,31 @@ pub fn List(
         len: usize = 0,
         ctx: Context,
 
-        pub fn create(
-            allocator: Allocator,
-            vtable: *const Vtable,
-        ) Allocator.Error!*LinkedList {
-            const list = try allocator.create(LinkedList);
+        pub fn create(vtable: *const Vtable) *LinkedList {
+            const list = allocator.create(LinkedList);
             list.* = .{
                 .ctx = .{ .vtable = vtable },
             };
             return list;
         }
 
-        pub fn prepend(
-            self: *LinkedList,
-            allocator: Allocator,
-            value: Value,
-        ) Allocator.Error!void {
+        pub fn prepend(self: *LinkedList, value: Value) void {
             if (self.first) |first| {
-                try self.insertBefore(allocator, value, first);
+                self.insertBefore(value, first);
                 return;
             }
-            const node = try Node.create(allocator, value);
+            const node = Node.create(value);
             self.first = node;
             self.last = node;
             self.len += 1;
         }
 
-        pub fn append(
-            self: *LinkedList,
-            allocator: Allocator,
-            value: Value,
-        ) Allocator.Error!void {
+        pub fn append(self: *LinkedList, value: Value) void {
             if (self.last) |last| {
-                try self.insertAfter(allocator, value, last);
+                self.insertAfter(value, last);
                 return;
             }
-            const node = try Node.create(allocator, value);
+            const node = Node.create(value);
             self.first = node;
             self.last = node;
             self.len += 1;
@@ -152,11 +134,10 @@ pub fn List(
 
         pub fn insertBefore(
             self: *LinkedList,
-            allocator: Allocator,
             value: Value,
             existing_node: *Node,
-        ) Allocator.Error!void {
-            const node = try Node.create(allocator, value);
+        ) void {
+            const node = Node.create(value);
             node.next = existing_node;
             if (existing_node.prev) |prev| {
                 prev.next = node;
@@ -170,11 +151,10 @@ pub fn List(
 
         pub fn insertAfter(
             self: *LinkedList,
-            allocator: Allocator,
             value: Value,
             existing_node: *Node,
-        ) Allocator.Error!void {
-            const node = try Node.create(allocator, value);
+        ) void {
+            const node = Node.create(value);
             node.prev = existing_node;
             if (existing_node.next) |next| {
                 node.next = next;
@@ -188,11 +168,10 @@ pub fn List(
 
         pub fn removeNode(
             self: *LinkedList,
-            allocator: Allocator,
             existing_node: *Node,
         ) void {
-            defer existing_node.destroy(allocator);
-            defer self.ctx.free(allocator, existing_node.value);
+            defer existing_node.destroy();
+            defer self.ctx.free(existing_node.value);
 
             const prev = existing_node.prev;
             const next = existing_node.next;
@@ -256,25 +235,20 @@ pub fn List(
             self.last = head;
         }
 
-        pub fn iterator(self: *LinkedList, direction: Iterator.Direction) Iterator {
+        pub fn iterator(
+            self: *LinkedList,
+            direction: Iterator.Direction,
+        ) Iterator {
             return .init(self, direction);
         }
 
-        pub fn dupe(
-            self: *LinkedList,
-            allocator: Allocator,
-        ) Allocator.Error!*LinkedList {
-            var dup_list = try LinkedList.create(
-                allocator,
-                self.ctx.vtable,
-            );
-            errdefer dup_list.release(allocator);
+        pub fn dupe(self: *LinkedList) *LinkedList {
+            var dup_list = LinkedList.create(self.ctx.vtable);
 
             var it = self.iterator(.forward);
             while (it.next()) |node| {
-                const dup_value = try self.ctx.dupe(allocator, node.value);
-                errdefer self.ctx.free(allocator, dup_value);
-                try dup_list.append(allocator, dup_value);
+                const dup_value = self.ctx.dupe(node.value);
+                dup_list.append(dup_value);
             }
             return dup_list;
         }
@@ -307,78 +281,63 @@ pub fn List(
             return node;
         }
 
-        pub fn empty(self: *LinkedList, allocator: Allocator) void {
+        pub fn empty(self: *LinkedList) void {
             var curr = self.first;
             while (curr) |node| {
                 curr = node.next;
-                self.ctx.free(allocator, node.value);
-                node.destroy(allocator);
+                self.ctx.free(node.value);
+                node.destroy();
             }
             self.len = 0;
             self.first = null;
             self.last = null;
         }
 
-        pub fn release(self: *LinkedList, allocator: Allocator) void {
-            self.empty(allocator);
+        pub fn release(self: *LinkedList) void {
+            self.empty();
             allocator.destroy(self);
         }
     };
 }
 
 test "prepend() |insertBefore()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.prepend(allocator, 1);
-    try ll.prepend(allocator, 2);
+    ll.prepend(1);
+    ll.prepend(2);
 
     try expectEqual(2, ll.len);
     try expectEqual(2, ll.first.?.value);
 
-    try ll.insertBefore(allocator, 3, ll.last.?);
+    ll.insertBefore(3, ll.last.?);
     try expectEqual(ll.first.?.next.?.value, 3);
 }
 
 test "append() | insertAfter()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
+    ll.append(1);
+    ll.append(2);
 
     try expectEqual(2, ll.len);
     try expectEqual(2, ll.last.?.value);
 
-    try ll.insertAfter(allocator, 3, ll.first.?);
+    ll.insertAfter(3, ll.first.?);
     try expectEqual(3, ll.first.?.next.?.value);
 }
 
 test "removeNode()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     const node2 = ll.first.?.next.?;
-    ll.removeNode(allocator, node2);
+    ll.removeNode(node2);
 
     try expectEqual(2, ll.len);
     try expectEqual(1, ll.first.?.value);
@@ -386,17 +345,12 @@ test "removeNode()" {
 }
 
 test "rotateTailToHead()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     ll.rotateTailToHead();
 
@@ -412,17 +366,12 @@ test "rotateTailToHead()" {
 }
 
 test "rotateHeadToTail()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     ll.rotateHeadToTail();
 
@@ -438,17 +387,12 @@ test "rotateHeadToTail()" {
 }
 
 test "iterator(forward|backward) | Iterator.rewind(forward|backward)" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     var forward = ll.iterator(.forward);
     try expectEqual(1, forward.next().?.value);
@@ -476,20 +420,15 @@ test "iterator(forward|backward) | Iterator.rewind(forward|backward)" {
 }
 
 test "dupe()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
-
-    var dup = try ll.dupe(allocator);
-    defer dup.release(allocator);
+    var dup = ll.dupe();
+    defer dup.release();
 
     try expectEqual(3, dup.len);
 
@@ -506,17 +445,12 @@ test "dupe()" {
 }
 
 test "search()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     const found = ll.search(3);
     try expect(found != null);
@@ -525,17 +459,12 @@ test "search()" {
 }
 
 test "index()" {
-    const allocator = testing.allocator;
+    var ll: *TestList = TestList.create(TestVtable.vtable);
+    defer ll.release();
 
-    var ll: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer ll.release(allocator);
-
-    try ll.append(allocator, 1);
-    try ll.append(allocator, 2);
-    try ll.append(allocator, 3);
+    ll.append(1);
+    ll.append(2);
+    ll.append(3);
 
     var found = ll.index(0);
     try expect(found != null and found.?.value == 1);
@@ -554,24 +483,16 @@ test "index()" {
 }
 
 test "join()" {
-    const allocator = testing.allocator;
+    var l1: *TestList = TestList.create(TestVtable.vtable);
+    defer l1.release();
 
-    var l1: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer l1.release(allocator);
+    var l2: *TestList = TestList.create(TestVtable.vtable);
+    defer l2.release();
 
-    var l2: *TestList = try TestList.create(
-        allocator,
-        TestVtable.vtable,
-    );
-    defer l2.release(allocator);
-
-    try l1.append(allocator, 1);
-    try l1.append(allocator, 2);
-    try l2.append(allocator, 3);
-    try l2.append(allocator, 4);
+    l1.append(1);
+    l1.append(2);
+    l2.append(3);
+    l2.append(4);
 
     l1.join(l2);
 
@@ -606,15 +527,15 @@ const TestVtable = struct {
         return key == value;
     }
 
-    fn dupe(_: Allocator, value: u32) Allocator.Error!u32 {
+    fn dupe(value: u32) u32 {
         return value;
     }
 
-    fn free(_: Allocator, _: u32) void {}
+    fn free(_: u32) void {}
 };
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const testing = std.testing;
 const assert = std.debug.assert;
 const expect = testing.expect;

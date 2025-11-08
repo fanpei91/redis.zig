@@ -4,18 +4,18 @@ pub fn main() void {
         std.process.exit(1);
     }
 
-    var da = std.heap.DebugAllocator(.{}).init;
-    const allocator = da.allocator();
-    defer _ = da.deinit();
-
     random.seed(null);
     Dict.hashSeed(null);
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const argv = try std.process.argsAlloc(arena.allocator());
+    const argv = try std.process.argsAlloc(allocator.allocator());
+    defer std.process.argsFree(allocator.allocator(), argv);
+
+    var options: sds.String = sds.empty();
+    defer sds.free(options);
+
     var configfile: ?sds.String = null;
-    var options: sds.String = try sds.empty(arena.allocator());
+    defer if (configfile) |f| sds.free(f);
+
     if (argv.len >= 2) {
         // First option to parse in argv[]
         var j: usize = 1;
@@ -26,7 +26,7 @@ pub fn main() void {
 
         // First argument is the config file name?
         if (argv[j][0] != '-' or argv[j][1] != '-') {
-            configfile = try util.getAbsolutePath(arena.allocator(), argv[j]);
+            configfile = try util.getAbsolutePath(argv[j]);
             j += 1;
         }
 
@@ -38,14 +38,14 @@ pub fn main() void {
             if (argv[j][0] == '-' and argv[j][1] == '-') {
                 // option name
                 if (sds.getLen(options) != 0) {
-                    options = try sds.cat(arena.allocator(), options, "\n");
+                    options = sds.cat(options, "\n");
                 }
-                options = try sds.cat(arena.allocator(), options, argv[j][2..]);
-                options = try sds.cat(arena.allocator(), options, " ");
+                options = sds.cat(options, argv[j][2..]);
+                options = sds.cat(options, " ");
             } else {
                 // option argument
-                options = try sds.catRepr(arena.allocator(), options, argv[j]);
-                options = try sds.cat(arena.allocator(), options, " ");
+                options = sds.catRepr(options, argv[j]);
+                options = sds.cat(options, " ");
             }
         }
     }
@@ -64,7 +64,7 @@ pub fn main() void {
         log.warn("Configuration loaded", .{});
     }
 
-    try Server.create(allocator, configfile, options);
+    try Server.create(configfile, options);
     defer Server.destroy();
     var server = &Server.instance;
 
@@ -123,7 +123,7 @@ fn printUsage() void {
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
 const Dict = @import("Dict.zig");
 const random = @import("random.zig");

@@ -69,8 +69,8 @@ pub const Node = packed struct {
         return lz.data();
     }
 
-    fn create(allocator: Allocator) Allocator.Error!*Node {
-        const node = try allocator.create(Node);
+    fn create() *Node {
+        const node = allocator.create(Node);
         node.prev = null;
         node.next = null;
         node.zl = null;
@@ -165,13 +165,12 @@ pub const Node = packed struct {
     }
 
     /// Compress only uncompressed nodes.
-    fn compress(self: *Node, allocator: Allocator) Allocator.Error!bool {
+    fn compress(self: *Node) bool {
         self.attempted_compress = .true;
         if (self.encoding != .raw) return false;
         if (self.sz < MIN_COMPRESS_BYTES) return false;
 
-        var lz = try LZF.create(allocator, self.sz);
-        errdefer lz.free(allocator);
+        var lz = LZF.create(self.sz);
         const zl: *ZipList = ZipList.cast(self.zl.?);
         const sz = lzf.compress(
             zl.toBytes(),
@@ -179,23 +178,23 @@ pub const Node = packed struct {
         );
         if (sz == 0 or sz + MIN_COMPRESS_IMPROVE >= self.sz) {
             // lzf.compress() aborts/rejects compression if value not compressable.
-            lz.free(allocator);
+            lz.free();
             return false;
         }
 
-        lz = try lz.resize(allocator, sz);
-        zl.free(allocator);
+        lz = lz.resize(sz);
+        zl.free();
         self.zl = lz;
         self.encoding = .lzf;
         self.recompress = .false;
         return true;
     }
 
-    fn decompress(self: *Node, allocator: Allocator) Allocator.Error!bool {
+    fn decompress(self: *Node) bool {
         self.attempted_compress = .false;
         if (self.encoding != .lzf) return false;
 
-        const decompressed = try allocator.alignedAlloc(
+        const decompressed = allocator.alignedAlloc(
             u8,
             .of(ZipList),
             self.sz,
@@ -206,25 +205,22 @@ pub const Node = packed struct {
             return false;
         }
 
-        lz.free(allocator);
+        lz.free();
         self.zl = decompressed.ptr;
         self.encoding = .raw;
         return true;
     }
 
-    fn decompressForUse(
-        self: *Node,
-        allocator: Allocator,
-    ) Allocator.Error!void {
-        if (try self.decompress(allocator)) {
+    fn decompressForUse(self: *Node) void {
+        if (self.decompress()) {
             self.recompress = .true;
         }
     }
 
     /// If we previously used Node.decompressForUse(), just recompress.
-    fn recompressOnly(node: *Node, allocator: Allocator) Allocator.Error!void {
+    fn recompressOnly(node: *Node) void {
         if (node.recompress == .true) {
-            _ = try node.compress(allocator);
+            _ = node.compress();
         }
     }
 
@@ -247,27 +243,18 @@ pub const Node = packed struct {
     /// The input node keeps all elements not taken by the returned node.
     ///
     /// Returns newly created node or NULL if split not possible.
-    fn split(
-        self: *Node,
-        allocator: Allocator,
-        offset: i32,
-        after: bool,
-    ) Allocator.Error!*Node {
+    fn split(self: *Node, offset: i32, after: bool) *Node {
         assert(!self.isCompressed());
 
-        const new_node = try Node.create(allocator);
-        errdefer allocator.destroy(new_node);
-
-        const zl = try allocator.alignedAlloc(u8, .of(ZipList), self.sz);
-        errdefer allocator.free(zl);
+        const new_node = Node.create();
+        const zl = allocator.alignedAlloc(u8, .of(ZipList), self.sz);
         @memcpy(zl, ZipList.cast(self.zl.?).toBytes());
         new_node.zl = zl.ptr;
 
         const orig_start = if (after) offset + 1 else 0;
         const orig_extent = if (after) -1 else offset;
         var orig_zl: *ZipList = ZipList.cast(self.zl.?);
-        orig_zl = try orig_zl.deleteRange(
-            allocator,
+        orig_zl = orig_zl.deleteRange(
             orig_start,
             @bitCast(orig_extent), // -1 equals to maxInt(uint)
         );
@@ -278,8 +265,7 @@ pub const Node = packed struct {
         const new_start = if (after) 0 else offset;
         const new_extent = if (after) offset + 1 else -1;
         var new_zl: *ZipList = ZipList.cast(zl.ptr);
-        new_zl = try new_zl.deleteRange(
-            allocator,
+        new_zl = new_zl.deleteRange(
             new_start,
             @bitCast(new_extent), // -1 equals to maxInt(uint)
         );
@@ -294,16 +280,16 @@ pub const Node = packed struct {
         self.sz = ZipList.cast(self.zl.?).blobLen();
     }
 
-    fn release(self: *Node, allocator: Allocator) void {
+    fn release(self: *Node) void {
         defer allocator.destroy(self);
         if (self.zl) |container| {
             if (self.container == .ziplist) {
                 if (self.encoding == .lzf) {
                     const lz: *LZF = @ptrCast(@alignCast(container));
-                    lz.free(allocator);
+                    lz.free();
                 } else {
                     const zl: *ZipList = ZipList.cast(container);
-                    zl.free(allocator);
+                    zl.free();
                 }
             } else if (self.container == .none) {
                 const raw: [*]u8 = @ptrCast(container);
@@ -322,23 +308,19 @@ const LZF = struct {
     sz: u32, // LZF size in bytes
     compressed: [0]u8,
 
-    fn create(allocator: Allocator, sz: u32) Allocator.Error!*LZF {
+    fn create(sz: u32) *LZF {
         const mem_size = @as(usize, @sizeOf(LZF)) + sz;
-        const mem = try allocator.alignedAlloc(u8, .of(LZF), mem_size);
+        const mem = allocator.alignedAlloc(u8, .of(LZF), mem_size);
         const lz: *LZF = @ptrCast(@alignCast(mem.ptr));
         lz.sz = sz;
         return lz;
     }
 
-    fn resize(
-        self: *LZF,
-        allocator: Allocator,
-        new_sz: u32,
-    ) Allocator.Error!*LZF {
+    fn resize(self: *LZF, new_sz: u32) *LZF {
         const old_mem = self.addr();
         const old_mem_size = @as(usize, @sizeOf(LZF)) + self.sz;
         const new_mem_size = @as(usize, @sizeOf(LZF)) + new_sz;
-        const new_mem = try allocator.realloc(
+        const new_mem = allocator.realloc(
             old_mem[0..old_mem_size],
             new_mem_size,
         );
@@ -354,7 +336,7 @@ const LZF = struct {
         return mem[start..end];
     }
 
-    fn free(self: *LZF, allocator: Allocator) void {
+    fn free(self: *LZF) void {
         const mem = self.addr();
         const mem_size = @as(usize, @sizeOf(LZF)) + self.sz;
         allocator.free(mem[0..mem_size]);
@@ -388,11 +370,7 @@ pub const Iterator = struct {
     /// Populates 'entry' with values for this iteration.
     /// Returns false when iteration is complete or if iteration not possible.
     /// If return value is false, the contents of 'entry' are not valid.
-    pub fn next(
-        self: *Iterator,
-        allocator: Allocator,
-        entry: *Entry,
-    ) Allocator.Error!bool {
+    pub fn next(self: *Iterator, entry: *Entry) bool {
         Entry.init(entry);
         entry.quicklist = self.quicklist;
         entry.node = self.current;
@@ -400,7 +378,7 @@ pub const Iterator = struct {
         if (self.current == null) return false;
 
         const current = self.current.?;
-        try current.decompressForUse(allocator);
+        current.decompressForUse();
         const zl = ZipList.cast(current.zl.?);
         if (self.zi == null) {
             self.zi = zl.index(@intCast(self.offset));
@@ -427,7 +405,7 @@ pub const Iterator = struct {
         }
         // We ran out of ziplist entries.
         // Pick next node, update offset, then re-run retrieval.
-        try self.quicklist.compressNode(allocator, current);
+        self.quicklist.compressNode(current);
         if (self.direction == .head) {
             self.current = current.next;
             self.offset = 0;
@@ -436,18 +414,14 @@ pub const Iterator = struct {
             self.offset = -1;
         }
         self.zi = null;
-        return self.next(allocator, entry);
+        return self.next(entry);
     }
 
     /// Delete one element represented by 'entry'
     ///
     /// 'entry' stores enough metadata to delete the proper position in
     /// the correct ziplist in the correct quicklist node.
-    pub fn delEntry(
-        self: *Iterator,
-        allocator: Allocator,
-        entry: *Entry,
-    ) Allocator.Error!void {
+    pub fn delEntry(self: *Iterator, entry: *Entry) void {
         assert(entry.quicklist == self.quicklist);
         assert(entry.node == self.current);
         assert(entry.zi == self.zi);
@@ -457,8 +431,7 @@ pub const Iterator = struct {
         const nxt = node.next;
         const prv = node.prev;
 
-        const deleted_node = try entry.quicklist.?.delIndex(
-            allocator,
+        const deleted_node = entry.quicklist.?.delIndex(
             node,
             &entry.zi.?,
         );
@@ -486,9 +459,9 @@ pub const Iterator = struct {
     }
 
     /// If we still have a valid current node, then re-encode current node.
-    pub fn release(self: *Iterator, allocator: Allocator) Allocator.Error!void {
+    pub fn release(self: *Iterator) void {
         if (self.current) |curr| {
-            try self.quicklist.compressNode(allocator, curr);
+            self.quicklist.compressNode(curr);
         }
     }
 };
@@ -532,8 +505,8 @@ len: u64, // number of Nodes
 fill: i16, // fill factor for individual nodes
 compress: u16, // depth of end nodes not to compress;0=off
 
-pub fn create(allocator: Allocator) Allocator.Error!*QuickList {
-    const list = try allocator.create(QuickList);
+pub fn create() *QuickList {
+    const list = allocator.create(QuickList);
     list.* = .{
         .head = null,
         .tail = null,
@@ -547,14 +520,9 @@ pub fn create(allocator: Allocator) Allocator.Error!*QuickList {
 
 /// Create new (potentially multi-node) quicklist from a single existing ziplist.
 /// Frees passed-in ziplist 'zl'.
-pub fn createFromZiplist(
-    allocator: Allocator,
-    fill: i16,
-    compress: u16,
-    zl: *ZipList,
-) Allocator.Error!*QuickList {
-    defer zl.free(allocator);
-    const ql = try new(allocator, fill, compress);
+pub fn createFromZiplist(fill: i16, compress: u16, zl: *ZipList) *QuickList {
+    defer zl.free();
+    const ql = new(fill, compress);
     var p = zl.index(0) orelse {
         return ql;
     };
@@ -566,19 +534,15 @@ pub fn createFromZiplist(
             .str => |v| value = v,
             .num => |n| value = util.ll2string(&longstr, n),
         }
-        _ = try ql.pushTail(allocator, value);
+        _ = ql.pushTail(value);
         p = zl.next(p) orelse break;
     }
 
     return ql;
 }
 
-pub fn new(
-    allocator: Allocator,
-    fill: i16,
-    compress: u16,
-) Allocator.Error!*QuickList {
-    const ql = try create(allocator);
+pub fn new(fill: i16, compress: u16) *QuickList {
+    const ql = create();
     ql.setOptions(fill, compress);
     return ql;
 }
@@ -590,13 +554,9 @@ pub fn setOptions(self: *QuickList, fill: i16, depth: u16) void {
 
 pub fn pop(
     self: *QuickList,
-    allocator: Allocator,
     where: Where,
-    callback: ?*const fn (
-        Allocator,
-        union(enum) { num: i64, str: []u8 },
-    ) Allocator.Error!void,
-) Allocator.Error!bool {
+    callback: ?*const fn (union(enum) { num: i64, str: []u8 }) void,
+) bool {
     if (self.count == 0) return false;
     const node = (if (where == .head) self.head else self.tail) orelse
         return false;
@@ -607,29 +567,24 @@ pub fn pop(
     switch (un) {
         .num => |v| {
             if (callback) |cb| {
-                try cb(allocator, .{ .num = v });
+                cb(.{ .num = v });
             }
         },
         .str => |v| {
             if (callback) |cb| {
-                try cb(allocator, .{ .str = v });
+                cb(.{ .str = v });
             }
         },
     }
-    _ = try self.delIndex(allocator, node, &entry);
+    _ = self.delIndex(node, &entry);
     return true;
 }
 
-pub fn push(
-    self: *QuickList,
-    allocator: Allocator,
-    value: []const u8,
-    where: Where,
-) Allocator.Error!void {
+pub fn push(self: *QuickList, value: []const u8, where: Where) void {
     if (where == .head) {
-        _ = try self.pushHead(allocator, value);
+        _ = self.pushHead(value);
     } else if (where == .tail) {
-        _ = try self.pushTail(allocator, value);
+        _ = self.pushTail(value);
     }
 }
 
@@ -637,28 +592,22 @@ pub fn push(
 ///
 /// Returns false if used existing head.
 /// Returns true if new head created.
-pub fn pushHead(
-    self: *QuickList,
-    allocator: Allocator,
-    value: []const u8,
-) Allocator.Error!bool {
+pub fn pushHead(self: *QuickList, value: []const u8) bool {
     const orig_head = self.head;
     assert(value.len < maxInt(u32));
 
     if (Node.allowInsert(orig_head, self.fill, value.len)) {
         @branchHint(.likely);
         const zl: *ZipList = ZipList.cast(self.head.?.zl.?);
-        self.head.?.zl = try zl.push(allocator, value, .head);
+        self.head.?.zl = zl.push(value, .head);
         self.head.?.updateSz();
     } else {
-        const node = try Node.create(allocator);
-        errdefer allocator.destroy(node);
+        const node = Node.create();
 
-        var zl = try ZipList.new(allocator);
-        errdefer zl.free(allocator);
-        node.zl = try zl.push(allocator, value, .head);
+        var zl = ZipList.new();
+        node.zl = zl.push(value, .head);
         node.updateSz();
-        try self.insertNodeBefore(allocator, self.head, node);
+        self.insertNodeBefore(self.head, node);
     }
 
     self.count += 1;
@@ -670,28 +619,22 @@ pub fn pushHead(
 ///
 /// Returns false if used existing tail.
 /// Returns true if new tail created.
-pub fn pushTail(
-    self: *QuickList,
-    allocator: Allocator,
-    value: []const u8,
-) Allocator.Error!bool {
+pub fn pushTail(self: *QuickList, value: []const u8) bool {
     const orig_tail = self.tail;
     assert(value.len < maxInt(u32));
 
     if (Node.allowInsert(orig_tail, self.fill, value.len)) {
         @branchHint(.likely);
         const zl: *ZipList = ZipList.cast(self.tail.?.zl.?);
-        self.tail.?.zl = try zl.push(allocator, value, .tail);
+        self.tail.?.zl = zl.push(value, .tail);
         self.tail.?.updateSz();
     } else {
-        const node = try Node.create(allocator);
-        errdefer allocator.destroy(node);
+        const node = Node.create();
 
-        var zl = try ZipList.new(allocator);
-        errdefer zl.free(allocator);
-        node.zl = try zl.push(allocator, value, .tail);
+        var zl = ZipList.new();
+        node.zl = zl.push(value, .tail);
         node.updateSz();
-        try self.insertNodeAfter(allocator, self.tail, node);
+        self.insertNodeAfter(self.tail, node);
     }
 
     self.count += 1;
@@ -699,44 +642,29 @@ pub fn pushTail(
     return orig_tail != self.tail;
 }
 
-pub fn insertAfter(
-    self: *QuickList,
-    allocator: Allocator,
-    entry: *Entry,
-    value: []const u8,
-) Allocator.Error!void {
-    return self.insert(allocator, entry, value, true);
+pub fn insertAfter(self: *QuickList, entry: *Entry, value: []const u8) void {
+    return self.insert(entry, value, true);
 }
 
-pub fn insertBefore(
-    self: *QuickList,
-    allocator: Allocator,
-    entry: *Entry,
-    value: []const u8,
-) Allocator.Error!void {
-    return self.insert(allocator, entry, value, false);
+pub fn insertBefore(self: *QuickList, entry: *Entry, value: []const u8) void {
+    return self.insert(entry, value, false);
 }
 
 /// Replace quicklist entry at offset 'idx' by 'data'.
 ///
 /// Returns true if replace happened.
 /// Returns false if replace failed and no changes happened.
-pub fn replaceAtIndex(
-    self: *QuickList,
-    allocator: Allocator,
-    idx: i64,
-    data: []const u8,
-) Allocator.Error!bool {
+pub fn replaceAtIndex(self: *QuickList, idx: i64, data: []const u8) bool {
     var entry: Entry = undefined;
-    if (try self.index(allocator, idx, &entry)) {
+    if (self.index(idx, &entry)) {
         @branchHint(.likely);
         const node = entry.node.?;
         var zl = ZipList.cast(node.zl.?);
-        zl = try zl.delete(allocator, &entry.zi.?);
-        zl = try zl.insert(allocator, entry.zi.?, data);
+        zl = zl.delete(&entry.zi.?);
+        zl = zl.insert(entry.zi.?, data);
         node.zl = zl;
         node.updateSz();
-        try self.compressNode(allocator, node);
+        self.compressNode(node);
         return true;
     }
     return false;
@@ -748,12 +676,7 @@ pub fn replaceAtIndex(
 /// have to be careful about tracking where we start and end.
 ///
 /// Returns true if entries were deleted, false if nothing was deleted.
-pub fn delRange(
-    self: *QuickList,
-    allocator: Allocator,
-    start: i64,
-    count: i64,
-) Allocator.Error!bool {
+pub fn delRange(self: *QuickList, start: i64, count: i64) bool {
     if (count <= 0) return false;
 
     var extent: u64 = @intCast(count);
@@ -764,7 +687,7 @@ pub fn delRange(
     }
 
     var entry: Entry = undefined;
-    if (!try self.index(allocator, start, &entry)) {
+    if (!self.index(start, &entry)) {
         return false;
     }
 
@@ -794,18 +717,18 @@ pub fn delRange(
         }
 
         if (delete_entire_node) {
-            try self.delNode(allocator, node);
+            self.delNode(node);
         } else {
-            try node.decompressForUse(allocator);
+            node.decompressForUse();
             const zl = ZipList.cast(node.zl.?);
-            node.zl = try zl.deleteRange(allocator, offset, @intCast(del));
+            node.zl = zl.deleteRange(offset, @intCast(del));
             node.updateSz();
             node.count -= @intCast(del);
             self.count -= del;
             if (node.count == 0) {
-                try self.delNode(allocator, node);
+                self.delNode(node);
             } else {
-                try node.recompressOnly(allocator);
+                node.recompressOnly();
             }
         }
 
@@ -819,19 +742,14 @@ pub fn delRange(
 /// Create new node consisting of a pre-formed ziplist.
 /// Used for loading RDBs where entire ziplists have been stored
 /// to be retrieved later.
-pub fn appendZiplist(
-    self: *QuickList,
-    allocator: Allocator,
-    zl: *ZipList,
-) Allocator.Error!void {
-    const node = try Node.create(allocator);
-    errdefer node.release(allocator);
+pub fn appendZiplist(self: *QuickList, zl: *ZipList) void {
+    const node = Node.create();
 
     node.zl = zl;
     node.sz = zl.blobLen();
     node.count = zl.len.get();
 
-    try self.insertNodeAfter(allocator, self.tail, node);
+    self.insertNodeAfter(self.tail, node);
     self.count += node.count;
 }
 
@@ -850,12 +768,11 @@ pub fn iterator(
 
 pub fn iteratorAtIndex(
     self: *const QuickList,
-    allocator: Allocator,
     direction: Iterator.Direction,
     idx: i64,
-) Allocator.Error!?Iterator {
+) ?Iterator {
     var entry: Entry = undefined;
-    const ok = try self.index(allocator, idx, &entry);
+    const ok = self.index(idx, &entry);
     if (ok) {
         var it = self.iterator(direction);
         it.current = entry.node;
@@ -874,12 +791,7 @@ pub fn iteratorAtIndex(
 ///
 /// Returns true if element found
 /// Returns false if element not found
-pub fn index(
-    self: *const QuickList,
-    allocator: Allocator,
-    idx: i64,
-    entry: *Entry,
-) Allocator.Error!bool {
+pub fn index(self: *const QuickList, idx: i64, entry: *Entry) bool {
     Entry.init(entry);
     entry.quicklist = @constCast(self);
 
@@ -919,7 +831,7 @@ pub fn index(
         entry.offset = -@as(i32, @intCast(indix + 1 - accum));
     }
 
-    try entry.node.?.decompressForUse(allocator);
+    entry.node.?.decompressForUse();
     const zl = ZipList.cast(entry.node.?.zl.?);
     entry.zi = zl.index(entry.offset);
     const value = ZipList.get(entry.zi.?).?;
@@ -940,13 +852,13 @@ pub fn eql(entry: [*]u8, str: []const u8) bool {
     return ZipList.eql(entry, str);
 }
 
-pub fn release(self: *QuickList, allocator: Allocator) void {
+pub fn release(self: *QuickList) void {
     var current = self.head;
     while (current) |node| {
         current = node.next;
         self.count -= node.count;
         self.len -= 1;
-        node.release(allocator);
+        node.release();
     }
     allocator.destroy(self);
 }
@@ -957,27 +869,24 @@ pub fn release(self: *QuickList, allocator: Allocator) void {
 /// the new value is inserted before 'entry'.
 fn insert(
     self: *QuickList,
-    allocator: Allocator,
     entry: *Entry,
     value: []const u8,
     after: bool,
-) Allocator.Error!void {
+) void {
     assert(value.len < maxInt(u32));
 
     const entry_node = entry.node;
     if (entry_node == null) {
-        const new_node = try Node.create(allocator);
-        errdefer allocator.destroy(new_node);
+        const new_node = Node.create();
 
-        var zl = try ZipList.new(allocator);
-        errdefer zl.free(allocator);
+        var zl = ZipList.new();
 
-        zl = try zl.push(allocator, value, .head);
+        zl = zl.push(value, .head);
         new_node.zl = zl;
         new_node.count += 1;
         new_node.updateSz();
 
-        try self.insertNode(allocator, null, new_node, after);
+        self.insertNode(null, new_node, after);
         self.count += 1;
         return;
     }
@@ -1016,49 +925,49 @@ fn insert(
     defer self.count += 1;
 
     if (!full and after) {
-        try node.decompressForUse(allocator);
+        node.decompressForUse();
         const zl: *ZipList = ZipList.cast(node.zl.?);
         const next = zl.next(entry.zi.?);
         if (next == null) {
-            node.zl = try zl.push(allocator, value, .tail);
+            node.zl = zl.push(value, .tail);
         } else {
-            node.zl = try zl.insert(allocator, next.?, value);
+            node.zl = zl.insert(next.?, value);
         }
         node.count += 1;
         node.updateSz();
-        try node.recompressOnly(allocator);
+        node.recompressOnly();
         return;
     }
 
     if (!full and !after) {
-        try node.decompressForUse(allocator);
+        node.decompressForUse();
         const zl: *ZipList = ZipList.cast(node.zl.?);
-        node.zl = try zl.insert(allocator, entry.zi.?, value);
+        node.zl = zl.insert(entry.zi.?, value);
         node.count += 1;
         node.updateSz();
-        try node.recompressOnly(allocator);
+        node.recompressOnly();
         return;
     }
 
     if (full and at_tail and node.next != null and !full_next) {
         const next = node.next.?;
-        try next.decompressForUse(allocator);
+        next.decompressForUse();
         const zl: *ZipList = ZipList.cast(next.zl.?);
-        next.zl = try zl.push(allocator, value, .head);
+        next.zl = zl.push(value, .head);
         next.count += 1;
         next.updateSz();
-        try next.recompressOnly(allocator);
+        next.recompressOnly();
         return;
     }
 
     if (full and at_head and node.prev != null and !full_prev) {
         const prev = node.prev.?;
-        try prev.decompressForUse(allocator);
+        prev.decompressForUse();
         const zl: *ZipList = ZipList.cast(prev.zl.?);
-        prev.zl = try zl.push(allocator, value, .tail);
+        prev.zl = zl.push(value, .tail);
         prev.count += 1;
         prev.updateSz();
-        try prev.recompressOnly(allocator);
+        prev.recompressOnly();
         return;
     }
 
@@ -1068,32 +977,29 @@ fn insert(
         ((at_tail and node.next != null and full_next) or
             (at_head and node.prev != null and full_prev)))
     {
-        const new_node = try Node.create(allocator);
-        errdefer allocator.destroy(new_node);
+        const new_node = Node.create();
 
-        var zl = try ZipList.new(allocator);
-        errdefer zl.free(allocator);
+        var zl = ZipList.new();
 
-        zl = try zl.push(allocator, value, .head);
+        zl = zl.push(value, .head);
         new_node.zl = zl;
         new_node.count += 1;
         new_node.updateSz();
-        try self.insertNode(allocator, node, new_node, after);
+        self.insertNode(node, new_node, after);
         return;
     }
 
     // node is full we need to split it.
     // covers both after and !after cases.
     if (full) {
-        try node.decompressForUse(allocator);
-        const new_node = try node.split(allocator, entry.offset, after);
-        errdefer new_node.release(allocator);
+        node.decompressForUse();
+        const new_node = node.split(entry.offset, after);
         const zl: *ZipList = ZipList.cast(new_node.zl.?);
-        new_node.zl = try zl.push(allocator, value, if (after) .head else .tail);
+        new_node.zl = zl.push(value, if (after) .head else .tail);
         new_node.count += 1;
         new_node.updateSz();
-        try self.insertNode(allocator, node, new_node, after);
-        try self.mergeNodes(allocator, node);
+        self.insertNode(node, new_node, after);
+        self.mergeNodes(node);
     }
 }
 
@@ -1104,11 +1010,7 @@ fn insert(
 ///   - (center->next, center->next->next)
 ///   - (center->prev, center)
 ///   - (center, center->next)
-fn mergeNodes(
-    self: *QuickList,
-    allocator: Allocator,
-    center: *Node,
-) Allocator.Error!void {
+fn mergeNodes(self: *QuickList, center: *Node) void {
     const fill = self.fill;
     var prev: ?*Node = null;
     var prev_prev: ?*Node = null;
@@ -1128,19 +1030,19 @@ fn mergeNodes(
         }
     }
     if (Node.allowMerge(prev, prev_prev, fill)) {
-        _ = try self.mergeZiplist(allocator, prev_prev.?, prev.?);
+        _ = self.mergeZiplist(prev_prev.?, prev.?);
         prev_prev = null;
         prev = null;
     }
     if (Node.allowMerge(next, next_next, fill)) {
-        _ = try self.mergeZiplist(allocator, next_next.?, next.?);
+        _ = self.mergeZiplist(next_next.?, next.?);
         next_next = null;
         next = null;
     }
 
     var target: ?*Node = null;
     if (Node.allowMerge(center, center.prev, fill)) {
-        target = try self.mergeZiplist(allocator, center.prev.?, center);
+        target = self.mergeZiplist(center.prev.?, center);
     } else {
         target = center;
     }
@@ -1150,7 +1052,7 @@ fn mergeNodes(
         if (target != null) target.?.next else null,
         fill,
     )) {
-        _ = try self.mergeZiplist(allocator, target.?, target.?.next.?);
+        _ = self.mergeZiplist(target.?, target.?.next.?);
     }
 }
 
@@ -1167,18 +1069,13 @@ fn mergeNodes(
 ///
 /// Returns the input node picked to merge against or NULL if
 /// merging was not possible.
-fn mergeZiplist(
-    self: *QuickList,
-    allocator: Allocator,
-    a: *Node,
-    b: *Node,
-) Allocator.Error!?*Node {
-    _ = try a.decompress(allocator);
-    _ = try b.decompress(allocator);
+fn mergeZiplist(self: *QuickList, a: *Node, b: *Node) ?*Node {
+    _ = a.decompress();
+    _ = b.decompress();
 
     var azl: ?*ZipList = ZipList.cast(a.zl.?);
     var bzl: ?*ZipList = ZipList.cast(b.zl.?);
-    const merged = try ZipList.merge(allocator, &azl, &bzl);
+    const merged = ZipList.merge(&azl, &bzl);
     if (merged != null) {
         var keep: *Node = undefined;
         var nokeep: *Node = undefined;
@@ -1196,18 +1093,14 @@ fn mergeZiplist(
         keep.count = ZipList.cast(keep.zl.?).len.get();
         keep.updateSz();
         nokeep.count = 0; // for the following self.delNode(nokeep)
-        try self.delNode(allocator, nokeep);
-        try self.compressNode(allocator, keep);
+        self.delNode(nokeep);
+        self.compressNode(keep);
         return keep;
     }
     return null;
 }
 
-fn delNode(
-    self: *QuickList,
-    allocator: Allocator,
-    node: *Node,
-) Allocator.Error!void {
+fn delNode(self: *QuickList, node: *Node) void {
     if (node.next) |next| {
         next.prev = node.prev;
     }
@@ -1224,10 +1117,10 @@ fn delNode(
 
     // If we deleted a node within our compress depth, we
     // now have compressed nodes needing to be decompressed.
-    try self.meetCompression(allocator, null);
+    self.meetCompression(null);
 
     self.count -= node.count;
-    node.release(allocator);
+    node.release();
     self.len -= 1;
 }
 
@@ -1239,18 +1132,13 @@ fn delNode(
 ///
 /// Returns true if the entire node was deleted, false if node still exists.
 /// Also updates in/out param 'p' with the next offset in the ziplist.
-fn delIndex(
-    self: *QuickList,
-    allocator: Allocator,
-    node: *Node,
-    p: *[*]u8,
-) Allocator.Error!bool {
-    node.zl = try ZipList.cast(node.zl.?).delete(allocator, p);
+fn delIndex(self: *QuickList, node: *Node, p: *[*]u8) bool {
+    node.zl = ZipList.cast(node.zl.?).delete(p);
     node.count -= 1;
     var gone = false;
     if (node.count == 0) {
         gone = true;
-        try self.delNode(allocator, node);
+        self.delNode(node);
     } else {
         node.updateSz();
     }
@@ -1266,31 +1154,20 @@ fn setCompressDepth(self: *QuickList, depth: u16) void {
     self.compress = depth;
 }
 
-fn insertNodeBefore(
-    self: *QuickList,
-    allocator: Allocator,
-    old_node: ?*Node,
-    new_node: *Node,
-) Allocator.Error!void {
-    return self.insertNode(allocator, old_node, new_node, false);
+fn insertNodeBefore(self: *QuickList, old_node: ?*Node, new_node: *Node) void {
+    return self.insertNode(old_node, new_node, false);
 }
 
-fn insertNodeAfter(
-    self: *QuickList,
-    allocator: Allocator,
-    old_node: ?*Node,
-    new_node: *Node,
-) Allocator.Error!void {
-    return self.insertNode(allocator, old_node, new_node, true);
+fn insertNodeAfter(self: *QuickList, old_node: ?*Node, new_node: *Node) void {
+    return self.insertNode(old_node, new_node, true);
 }
 
 fn insertNode(
     self: *QuickList,
-    allocator: Allocator,
     old_node: ?*Node,
     new_node: *Node,
     after: bool,
-) Allocator.Error!void {
+) void {
     if (after) {
         new_node.prev = old_node;
         if (old_node) |old| {
@@ -1321,32 +1198,24 @@ fn insertNode(
         self.tail = new_node;
     }
     if (old_node) |old| {
-        try self.compressNode(allocator, old);
+        self.compressNode(old);
     }
     self.len += 1;
 }
 
-fn compressNode(
-    self: *QuickList,
-    allocator: Allocator,
-    node: *Node,
-) Allocator.Error!void {
+fn compressNode(self: *QuickList, node: *Node) void {
     if (node.recompress == .true) {
-        _ = try node.compress(allocator);
+        _ = node.compress();
         return;
     }
-    try self.meetCompression(allocator, node);
+    self.meetCompression(node);
 }
 
 /// Force 'quicklist' to meet compression guidelines set by compress depth.
 /// The only way to guarantee interior nodes get compressed is to iterate
 /// to our "interior" compress depth then compress the next node we find.
 /// If compress depth is larger than the entire list, we return immediately.
-fn meetCompression(
-    self: *QuickList,
-    allocator: Allocator,
-    node: ?*Node,
-) Allocator.Error!void {
+fn meetCompression(self: *QuickList, node: ?*Node) void {
     // If length is less than our compress depth (from both sides),
     // we can't compress anything.
     if (!self.allowsCompression() or self.len < self.compress * 2) {
@@ -1358,8 +1227,8 @@ fn meetCompression(
     var depth: usize = 0;
     var in_depth = false;
     while (depth < self.compress) : (depth += 1) {
-        if (forward) |f| _ = try f.decompress(allocator);
-        if (reverse) |r| _ = try r.decompress(allocator);
+        if (forward) |f| _ = f.decompress();
+        if (reverse) |r| _ = r.decompress();
 
         if (forward == node or reverse == node) {
             in_depth = true;
@@ -1372,13 +1241,13 @@ fn meetCompression(
     }
 
     if (!in_depth and node != null) {
-        _ = try node.?.compress(allocator);
+        _ = node.?.compress();
     }
 
     if (depth > 2) {
         // At this point, forward and reverse are one node beyond depth.
-        if (forward) |f| _ = try f.compress(allocator);
-        if (reverse) |r| _ = try r.compress(allocator);
+        if (forward) |f| _ = f.compress();
+        if (reverse) |r| _ = r.compress();
     }
 }
 
@@ -1399,23 +1268,22 @@ test lzf {
 }
 
 test "push()" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    try ql.push(allocator, "hello" ** 100, .tail);
+    ql.push("hello" ** 100, .tail);
     try expectEqual(1, ql.len);
     try expectEqual(1, ql.count);
     try expect(ql.head == ql.tail);
     try expectEqual(1, ql.head.?.count);
 
-    try ql.push(allocator, "world" ** 100, .head);
+    ql.push("world" ** 100, .head);
     try expectEqual(1, ql.len);
     try expectEqual(2, ql.count);
 
     for (0..10) |_| {
-        try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .head);
-        try ql.push(allocator, "a" ** (SIZE_SAFETY_LIMIT + 1), .tail);
+        ql.push("a" ** (SIZE_SAFETY_LIMIT + 1), .head);
+        ql.push("a" ** (SIZE_SAFETY_LIMIT + 1), .tail);
     }
     try expectEqual(21, ql.len);
     try expectEqual(22, ql.count);
@@ -1426,234 +1294,223 @@ test "push()" {
 }
 
 test "pop()" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    try ql.push(allocator, "a", .tail);
-    try ql.push(allocator, "b", .tail);
-    try ql.push(allocator, "1", .tail);
+    ql.push("a", .tail);
+    ql.push("b", .tail);
+    ql.push("1", .tail);
 
-    try expect(try ql.pop(allocator, .head, null));
+    try expect(ql.pop(.head, null));
     try expectEqual(2, ql.count);
 
-    try expect(try ql.pop(allocator, .tail, null));
+    try expect(ql.pop(.tail, null));
     try expectEqual(1, ql.count);
 
-    try expect(try ql.pop(allocator, .tail, null));
+    try expect(ql.pop(.tail, null));
     try expectEqual(0, ql.count);
-    try expect(!try ql.pop(allocator, .tail, null));
+    try expect(!ql.pop(.tail, null));
 }
 
 test "createFromZiplist()" {
-    const allocator = std.testing.allocator;
+    var zl = ZipList.new();
 
-    var zl = try ZipList.new(allocator);
-    errdefer zl.free(allocator);
-
-    zl = try zl.push(allocator, "hello", .tail);
-    zl = try zl.push(allocator, "world", .tail);
-    zl = try zl.push(allocator, "1234", .tail);
+    zl = zl.push("hello", .tail);
+    zl = zl.push("world", .tail);
+    zl = zl.push("1234", .tail);
     try expectEqual(3, zl.len.get());
 
-    const ql = try createFromZiplist(allocator, -2, 2, zl);
-    defer ql.release(allocator);
+    const ql = createFromZiplist(-2, 2, zl);
+    defer ql.release();
     try expectEqual(3, ql.count);
 }
 
 test "insertBefore() | insertAfter() | index()" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "value2");
-    _ = try ql.pushTail(allocator, "value3");
-    _ = try ql.pushTail(allocator, "value4");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("value2");
+    _ = ql.pushTail("value3");
+    _ = ql.pushTail("value4");
 
     var first: Entry = undefined;
-    var found = try ql.index(allocator, 0, &first);
+    var found = ql.index(0, &first);
     try expect(found);
     try expectEqual(0, first.offset);
     try expectEqualStrings("value1", first.value.?[0..first.sz]);
-    try ql.insertAfter(allocator, &first, "value1.1");
+    ql.insertAfter(&first, "value1.1");
     try expectEqual(5, ql.count);
 
     var last: Entry = undefined;
-    found = try ql.index(allocator, -1, &last);
+    found = ql.index(-1, &last);
     try expect(found);
     try expectEqual(-1, last.offset);
     try expectEqualStrings("value4", last.value.?[0..last.sz]);
-    try ql.insertBefore(allocator, &last, "value3.3");
+    ql.insertBefore(&last, "value3.3");
     try expectEqual(6, ql.count);
 }
 
 test "replaceAtIndex()" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "22");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("22");
 
-    const replaced = try ql.replaceAtIndex(allocator, 1, "22");
+    const replaced = ql.replaceAtIndex(1, "22");
     try expect(replaced);
     try expectEqual(2, ql.count);
 
     var entry: Entry = undefined;
-    const found = try ql.index(allocator, 1, &entry);
+    const found = ql.index(1, &entry);
     try expect(found);
     try expectEqual(22, entry.longval);
 }
 
 test "delRange()" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, 10, 1);
-    defer ql.release(allocator);
+    var ql = new(10, 1);
+    defer ql.release();
 
     var entry: Entry = undefined;
     var buf: [30]u8 = undefined;
     for (1..101) |i| {
         const value = std.fmt.bufPrint(&buf, "value{}", .{i}) catch unreachable;
-        _ = try ql.pushTail(allocator, value);
+        _ = ql.pushTail(value);
     }
-    var deleted = try ql.delRange(allocator, 0, 10);
+    var deleted = ql.delRange(0, 10);
     try expect(deleted);
     try expectEqual(90, ql.count);
     try expectEqual(9, ql.len);
-    var found = try ql.index(allocator, 0, &entry);
+    var found = ql.index(0, &entry);
     try expect(found);
     try expectEqualStrings("value11", entry.value.?[0..entry.sz]);
 
-    deleted = try ql.delRange(allocator, -10, 10);
+    deleted = ql.delRange(-10, 10);
     try expect(deleted);
     try expectEqual(80, ql.count);
     try expectEqual(8, ql.len);
-    found = try ql.index(allocator, -1, &entry);
+    found = ql.index(-1, &entry);
     try expect(found);
     try expectEqualStrings("value90", entry.value.?[0..entry.sz]);
 
-    deleted = try ql.delRange(allocator, 5, 10);
+    deleted = ql.delRange(5, 10);
     try expect(deleted);
     try expectEqual(70, ql.count);
 
-    deleted = try ql.delRange(allocator, -5, 10);
+    deleted = ql.delRange(-5, 10);
     try expect(deleted);
     try expectEqual(65, ql.count);
 
-    deleted = try ql.delRange(allocator, 0, 65);
+    deleted = ql.delRange(0, 65);
     try expect(deleted);
     try expectEqual(0, ql.count);
     try expectEqual(0, ql.len);
 }
 
 test "iterator.next(.head|.tail)" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "value2");
-    _ = try ql.pushTail(allocator, "value3");
-    _ = try ql.pushTail(allocator, "5");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("value2");
+    _ = ql.pushTail("value3");
+    _ = ql.pushTail("5");
 
     var entry: Entry = undefined;
     var it = ql.iterator(.head);
-    var ok = try it.next(allocator, &entry);
+    var ok = it.next(&entry);
     try expect(ok);
     try expectEqualStrings("value1", entry.value.?[0..entry.sz]);
     try expectEqual(0, entry.offset);
-    try expect(try it.next(allocator, &entry));
-    try expect(try it.next(allocator, &entry));
-    try expect(try it.next(allocator, &entry));
+    try expect(it.next(&entry));
+    try expect(it.next(&entry));
+    try expect(it.next(&entry));
     try expectEqual(5, entry.longval);
     try expectEqual(3, entry.offset);
-    ok = try it.next(allocator, &entry);
+    ok = it.next(&entry);
     try expect(ok == false);
-    try it.release(allocator);
+    it.release();
 
     it = ql.iterator(.tail);
-    ok = try it.next(allocator, &entry);
+    ok = it.next(&entry);
     try expect(ok);
     try expectEqual(5, entry.longval);
     try expectEqual(-1, entry.offset);
-    try it.release(allocator);
+    it.release();
 }
 
 test "iterator.delEntry(.head)" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "value2");
-    _ = try ql.pushTail(allocator, "value3");
-    _ = try ql.pushTail(allocator, "5");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("value2");
+    _ = ql.pushTail("value3");
+    _ = ql.pushTail("5");
 
     var entry: Entry = undefined;
     var it = ql.iterator(.head);
     it = ql.iterator(.head);
     var iterations: usize = 0;
-    while (try it.next(allocator, &entry)) {
-        try it.delEntry(allocator, &entry);
+    while (it.next(&entry)) {
+        it.delEntry(&entry);
         iterations += 1;
     }
     try expectEqual(4, iterations);
     try expectEqual(0, ql.count);
     try expectEqual(0, ql.len);
-    try it.release(allocator);
+    it.release();
 }
 
 test "iterator.delEntry(.tail)" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "value2");
-    _ = try ql.pushTail(allocator, "value3");
-    _ = try ql.pushTail(allocator, "5");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("value2");
+    _ = ql.pushTail("value3");
+    _ = ql.pushTail("5");
 
     var entry: Entry = undefined;
     var it = ql.iterator(.tail);
     var iterations: usize = 0;
-    while (try it.next(allocator, &entry)) {
-        try it.delEntry(allocator, &entry);
+    while (it.next(&entry)) {
+        it.delEntry(&entry);
         iterations += 1;
     }
     try expectEqual(4, iterations);
     try expectEqual(0, ql.count);
     try expectEqual(0, ql.len);
-    try it.release(allocator);
+    it.release();
 }
 
 test "iteratorAtIndex.delEntry(.head)" {
-    const allocator = std.testing.allocator;
-    var ql = try new(allocator, -2, 1);
-    defer ql.release(allocator);
+    var ql = new(-2, 1);
+    defer ql.release();
 
-    _ = try ql.pushTail(allocator, "value1");
-    _ = try ql.pushTail(allocator, "value2");
-    _ = try ql.pushTail(allocator, "value3");
-    _ = try ql.pushTail(allocator, "5");
+    _ = ql.pushTail("value1");
+    _ = ql.pushTail("value2");
+    _ = ql.pushTail("value3");
+    _ = ql.pushTail("5");
 
     var entry: Entry = undefined;
-    var it = (try ql.iteratorAtIndex(allocator, .head, 1)).?;
+    var it = (ql.iteratorAtIndex(.head, 1)).?;
     var iterations: usize = 0;
-    while (try it.next(allocator, &entry)) {
+    while (it.next(&entry)) {
         iterations += 1;
-        try it.delEntry(allocator, &entry);
+        it.delEntry(&entry);
     }
     try expectEqual(3, iterations);
     try expectEqual(1, ql.count);
     try expectEqual(1, ql.len);
-    _ = try ql.index(allocator, 0, &entry);
+    _ = ql.index(0, &entry);
     try expectEqualStrings("value1", entry.value.?[0..entry.sz]);
-    try it.release(allocator);
+    it.release();
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const ZipList = @import("ZipList.zig");
 const assert = std.debug.assert;
 const maxInt = std.math.maxInt;

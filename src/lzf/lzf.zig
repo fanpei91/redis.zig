@@ -17,7 +17,6 @@ pub fn decompress(noalias in: []const u8, noalias out: []u8) c_uint {
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const lzf = @cImport({
     @cInclude("lzf.h");
 });

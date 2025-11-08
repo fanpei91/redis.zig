@@ -134,9 +134,9 @@ pub inline fn cast(ptr: *anyopaque) *ZipList {
     return @ptrCast(@alignCast(ptr));
 }
 
-pub fn new(allocator: Allocator) Allocator.Error!*ZipList {
+pub fn new() *ZipList {
     const bytes = HEADER_SIZE + END_SIZE;
-    const ptr = (try allocator.alignedAlloc(u8, .of(ZipList), bytes)).ptr;
+    const ptr = (allocator.alignedAlloc(u8, .of(ZipList), bytes)).ptr;
     const zl: *ZipList = @ptrCast(@alignCast(ptr));
     zl.bytes.set(bytes);
     zl.tail.set(HEADER_SIZE);
@@ -160,11 +160,7 @@ pub fn new(allocator: Allocator) Allocator.Error!*ZipList {
 /// On success: returns the merged ziplist (which is expanded version of either
 /// 'first' or 'second', also frees the other unused input ziplist, and sets the
 /// input ziplist argument equal to newly reallocated ziplist return value.
-pub fn merge(
-    allocator: Allocator,
-    first: *?*ZipList,
-    second: *?*ZipList,
-) Allocator.Error!?*ZipList {
+pub fn merge(first: *?*ZipList, second: *?*ZipList) ?*ZipList {
     if (first.* == null) return null;
     if (second.* == null) return null;
     if (first.* == second.*) return null;
@@ -203,9 +199,8 @@ pub fn merge(
     const first_tail: usize = first.*.?.tail.get();
     const second_tail: usize = second.*.?.tail.get();
 
-    const ptr = (try allocator.realloc(target.toBytes(), zlbytes)).ptr;
+    const ptr = (allocator.realloc(target.toBytes(), zlbytes)).ptr;
     target = @ptrCast(@alignCast(ptr));
-    errdefer target.free(allocator);
 
     if (append) {
         memcpy(
@@ -225,14 +220,14 @@ pub fn merge(
     target.bytes.set(@intCast(zlbytes));
     target.len.set(@intCast(zllength));
     target.tail.set(@intCast((first_bytes - END_SIZE) + (second_tail - HEADER_SIZE)));
-    target = try target.cascadeUpdate(allocator, target.addr() + first_tail);
+    target = target.cascadeUpdate(target.addr() + first_tail);
 
     if (append) {
-        second.*.?.free(allocator);
+        second.*.?.free();
         second.* = null;
         first.* = target;
     } else {
-        first.*.?.free(allocator);
+        first.*.?.free();
         first.* = null;
         second.* = target;
     }
@@ -395,23 +390,17 @@ pub inline fn blobLen(self: *const ZipList) u32 {
 
 pub fn push(
     self: *ZipList,
-    allocator: Allocator,
     str: []const u8,
     where: enum { head, tail },
-) Allocator.Error!*ZipList {
+) *ZipList {
     if (where == .head) {
-        return self.insert(allocator, self.entryHead(), str);
+        return self.insert(self.entryHead(), str);
     }
-    return self.insert(allocator, self.entryEnd(), str);
+    return self.insert(self.entryEnd(), str);
 }
 
 /// Insert item at ptr.
-pub fn insert(
-    self: *ZipList,
-    allocator: Allocator,
-    ptr: [*]u8,
-    str: []const u8,
-) Allocator.Error!*ZipList {
+pub fn insert(self: *ZipList, ptr: [*]u8, str: []const u8) *ZipList {
     var zl = self;
 
     const curlen: u32 = zl.bytes.get();
@@ -441,8 +430,7 @@ pub fn insert(
 
     // Store offset because a realloc may change the address of zl.
     var offset = ptr - zl.addr();
-    zl = try zl.resize(
-        allocator,
+    zl = zl.resize(
         @intCast(@as(i64, curlen + reqlen) + @as(i64, nextdiff)),
     );
 
@@ -470,7 +458,7 @@ pub fn insert(
     // we need to cascade the update throughout the ziplist
     if (nextdiff != 0) {
         offset = p - zl.addr();
-        zl = try cascadeUpdate(zl, allocator, p + reqlen);
+        zl = cascadeUpdate(zl, p + reqlen);
         p = zl.addr() + offset;
     }
 
@@ -489,26 +477,17 @@ pub fn insert(
 /// Delete a single entry from the ziplist, pointed to by ptr.*.
 /// Also update ptr.* in place, to be able to iterate over the
 /// ziplist, while deleting entries.
-pub fn delete(
-    self: *ZipList,
-    allocator: Allocator,
-    ptr: *[*]u8,
-) Allocator.Error!*ZipList {
+pub fn delete(self: *ZipList, ptr: *[*]u8) *ZipList {
     const p = ptr.*;
     const offset = p - self.addr();
-    const zl = try self.cascadeDelete(allocator, p, 1);
+    const zl = self.cascadeDelete(p, 1);
     ptr.* = zl.addr() + offset;
     return zl;
 }
 
-pub fn deleteRange(
-    self: *ZipList,
-    allocator: Allocator,
-    idx: i32,
-    num: u32,
-) Allocator.Error!*ZipList {
+pub fn deleteRange(self: *ZipList, idx: i32, num: u32) *ZipList {
     if (self.index(idx)) |ptr| {
-        return try self.cascadeDelete(allocator, ptr, num);
+        return self.cascadeDelete(ptr, num);
     }
     return self;
 }
@@ -516,17 +495,14 @@ pub fn deleteRange(
 /// Don't let ziplists grow over 1GB in any case, don't wanna risk overflow in
 /// zlbytes.
 const MAX_SAFETY_SIZE = 1 << 30; // 1GB
-pub fn safeToAdd(
-    self: ?*ZipList,
-    add: usize,
-) Allocator.Error!bool {
+pub fn safeToAdd(self: ?*ZipList, add: usize) bool {
     const length: usize = if (self) |zl| {
         zl.blobLen();
     } else 0;
     return (length + add) <= MAX_SAFETY_SIZE;
 }
 
-pub fn free(self: *ZipList, allocator: Allocator) void {
+pub fn free(self: *ZipList) void {
     allocator.free(self.toBytes());
 }
 
@@ -535,12 +511,7 @@ pub fn toBytes(self: *const ZipList) []align(@alignOf(ZipList)) u8 {
 }
 
 /// Delete "num" entries, starting at "ptr". Returns pointer to the ziplist.
-fn cascadeDelete(
-    self: *ZipList,
-    allocator: Allocator,
-    ptr: [*]u8,
-    num: u32,
-) Allocator.Error!*ZipList {
+fn cascadeDelete(self: *ZipList, ptr: [*]u8, num: u32) *ZipList {
     var p = ptr;
     var zl = self;
     const first = Entry.decode(p);
@@ -587,12 +558,12 @@ fn cascadeDelete(
         const offset = first.ptr - zl.addr();
         var new_len = zl.bytes.get() - totlen;
         new_len = if (nextdiff > 0) new_len + @abs(nextdiff) else new_len - @abs(nextdiff);
-        zl = try zl.resize(allocator, new_len);
+        zl = zl.resize(new_len);
         zl.decrLength(deleted);
 
         p = zl.addr() + offset;
         if (nextdiff != 0) {
-            zl = try cascadeUpdate(zl, allocator, p);
+            zl = cascadeUpdate(zl, p);
         }
     }
     return zl;
@@ -618,11 +589,7 @@ fn cascadeDelete(
 ///
 /// The pointer "ptr" points to the first entry that does NOT need to be
 /// updated, i.e. consecutive fields MAY need an update.
-fn cascadeUpdate(
-    self: *ZipList,
-    allocator: Allocator,
-    ptr: [*]u8,
-) Allocator.Error!*ZipList {
+fn cascadeUpdate(self: *ZipList, ptr: [*]u8) *ZipList {
     var p = ptr;
     var zl = self;
     var curlen = zl.bytes.get();
@@ -640,7 +607,7 @@ fn cascadeUpdate(
         if (next_entry.prev_rawlen_size < cur_rawlen_size) {
             const offset = p - zl.addr();
             const extra = cur_rawlen_size - next_entry.prev_rawlen_size;
-            zl = try zl.resize(allocator, curlen + extra);
+            zl = zl.resize(curlen + extra);
             p = zl.addr() + offset;
 
             // Next element.
@@ -723,13 +690,9 @@ fn loadInteger(p: [*]u8, encoding: u8) i64 {
     };
 }
 
-fn resize(
-    self: *ZipList,
-    allocator: Allocator,
-    len: u32,
-) Allocator.Error!*ZipList {
+fn resize(self: *ZipList, len: u32) *ZipList {
     const old_mem = self.toBytes();
-    const new_mem = try allocator.realloc(old_mem, len);
+    const new_mem = allocator.realloc(old_mem, len);
     const zl: *ZipList = @ptrCast(@alignCast(new_mem));
     zl.bytes.set(len);
     new_mem[len - 1] = END;
@@ -927,9 +890,8 @@ inline fn isStr(encoding: u8) bool {
 }
 
 test ZipList {
-    const allocator = testing.allocator;
-    var zl = try new(allocator);
-    defer zl.free(allocator);
+    var zl = new();
+    defer zl.free();
 
     {
         const bytes = zl.bytes.get();
@@ -941,46 +903,46 @@ test ZipList {
 
     const hello = "hello";
     {
-        zl = try zl.push(allocator, hello, .head);
+        zl = zl.push(hello, .head);
         try expectEqual(1, zl.numOfEntries());
         try expectEqual(HEADER_SIZE + 1 + 1 + hello.len + 1, zl.bytes.get());
         try expectEqual(HEADER_SIZE, zl.tail.get());
     }
 
     {
-        zl = try zl.push(allocator, hello, .head);
+        zl = zl.push(hello, .head);
         try expectEqual(2, zl.numOfEntries());
 
-        zl = try zl.push(allocator, hello, .tail);
+        zl = zl.push(hello, .tail);
         try expectEqual(3, zl.numOfEntries());
 
         const large_str: [255]u8 = @splat(0);
-        zl = try zl.push(allocator, &large_str, .head);
+        zl = zl.push(&large_str, .head);
         try expectEqual(4, zl.numOfEntries());
     }
 
     {
         for (0..maxInt(u16)) |_| {
-            zl = try zl.push(allocator, hello, .tail);
+            zl = zl.push(hello, .tail);
         }
         try expectEqual(@as(u32, maxInt(u16)) + 4, zl.numOfEntries());
         try expectEqual(maxInt(u16), zl.len.get());
         const large: [255]u8 = @splat('a');
-        zl = try zl.push(allocator, &large, .head);
+        zl = zl.push(&large, .head);
         try expectEqual(maxInt(u16) + 5, zl.numOfEntries());
         const head = zl.entryHead();
         try expect(eql(head, &large));
     }
 
     {
-        zl = try zl.push(allocator, "4294967295", .tail);
+        zl = zl.push("4294967295", .tail);
         const head = zl.entryHead();
         const found = find(head, "4294967295", 0);
         try expect(found != null);
     }
 
     {
-        zl = try zl.push(allocator, "4294967295", .head);
+        zl = zl.push("4294967295", .head);
         const ptr = zl.index(0).?;
         const ret = get(ptr);
         try expect(ret != null);
@@ -989,7 +951,7 @@ test ZipList {
     }
 
     {
-        zl = try zl.push(allocator, "first", .head);
+        zl = zl.push("first", .head);
         const first = zl.index(0);
         try expect(first != null);
         try expectEqualStrings(
@@ -1000,7 +962,7 @@ test ZipList {
     }
 
     {
-        zl = try zl.push(allocator, "last", .tail);
+        zl = zl.push("last", .tail);
         const last = zl.index(-1);
         try expect(last != null);
         try expectEqualStrings(
@@ -1035,30 +997,30 @@ test ZipList {
     {
         var entry = zl.index(3).?;
         const len = zl.numOfEntries();
-        zl = try zl.delete(allocator, &entry);
+        zl = zl.delete(&entry);
         try expectEqual(len - 1, zl.numOfEntries());
 
         entry = zl.entryHead();
-        zl = try zl.delete(allocator, &entry);
+        zl = zl.delete(&entry);
         try expectEqual(len - 2, zl.numOfEntries());
 
         entry = zl.entryTail();
-        zl = try zl.delete(allocator, &entry);
+        zl = zl.delete(&entry);
         try expectEqual(len - 3, zl.numOfEntries());
 
-        zl = try zl.deleteRange(allocator, 3, 4);
+        zl = zl.deleteRange(3, 4);
         try expectEqual(len - 7, zl.numOfEntries());
     }
 
     {
-        var first: ?*ZipList = try new(allocator);
-        first = try first.?.push(allocator, "first-1", .tail);
+        var first: ?*ZipList = new();
+        first = first.?.push("first-1", .tail);
 
-        var second: ?*ZipList = try new(allocator);
-        second = try second.?.push(allocator, "second-1", .tail);
-        second = try second.?.push(allocator, "second-2", .tail);
+        var second: ?*ZipList = new();
+        second = second.?.push("second-1", .tail);
+        second = second.?.push("second-2", .tail);
 
-        const target = try merge(allocator, &first, &second);
+        const target = merge(&first, &second);
         try expect(target != null);
         try expect(first == null);
         try expect(second != null);
@@ -1067,12 +1029,12 @@ test ZipList {
         try expect(eql(target.?.index(0).?, "first-1"));
         try expect(eql(target.?.index(1).?, "second-1"));
         try expect(eql(target.?.index(2).?, "second-2"));
-        second.?.free(allocator);
+        second.?.free();
     }
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const nativeToLittle = std.mem.nativeToLittle;
 const littleToNative = std.mem.littleToNative;
 const testing = std.testing;

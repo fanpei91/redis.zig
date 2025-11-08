@@ -1,5 +1,5 @@
 /// SET key value [NX] [XX] [EX <seconds>] [PX <milliseconds>]
-pub fn setCommand(cli: *Client) Allocator.Error!void {
+pub fn setCommand(cli: *Client) void {
     const eqlCase = std.ascii.eqlIgnoreCase;
     var flags: u32 = OBJ_SET_NO_FLAGS;
     var unit: u32 = Server.UNIT_SECONDS;
@@ -33,14 +33,14 @@ pub fn setCommand(cli: *Client) Allocator.Error!void {
             j += 1;
             continue;
         }
-        try cli.addReply(Server.shared.syntaxerr);
+        cli.addReply(Server.shared.syntaxerr);
         return;
     }
 
-    argv[2] = try argv[2].tryEncoding(cli.allocator);
+    argv[2] = argv[2].tryEncoding();
     const key = argv[1];
     const val = argv[2];
-    try set(cli, flags, key, val, expire, unit, null, null);
+    set(cli, flags, key, val, expire, unit, null, null);
 }
 
 const OBJ_SET_NO_FLAGS = 0;
@@ -73,14 +73,14 @@ fn set(
     unit: u32,
     ok_reply: ?*Object,
     abort_reply: ?*Object,
-) Allocator.Error!void {
+) void {
     var milliseconds: i64 = 0;
     if (expire) |exp| {
-        if (!try exp.getLongLongOrReply(cli, &milliseconds, null)) {
+        if (!exp.getLongLongOrReply(cli, &milliseconds, null)) {
             return;
         }
         if (milliseconds <= 0) {
-            try cli.addReplyErrFormat(
+            cli.addReplyErrFormat(
                 "invalid expire time in {s}",
                 .{cli.cmd.?.name},
             );
@@ -94,7 +94,7 @@ fn set(
     if (flags & OBJ_SET_NX != 0 and cli.db.lookupKeyWrite(key) != null or
         flags & OBJ_SET_XX != 0 and cli.db.lookupKeyWrite(key) == null)
     {
-        try cli.addReply(
+        cli.addReply(
             if (abort_reply) |abort|
                 abort
             else
@@ -103,15 +103,15 @@ fn set(
         return;
     }
 
-    try cli.db.setKey(key, val);
+    cli.db.setKey(key, val);
     if (expire != null) {
-        try cli.db.setExpire(
+        cli.db.setExpire(
             cli,
             key,
             std.time.milliTimestamp() +| milliseconds,
         );
     }
-    try cli.addReply(
+    cli.addReply(
         if (ok_reply) |ok|
             ok
         else
@@ -122,7 +122,6 @@ fn set(
 const std = @import("std");
 const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
-const Allocator = std.mem.Allocator;
 const Object = @import("Object.zig");
 const server = &Server.instance;
 const sds = @import("sds.zig");

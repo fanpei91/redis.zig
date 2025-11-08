@@ -112,7 +112,7 @@ fn LFUTimeElapsed(ldt: u64) u64 {
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const Server = @import("Server.zig");
 const server = &Server.instance;
 const Object = @import("Object.zig");

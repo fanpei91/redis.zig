@@ -3,11 +3,11 @@ const State = struct {
     events: []posix.Kevent,
 };
 
-pub fn create(allocator: Allocator, el: *EventLoop) !void {
-    const state = try allocator.create(State);
+pub fn create(el: *EventLoop) !void {
+    const state = allocator.create(State);
     errdefer allocator.destroy(state);
 
-    state.events = try allocator.alloc(posix.Kevent, @intCast(el.getSetSize()));
+    state.events = allocator.alloc(posix.Kevent, @intCast(el.getSetSize()));
     errdefer allocator.free(state.events);
 
     state.kqfd = try posix.kqueue();
@@ -56,9 +56,9 @@ pub fn delEvent(el: *EventLoop, fd: i32, mask: i32) !void {
     }
 }
 
-pub fn resize(allocator: Allocator, el: *EventLoop, setsize: i32) !void {
+pub fn resize(el: *EventLoop, setsize: i32) void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
-    state.events = try allocator.realloc(
+    state.events = allocator.realloc(
         state.events,
         @intCast(setsize),
     );
@@ -97,7 +97,7 @@ pub fn name() []const u8 {
     return "kqueue";
 }
 
-pub fn free(allocator: Allocator, el: *EventLoop) void {
+pub fn free(el: *EventLoop) void {
     const state: *State = @ptrCast(@alignCast(el.apidata));
     posix.close(state.kqfd);
     allocator.free(state.events);
@@ -105,7 +105,7 @@ pub fn free(allocator: Allocator, el: *EventLoop) void {
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const ae = @import("ae.zig");
 const EventLoop = ae.EventLoop;
 const posix = std.posix;

@@ -81,7 +81,7 @@ pub const LOOKUP_NOTOUCH = (1 << 0);
 pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 
 pub const Command = struct {
-    pub const Proc = *const fn (cli: *Client) anyerror!void;
+    pub const Proc = *const fn (cli: *Client) void;
 
     name: []const u8,
     proc: Proc,
@@ -105,8 +105,6 @@ const commandTables = [_]Command{
 pub var shared: SharedObjects = undefined;
 
 const SharedObjects = struct {
-    arena: std.heap.ArenaAllocator,
-
     crlf: *Object,
     ok: *Object,
     err: *Object,
@@ -136,160 +134,156 @@ const SharedObjects = struct {
     minstring: sds.String,
     maxstring: sds.String,
 
-    fn create(allocator: Allocator) Allocator.Error!void {
-        shared.arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer shared.arena.deinit();
-        const arena = shared.arena.allocator();
-
-        shared.crlf = try Object.create(
-            arena,
+    fn create() void {
+        shared.crlf = Object.create(
             .string,
-            try sds.new(arena, "\r\n"),
+            sds.new("\r\n"),
         );
-        shared.ok = try Object.create(
-            arena,
+        shared.ok = Object.create(
             .string,
-            try sds.new(arena, "+OK\r\n"),
+            sds.new("+OK\r\n"),
         );
-        shared.err = try Object.create(
-            arena,
+        shared.err = Object.create(
             .string,
-            try sds.new(arena, "-ERR\r\n"),
+            sds.new("-ERR\r\n"),
         );
-        shared.emptybulk = try Object.create(
-            arena,
+        shared.emptybulk = Object.create(
             .string,
-            try sds.new(arena, "$0\r\n\r\n"),
+            sds.new("$0\r\n\r\n"),
         );
-        shared.czero = try Object.create(
-            arena,
+        shared.czero = Object.create(
             .string,
-            try sds.new(arena, ":0\r\n"),
+            sds.new(":0\r\n"),
         );
-        shared.cone = try Object.create(
-            arena,
+        shared.cone = Object.create(
             .string,
-            try sds.new(arena, ":1\r\n"),
+            sds.new(":1\r\n"),
         );
-        shared.cnegone = try Object.create(
-            arena,
+        shared.cnegone = Object.create(
             .string,
-            try sds.new(arena, ":-1\r\n"),
+            sds.new(":-1\r\n"),
         );
-        shared.nullbulk = try Object.create(
-            arena,
+        shared.nullbulk = Object.create(
             .string,
-            try sds.new(arena, "$-1\r\n"),
+            sds.new("$-1\r\n"),
         );
-        shared.nullmultibulk = try Object.create(
-            arena,
+        shared.nullmultibulk = Object.create(
             .string,
-            try sds.new(arena, "*-1\r\n"),
+            sds.new("*-1\r\n"),
         );
-        shared.emptymultibulk = try Object.create(
-            arena,
+        shared.emptymultibulk = Object.create(
             .string,
-            try sds.new(arena, "*0\r\n"),
+            sds.new("*0\r\n"),
         );
-        shared.pong = try Object.create(
-            arena,
+        shared.pong = Object.create(
             .string,
-            try sds.new(arena, "+PONG\r\n"),
+            sds.new("+PONG\r\n"),
         );
-        shared.queued = try Object.create(
-            arena,
+        shared.queued = Object.create(
             .string,
-            try sds.new(arena, "+QUEUED\r\n"),
+            sds.new("+QUEUED\r\n"),
         );
-        shared.emptyscan = try Object.create(
-            arena,
+        shared.emptyscan = Object.create(
             .string,
-            try sds.new(arena, "*2\r\n$1\r\n0\r\n*0\r\n"),
+            sds.new("*2\r\n$1\r\n0\r\n*0\r\n"),
         );
-        shared.wrongtypeerr = try Object.create(
-            arena,
+        shared.wrongtypeerr = Object.create(
             .string,
-            try sds.new(
-                arena,
+            sds.new(
                 "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             ),
         );
-        shared.nokeyerr = try Object.create(
-            arena,
+        shared.nokeyerr = Object.create(
             .string,
-            try sds.new(arena, "-ERR no such key\r\n"),
+            sds.new("-ERR no such key\r\n"),
         );
-        shared.syntaxerr = try Object.create(
-            arena,
+        shared.syntaxerr = Object.create(
             .string,
-            try sds.new(arena, "-ERR syntax error\r\n"),
+            sds.new("-ERR syntax error\r\n"),
         );
-        shared.sameobjecterr = try Object.create(
-            arena,
+        shared.sameobjecterr = Object.create(
             .string,
-            try sds.new(
-                arena,
+            sds.new(
                 "-ERR source and destination objects are the same\r\n",
             ),
         );
-        shared.outofrangeerr = try Object.create(
-            arena,
+        shared.outofrangeerr = Object.create(
             .string,
-            try sds.new(arena, "-ERR index out of range\r\n"),
+            sds.new("-ERR index out of range\r\n"),
         );
-        shared.noautherr = try Object.create(
-            arena,
+        shared.noautherr = Object.create(
             .string,
-            try sds.new(arena, "-NOAUTH Authentication required.\r\n"),
+            sds.new("-NOAUTH Authentication required.\r\n"),
         );
-        shared.oomerr = try Object.create(
-            arena,
+        shared.oomerr = Object.create(
             .string,
-            try sds.new(
-                arena,
+            sds.new(
                 "-OOM command not allowed when used memory > 'maxmemory'.\r\n",
             ),
         );
-        shared.execaborterr = try Object.create(
-            arena,
+        shared.execaborterr = Object.create(
             .string,
-            try sds.new(
-                arena,
+            sds.new(
                 "-EXECABORT Transaction discarded because of previous errors.\r\n",
             ),
         );
-        shared.busykeyerr = try Object.create(
-            arena,
+        shared.busykeyerr = Object.create(
             .string,
-            try sds.new(arena, "-BUSYKEY Target key name already exists.\r\n"),
+            sds.new("-BUSYKEY Target key name already exists.\r\n"),
         );
-        shared.space = try Object.create(
-            arena,
+        shared.space = Object.create(
             .string,
-            try sds.new(arena, " "),
+            sds.new(" "),
         );
-        shared.colon = try Object.create(
-            arena,
+        shared.colon = Object.create(
             .string,
-            try sds.new(arena, ":"),
+            sds.new(":"),
         );
-        shared.plus = try Object.create(
-            arena,
+        shared.plus = Object.create(
             .string,
-            try sds.new(arena, "+"),
+            sds.new("+"),
         );
 
         for (0..OBJ_SHARED_INTEGERS) |i| {
-            var obj = try Object.createInt(arena, @intCast(i));
+            var obj = Object.createInt(@intCast(i));
             shared.integers[i] = obj.makeShared();
         }
 
-        shared.minstring = try sds.new(arena, "minstring");
-        shared.maxstring = try sds.new(arena, "maxstring");
+        shared.minstring = sds.new("minstring");
+        shared.maxstring = sds.new("maxstring");
     }
 
     fn destroy() void {
-        shared.arena.deinit();
+        shared.crlf.decrRefCount();
+        shared.ok.decrRefCount();
+        shared.err.decrRefCount();
+        shared.emptybulk.decrRefCount();
+        shared.czero.decrRefCount();
+        shared.cone.decrRefCount();
+        shared.cnegone.decrRefCount();
+        shared.nullbulk.decrRefCount();
+        shared.nullmultibulk.decrRefCount();
+        shared.emptymultibulk.decrRefCount();
+        shared.pong.decrRefCount();
+        shared.queued.decrRefCount();
+        shared.emptyscan.decrRefCount();
+        shared.wrongtypeerr.decrRefCount();
+        shared.nokeyerr.decrRefCount();
+        shared.syntaxerr.decrRefCount();
+        shared.sameobjecterr.decrRefCount();
+        shared.outofrangeerr.decrRefCount();
+        shared.noautherr.decrRefCount();
+        shared.oomerr.decrRefCount();
+        shared.execaborterr.decrRefCount();
+        shared.busykeyerr.decrRefCount();
+        shared.space.decrRefCount();
+        shared.colon.decrRefCount();
+        shared.plus.decrRefCount();
+        for (shared.integers) |obj| {
+            obj.free();
+        }
+        sds.free(shared.minstring);
+        sds.free(shared.maxstring);
         shared = undefined;
     }
 };
@@ -348,7 +342,6 @@ pub var instance: Server = undefined;
 pub const ClientList = List(*Client, *Client);
 
 const Server = @This();
-allocator: Allocator,
 // General
 configfile: ?sds.String, // Absolute config file path.
 el: *ae.EventLoop,
@@ -397,20 +390,15 @@ unixtime: atomic.Value(i64), // Unix time sampled every cron cycle.
 mstime: i64, // 'unixtime' in milliseconds.
 ustime: i64, // 'unixtime' in microseconds.
 
-pub fn create(
-    allocator: Allocator,
-    configfile: ?sds.String,
-    options: ?sds.String,
-) !void {
-    server.allocator = allocator;
+pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
     server.config_hz = CONFIG_DEFAULT_HZ;
     server.arch_bits = @bitSizeOf(usize);
     server.requirepass = null;
     errdefer if (server.requirepass) |passwd| allocator.free(passwd);
-    server.commands = try Dict.create(allocator, commandTableDictVTable, null);
-    errdefer server.commands.destroy(allocator);
-    try server.populateCommandTable();
+    server.commands = Dict.create(commandTableDictVTable, null);
+    errdefer server.commands.destroy();
+    server.populateCommandTable();
     server.shutdown_asap = false;
     server.dynamic_hz = CONFIG_DEFAULT_DYNAMIC_HZ;
     server.port = CONFIG_DEFAULT_SERVER_PORT;
@@ -452,31 +440,30 @@ pub fn create(
 
     setupSignalHandlers();
 
-    server.clients = try ClientList.create(allocator, &.{});
-    errdefer server.clients.release(allocator);
+    server.clients = ClientList.create(&.{});
+    errdefer server.clients.release();
     server.clients_index = Rax.new();
-    server.clients_pending_write = try ClientList.create(allocator, &.{});
-    errdefer server.clients_pending_write.release(allocator);
-    server.clients_to_close = try ClientList.create(allocator, &.{});
-    errdefer server.clients_to_close.release(allocator);
+    server.clients_pending_write = ClientList.create(&.{});
+    errdefer server.clients_pending_write.release();
+    server.clients_to_close = ClientList.create(&.{});
+    errdefer server.clients_to_close.release();
     server.next_client_id = .init(1);
 
-    try SharedObjects.create(allocator);
+    SharedObjects.create();
     errdefer SharedObjects.destroy();
 
     try server.adjustOpenFilesLimit();
     server.el = try ae.EventLoop.create(
-        allocator,
         @intCast(server.maxclients + CONFIG_FDSET_INCR),
     );
     errdefer server.el.destroy();
 
-    server.db = try allocator.alloc(Database, server.dbnum);
+    server.db = allocator.alloc(Database, server.dbnum);
     errdefer allocator.free(server.db);
     var dbi: usize = 0;
     errdefer for (0..dbi + 1) |j| server.db[j].destroy();
     for (0..server.dbnum) |i| {
-        server.db[i] = try Database.create(allocator, i);
+        server.db[i] = Database.create(i);
         dbi = i;
     }
 
@@ -699,10 +686,7 @@ pub fn up(self: *Server) !void {
         serverCron,
         null,
         null,
-    ) catch |err| {
-        log.err("Can't create event loop timers: {}", .{err});
-        return err;
-    };
+    );
 
     self.el.setBeforeSleepProc(beforeSleep);
 
@@ -712,8 +696,7 @@ pub fn up(self: *Server) !void {
 /// This function gets called every time Redis is entering the
 /// main loop of the event driven library, that is, before to sleep
 /// for ready file descriptors.
-fn beforeSleep(allocator: Allocator, el: *ae.EventLoop) !void {
-    _ = allocator;
+fn beforeSleep(el: *ae.EventLoop) !void {
     _ = el;
     // Handle write with pending output buffers.
     _ = try networking.handleClientsWithPendingWrites();
@@ -721,12 +704,10 @@ fn beforeSleep(allocator: Allocator, el: *ae.EventLoop) !void {
 
 /// This is our timer interrupt, called server.hz times per second.
 fn serverCron(
-    allocator: Allocator,
     el: *ae.EventLoop,
     id: i64,
     clicent_data: ae.ClientData,
 ) !i32 {
-    _ = allocator;
     _ = el;
     _ = id;
     _ = clicent_data;
@@ -774,10 +755,10 @@ fn serverCron(
     }
 
     // We need to do a few operations on clients asynchronously.
-    try clientsCron();
+    clientsCron();
 
     // Handle background operations on Redis databases.
-    try databaseCron();
+    databaseCron();
 
     // Close clients that need to be closed asynchronous.
     networking.freeClientsInAsyncFreeQueue();
@@ -824,7 +805,7 @@ fn closeListeningSockets(unlink_unix_socket: bool) void {
 /// very fast: sometimes Redis has tens of hundreds of connected clients, and the
 /// default server.hz value is 10, so sometimes here we need to process thousands
 /// of clients per second, turning this function into a source of latency.
-fn clientsCron() Allocator.Error!void {
+fn clientsCron() void {
     // Try to process at least numclients/server.hz of clients
     // per call. Since normally (if there are no big latency events) this
     // function is called server.hz times per second, in the average case we
@@ -855,7 +836,7 @@ fn clientsCron() Allocator.Error!void {
         // The protocol is that they return true if the client was
         // terminated.
         if (clientsCronHandleTimeout(cli, now_ms)) continue;
-        if (try clientsCronResizeQueryBuffer(cli)) continue;
+        if (clientsCronResizeQueryBuffer(cli)) continue;
     }
 }
 
@@ -876,7 +857,7 @@ fn clientsCronHandleTimeout(cli: *Client, now_ms: i64) bool {
 /// free space not used, this function reclaims space if needed.
 ///
 /// The function always returns false as it never terminates the client.
-fn clientsCronResizeQueryBuffer(cli: *Client) Allocator.Error!bool {
+fn clientsCronResizeQueryBuffer(cli: *Client) bool {
     const querybuf_size = sds.getAlloc(cli.querybuf);
     const idletime = server.unixtime.get() - cli.lastinteraction;
 
@@ -889,8 +870,7 @@ fn clientsCronResizeQueryBuffer(cli: *Client) Allocator.Error!bool {
         // Only resize the query buffer if it is actually wasting
         // at least a few kbytes.
         if (sds.getAvail(cli.querybuf) > 4 * 1024) {
-            cli.querybuf = try sds.removeAvailSpace(
-                cli.allocator,
+            cli.querybuf = sds.removeAvailSpace(
                 cli.querybuf,
             );
         }
@@ -906,7 +886,7 @@ fn clientsCronResizeQueryBuffer(cli: *Client) Allocator.Error!bool {
 /// This function handles 'background' operations we are required to do
 /// incrementally in Redis databases, such as active key expiring, resizing,
 /// rehashing.
-fn databaseCron() Allocator.Error!void {
+fn databaseCron() void {
     // TODO:
 }
 
@@ -918,20 +898,21 @@ fn databaseCron() Allocator.Error!void {
 /// If true is returned the client is still alive and valid and
 /// other operations can be performed by the caller. Otherwise
 /// if false is returned the client was destroyed (i.e. after QUIT).
-pub fn processCommand(self: *Server, cli: *Client) !bool {
+pub fn processCommand(self: *Server, cli: *Client) bool {
     const cmd: sds.String = sds.cast(cli.argv.?[0].data.ptr);
     if (std.ascii.eqlIgnoreCase(sds.asBytes(cmd), "quit")) {
-        try cli.addReply(shared.ok);
+        cli.addReply(shared.ok);
         cli.flags |= CLIENT_CLOSE_AFTER_REPLY;
         return false;
     }
 
     // Now lookup the command and check ASAP about trivial error conditions
     // such as wrong arity, bad command name and so forth.
+    sds.toLower(cmd);
     cli.cmd = self.lookupCommand(cmd);
     if (cli.cmd == null) {
-        var args = try sds.empty(self.allocator);
-        defer sds.free(self.allocator, args);
+        var args = sds.empty();
+        defer sds.free(args);
         var i: usize = 1;
         while (i < cli.argc and sds.getLen(args) < 128) : (i += 1) {
             const arg: sds.String = @ptrCast(cli.argv.?[i].data.ptr);
@@ -939,14 +920,13 @@ pub fn processCommand(self: *Server, cli: *Client) !bool {
             if (remaining > sds.getLen(arg)) {
                 remaining = sds.getLen(arg);
             }
-            args = try sds.catPrintf(
-                self.allocator,
+            args = sds.catPrintf(
                 args,
                 "`{s}`, ",
                 .{arg[0..remaining]},
             );
         }
-        try cli.addReplyErrFormat(
+        cli.addReplyErrFormat(
             "unknown command: `{s}`, with args beginning with: {s}",
             .{
                 sds.asBytes(cmd),
@@ -957,7 +937,7 @@ pub fn processCommand(self: *Server, cli: *Client) !bool {
     }
     const arity = cli.cmd.?.arity;
     if ((arity > 0 and arity != cli.argc) or (cli.argc < -arity)) {
-        try cli.addReplyErrFormat(
+        cli.addReplyErrFormat(
             "wrong number of arguments for '{s}' command",
             .{cli.cmd.?.name},
         );
@@ -968,52 +948,43 @@ pub fn processCommand(self: *Server, cli: *Client) !bool {
     if (server.requirepass != null and !cli.authenticated and
         cli.cmd.?.proc != authCommand)
     {
-        try cli.addReply(shared.noautherr);
+        cli.addReply(shared.noautherr);
         return true;
     }
 
-    try self.call(cli, 0);
+    self.call(cli, 0);
 
     return true;
 }
 
 pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
-    var buffer: [1024]u8 = undefined;
-    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
-
-    const lower = sds.dupe(fixed.allocator(), cmd) catch unreachable;
-    sds.toLower(lower);
-
-    const command = self.commands.fetchValue(self.allocator, lower);
+    const command = self.commands.fetchValue(cmd);
     if (command) |ptr| {
         return @ptrCast(@alignCast(ptr));
     }
     return null;
 }
 
-fn populateCommandTable(self: *Server) Allocator.Error!void {
+fn populateCommandTable(self: *Server) void {
     for (0..commandTables.len) |i| {
         const command = &commandTables[i];
-        const ok = try self.commands.add(
-            self.allocator,
-            try sds.new(self.allocator, command.name),
+        const ok = self.commands.add(
+            sds.new(command.name),
             @constCast(command),
         );
         std.debug.assert(ok);
     }
 }
 
-pub fn call(self: *Server, cli: *Client, flags: i32) !void {
+pub fn call(self: *Server, cli: *Client, flags: i32) void {
     _ = flags;
     self.fixed_time_expire +%= 1;
     self.updateCachedTime();
-    try cli.cmd.?.proc(cli);
+    cli.cmd.?.proc(cli);
     self.fixed_time_expire -%= 1;
 }
 
 pub fn destroy() void {
-    var allocator = server.allocator;
-
     server.el.destroy();
 
     if (server.requirepass) |passwd| {
@@ -1029,17 +1000,17 @@ pub fn destroy() void {
     }
     allocator.free(server.db);
 
-    server.commands.destroy(allocator);
+    server.commands.destroy();
 
     var clients_iter = server.clients.iterator(.forward);
     while (clients_iter.next()) |node| {
         var cli = node.value;
         cli.free();
     }
-    server.clients.release(allocator);
+    server.clients.release();
     server.clients_index.free();
-    server.clients_pending_write.release(allocator);
-    server.clients_to_close.release(allocator);
+    server.clients_pending_write.release();
+    server.clients_to_close.release();
 
     for (server.ipfd[0..server.ipfd_count]) |fd| {
         posix.close(fd);
@@ -1063,21 +1034,21 @@ fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
     return sds.cmp(sds.cast(key1), sds.cast(key2)) == .eq;
 }
 
-fn dictSdsFree(_: Dict.PrivData, allocator: Allocator, key: Dict.Key) void {
-    sds.free(allocator, sds.cast(key));
+fn dictSdsFree(_: Dict.PrivData, key: Dict.Key) void {
+    sds.free(sds.cast(key));
 }
 
-fn dictObjectFree(_: Dict.PrivData, allocator: Allocator, val: Dict.Value) void {
+fn dictObjectFree(_: Dict.PrivData, val: Dict.Value) void {
     // Lazy freeing will set value to null.
     if (val) |ptr| {
         const obj: *Object = @ptrCast(@alignCast(ptr));
-        obj.decrRefCount(allocator);
+        obj.decrRefCount();
     }
 }
 
-fn authCommand(cli: *Client) Allocator.Error!void {
+fn authCommand(cli: *Client) void {
     if (server.requirepass == null) {
-        try cli.addReplyErrFormat(
+        cli.addReplyErrFormat(
             "Client sent AUTH, but no password is set",
             .{},
         );
@@ -1090,17 +1061,17 @@ fn authCommand(cli: *Client) Allocator.Error!void {
         server.requirepass.?,
     )) {
         cli.authenticated = true;
-        try cli.addReply(shared.ok);
+        cli.addReply(shared.ok);
         return;
     }
     cli.authenticated = false;
-    try cli.addReplyErr("invalid password");
+    cli.addReplyErr("invalid password");
 }
 
-fn pingCommand(cli: *Client) Allocator.Error!void {
+fn pingCommand(cli: *Client) void {
     // The command takes zero or one arguments.
     if (cli.argc > 2) {
-        try cli.addReplyErrFormat(
+        cli.addReplyErrFormat(
             "wrong number of arguments for '{s}' command",
             .{cli.cmd.?.name},
         );
@@ -1108,32 +1079,19 @@ fn pingCommand(cli: *Client) Allocator.Error!void {
     }
 
     if (cli.argc == 1) {
-        try cli.addReply(shared.pong);
+        cli.addReply(shared.pong);
     } else {
-        try cli.addReply(cli.argv.?[1]);
+        cli.addReply(cli.argv.?[1]);
     }
 }
 
 const selectCommand = dbc.selectCommand;
 const setCommand = stringc.setCommand;
 
-test {
-    _ = @import("sds.zig");
-    _ = @import("adlist.zig");
-    _ = @import("Dict.zig");
-    _ = @import("IntSet.zig");
-    _ = @import("ZipList.zig");
-    _ = @import("QuickList.zig");
-    _ = @import("Object.zig");
-    _ = @import("util.zig");
-    _ = @import("config.zig");
-    _ = @import("t_zset.zig");
-}
-
 const server = &instance;
 const Object = @import("Object.zig");
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
 const Dict = @import("Dict.zig");
 const random = @import("random.zig");

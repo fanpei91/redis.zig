@@ -60,13 +60,10 @@ pub fn digits10(v: u64) u32 {
 /// Given the filename, return the absolute path as an SDS string, or NULL
 /// if it fails for some reason. Note that "filename" may be an absolute path
 /// already, this will be detected and handled correctly.
-pub fn getAbsolutePath(
-    allocator: Allocator,
-    filename: []const u8,
-) !sds.String {
+pub fn getAbsolutePath(filename: []const u8) !sds.String {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const realpath = try std.fs.realpath(filename, &buffer);
-    return try sds.new(allocator, realpath);
+    return sds.new(realpath);
 }
 
 /// Return true if strings are the same, false if they are not.
@@ -121,4 +118,4 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
 const sds = @import("sds.zig");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");

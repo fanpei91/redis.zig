@@ -1,25 +1,19 @@
 pub const Database = struct {
-    allocator: Allocator,
     id: usize, // Database ID
     dict: *Dict, // The keyspace for this DB
     expires: *Dict, // Timeout of keys with a timeout set
 
-    pub fn create(allocator: Allocator, id: usize) Allocator.Error!Database {
+    pub fn create(id: usize) Database {
         var db: Database = undefined;
-        db.allocator = allocator;
         db.id = id;
-        db.dict = try Dict.create(
-            allocator,
+        db.dict = Dict.create(
             Server.dbDictVTable,
             null,
         );
-        errdefer db.dict.destroy(allocator);
-        db.expires = try Dict.create(
-            allocator,
+        db.expires = Dict.create(
             Server.expireDictVTable,
             null,
         );
-        errdefer db.expires.destroy(allocator);
         return db;
     }
 
@@ -38,7 +32,7 @@ pub const Database = struct {
         key: *Object,
         flags: u32,
     ) ?*Object {
-        const entry = self.dict.find(self.allocator, key.data.ptr) orelse {
+        const entry = self.dict.find(key.data.ptr) orelse {
             return null;
         };
         const val: *Object = @ptrCast(@alignCast(entry.v.val.?));
@@ -77,9 +71,9 @@ pub const Database = struct {
     /// from the DB.
     fn syncDelete(self: *Database, key: *Object) bool {
         if (self.expires.size() > 0) {
-            _ = self.expires.delete(self.allocator, key.data.ptr);
+            _ = self.expires.delete(key.data.ptr);
         }
-        if (self.dict.delete(self.allocator, key.data.ptr)) {
+        if (self.dict.delete(key.data.ptr)) {
             return true;
         }
         return false;
@@ -120,7 +114,6 @@ pub const Database = struct {
             return -1;
         }
         const entry = self.expires.find(
-            self.allocator,
             key.data.ptr,
         ) orelse {
             return -1;
@@ -128,7 +121,6 @@ pub const Database = struct {
         // The entry was found in the expire dict, this means it should also
         // be present in the main dict (safety check).
         std.debug.assert(self.dict.find(
-            self.allocator,
             key.data.ptr,
         ) != null);
         return entry.v.s64;
@@ -142,11 +134,11 @@ pub const Database = struct {
         self: *Database,
         key: *Object,
         val: *Object,
-    ) Allocator.Error!void {
+    ) void {
         if (self.lookupKeyWrite(key) == null) {
-            try self.add(key, val);
+            self.add(key, val);
         } else {
-            try self.overwrite(key, val);
+            self.overwrite(key, val);
         }
         val.incrRefCount();
         _ = self.removeExpire(key);
@@ -160,10 +152,9 @@ pub const Database = struct {
         self: *Database,
         key: *Object,
         val: *Object,
-    ) Allocator.Error!void {
-        const copy = try sds.dupe(self.allocator, sds.cast(key.data.ptr));
-        errdefer sds.free(self.allocator, copy);
-        const ok = try self.dict.add(self.allocator, copy, val);
+    ) void {
+        const copy = sds.dupe(sds.cast(key.data.ptr));
+        const ok = self.dict.add(copy, val);
         std.debug.assert(ok);
     }
 
@@ -176,16 +167,16 @@ pub const Database = struct {
         self: *Database,
         key: *Object,
         val: *Object,
-    ) Allocator.Error!void {
-        const entry = self.dict.find(self.allocator, key.data.ptr);
+    ) void {
+        const entry = self.dict.find(key.data.ptr);
         var auxentry = entry.?.*;
         std.debug.assert(entry != null);
         const old: *Object = @ptrCast(@alignCast(entry.?.v.val.?));
         if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
             val.lru = old.lru;
         }
-        try self.dict.setVal(self.allocator, entry.?, val);
-        self.dict.freeVal(self.allocator, &auxentry);
+        self.dict.setVal(entry.?, val);
+        self.dict.freeVal(&auxentry);
     }
 
     pub fn removeExpire(
@@ -194,8 +185,8 @@ pub const Database = struct {
     ) bool {
         // An expire may only be removed if there is a corresponding entry in
         // the main dict. Otherwise, the key will never be freed.
-        std.debug.assert(self.dict.find(self.allocator, key.data.ptr) != null);
-        return self.expires.delete(self.allocator, key.data.ptr);
+        std.debug.assert(self.dict.find(key.data.ptr) != null);
+        return self.expires.delete(key.data.ptr);
     }
 
     /// Set an expire to the specified key. The 'when' parameter is the absolute
@@ -206,21 +197,20 @@ pub const Database = struct {
         cli: *Client,
         key: *Object,
         when: i64,
-    ) Allocator.Error!void {
+    ) void {
         _ = cli;
-        const de = self.dict.find(self.allocator, key.data.ptr);
+        const de = self.dict.find(key.data.ptr);
         std.debug.assert(de != null);
         // Reuse the sds from the main dict in the expire dict
-        const ee = try self.expires.addOrFind(
-            self.allocator,
+        const ee = self.expires.addOrFind(
             de.?.key,
         );
         ee.v.s64 = when;
     }
 
     pub fn destroy(self: *Database) void {
-        self.dict.destroy(self.allocator);
-        self.expires.destroy(self.allocator);
+        self.dict.destroy();
+        self.expires.destroy();
         self.* = undefined;
     }
 };
@@ -233,10 +223,10 @@ pub fn select(cli: *Client, id: i64) bool {
     return true;
 }
 
-pub fn selectCommand(cli: *Client) Allocator.Error!void {
+pub fn selectCommand(cli: *Client) void {
     var id: i64 = undefined;
     const obj = cli.argv.?[1];
-    const ok = try obj.getLongLongOrReply(
+    const ok = obj.getLongLongOrReply(
         cli,
         &id,
         "invalid DB index",
@@ -244,16 +234,16 @@ pub fn selectCommand(cli: *Client) Allocator.Error!void {
     if (!ok) return;
 
     if (!select(cli, id)) {
-        try cli.addReplyErr("DB index is out of range");
+        cli.addReplyErr("DB index is out of range");
         return;
     }
-    try cli.addReply(Server.shared.ok);
+    cli.addReply(Server.shared.ok);
 }
 
 const std = @import("std");
 const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const server = &Server.instance;
 const Dict = @import("Dict.zig");
 const Object = @import("Object.zig");

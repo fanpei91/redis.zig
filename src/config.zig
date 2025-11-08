@@ -39,9 +39,8 @@ pub fn load(
     filename: ?sds.String,
     options: ?sds.String,
 ) !void {
-    const allocator = server.allocator;
-    var config = try sds.empty(allocator);
-    defer sds.free(allocator, config);
+    var config = sds.empty();
+    defer sds.free(config);
     var buf: [Server.CONFIG_MAX_LINE]u8 = undefined;
 
     if (filename) |f| {
@@ -59,13 +58,13 @@ pub fn load(
         while (true) {
             const nread = try fp.read(&buf);
             if (nread == 0) break;
-            config = try sds.cat(allocator, config, buf[0..nread]);
+            config = sds.cat(config, buf[0..nread]);
         }
     }
 
     if (options) |o| {
-        config = try sds.cat(allocator, config, "\n");
-        config = try sds.cat(allocator, config, sds.asBytes(o));
+        config = sds.cat(config, "\n");
+        config = sds.cat(config, sds.asBytes(o));
     }
 
     return try loadFromString(server, config);
@@ -74,10 +73,9 @@ pub fn load(
 fn loadFromString(
     server: *Server,
     config: sds.String,
-) (Allocator.Error || error{InvalidConfig})!void {
-    const allocator = server.allocator;
-    const lines = try sds.split(allocator, sds.asBytes(config), "\n");
-    defer sds.freeSplitRes(allocator, lines);
+) (error{InvalidConfig})!void {
+    const lines = sds.split(sds.asBytes(config), "\n");
+    defer sds.freeSplitRes(lines);
     var err: ?[]const u8 = null;
     var i: usize = 0;
     var linenum: usize = 0;
@@ -93,11 +91,11 @@ fn loadFromString(
             if (bytes.len == 0 or bytes[0] == '#') continue;
 
             // Split into arguments
-            const argv = try sds.splitArgs(allocator, bytes) orelse {
+            const argv = sds.splitArgs(bytes) orelse {
                 err = "Unbalanced quotes in configuration line";
                 break :biz;
             };
-            defer sds.freeSplitRes(allocator, argv);
+            defer sds.freeSplitRes(argv);
             const argc = argv.len;
 
             // Skip this line if the resulting command vector is empty.
@@ -160,7 +158,7 @@ fn loadFromString(
                     if (pass.len == 0) {
                         break :pwd null;
                     } else {
-                        break :pwd try allocator.dupe(u8, pass);
+                        break :pwd allocator.dupe(u8, pass);
                     }
                 };
                 continue;
@@ -173,7 +171,7 @@ fn loadFromString(
                     break :biz;
                 }
                 for (0..addresses) |j| {
-                    server.bindaddr[j] = try allocator.dupe(
+                    server.bindaddr[j] = allocator.dupe(
                         u8,
                         sds.asBytes(argv[j + 1]),
                     );
@@ -183,7 +181,7 @@ fn loadFromString(
             }
 
             if (eql(option, "unixsocket") and argc == 2) {
-                server.unixsocket = try allocator.dupe(
+                server.unixsocket = allocator.dupe(
                     u8,
                     sds.asBytes(argv[1]),
                 );
@@ -442,7 +440,7 @@ test memtosize {
 }
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
 const Server = @import("Server.zig");
 const log = std.log.scoped(.config);
