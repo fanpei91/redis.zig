@@ -484,6 +484,46 @@ pub const Client = struct {
         self.cmd = null;
     }
 
+    /// Add a Redis Object as a bulk reply
+    pub fn addReplyBulk(self: *Client, obj: *Object) void {
+        self.addReplyBulkLen(obj);
+        self.addReply(obj);
+        self.addReply(Server.shared.crlf);
+    }
+
+    /// Create the length prefix of a bulk reply, example: $2234
+    fn addReplyBulkLen(self: *Client, obj: *Object) void {
+        var len: usize = 0;
+        if (obj.sdsEncoded()) {
+            len = sds.getLen(sds.cast(obj.data.ptr));
+        } else {
+            len = util.sdigits10(obj.data.int);
+        }
+        if (len < Server.shared.bulkhdr.len) {
+            self.addReply(Server.shared.bulkhdr[len]);
+        } else {
+            self.addReplyLongLongWithPrefix(@intCast(len), '$');
+        }
+    }
+
+    /// Add a long long as integer reply or bulk len / multi bulk count.
+    /// Basically this is used to output <prefix><long long><crlf>.
+    fn addReplyLongLongWithPrefix(self: *Client, len: isize, prefix: u8) void {
+        if (prefix == '*' and len < Server.shared.mbulkhdr.len and len > 0) {
+            self.addReply(Server.shared.mbulkhdr[@intCast(len)]);
+            return;
+        }
+        if (prefix == '$' and len < Server.shared.bulkhdr.len and len > 0) {
+            self.addReply(Server.shared.bulkhdr[@intCast(len)]);
+            return;
+        }
+        var buf: [128]u8 = undefined;
+        const bytes = util.ll2string(buf[0..], len);
+        buf[bytes.len] = '\r';
+        buf[bytes.len + 1] = '\n';
+        self.addReplyString(buf[0 .. bytes.len + 2]);
+    }
+
     /// Add the object 'obj' string representation to the client output buffer.
     pub fn addReply(self: *Client, obj: *Object) void {
         var buf: [20]u8 = undefined;

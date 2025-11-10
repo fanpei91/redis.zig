@@ -38,7 +38,7 @@ pub const Zset = struct {
     pub fn create() *Zset {
         const z = allocator.create(Zset);
         z.dict = Dict.create(
-            Server.zsetDictVtable,
+            Server.zsetDictVTable,
             null,
         );
         z.zsl = SkipList.create();

@@ -7,8 +7,8 @@ pub fn main() void {
     random.seed(null);
     Dict.hashSeed(null);
 
-    const argv = try std.process.argsAlloc(allocator.allocator());
-    defer std.process.argsFree(allocator.allocator(), argv);
+    const argv = try std.process.argsAlloc(allocator.child);
+    defer std.process.argsFree(allocator.child, argv);
 
     var options: sds.String = sds.empty();
     defer sds.free(options);

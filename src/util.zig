@@ -36,7 +36,7 @@ pub fn sdigits10(v: i64) u32 {
 }
 
 /// Return the number of digits of 'v' when converted to string in radix 10.
-// See ll2string() for more information.
+/// See ll2string() for more information.
 pub fn digits10(v: u64) u32 {
     if (v < 10) return 1;
     if (v < 100) return 2;

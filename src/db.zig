@@ -27,6 +27,9 @@ pub const Database = struct {
         return self.lookupKey(key, Server.LOOKUP_NONE);
     }
 
+    /// Low level key lookup API, not actually called directly from commands
+    /// implementations that should instead rely on lookupKeyRead(),
+    /// lookupKeyWrite() and lookupKeyReadWithFlags().
     fn lookupKey(
         self: *Database,
         key: *Object,
@@ -64,6 +67,9 @@ pub const Database = struct {
     /// otherwise the function returns true if the key is expired.
     fn expireIfNeeded(self: *Database, key: *Object) bool {
         if (!self.keyIsExpired(key)) return false;
+        if (server.lazyfree_lazy_expire) {
+            return lazyfree.asyncDelete(self, key);
+        }
         return self.syncDelete(key);
     }
 
@@ -205,7 +211,57 @@ pub const Database = struct {
         const ee = self.expires.addOrFind(
             de.?.key,
         );
-        ee.v.s64 = when;
+        ee.v = .{ .s64 = when };
+    }
+
+    pub fn lookupKeyReadOrReply(
+        self: *Database,
+        cli: *Client,
+        key: *Object,
+        reply: *Object,
+    ) ?*Object {
+        const obj = self.lookupKeyRead(key) orelse {
+            cli.addReply(reply);
+            return null;
+        };
+        return obj;
+    }
+
+    /// Like lookupKeyReadWithFlags(), but does not use any flag, which is the
+    /// common case.
+    pub fn lookupKeyRead(
+        self: *Database,
+        key: *Object,
+    ) ?*Object {
+        return self.lookupKeyReadWithFlags(
+            key,
+            Server.LOOKUP_NONE,
+        );
+    }
+
+    /// Lookup a key for read operations, or return null if the key is not found
+    /// in the specified DB.
+    ///
+    /// As a side effect of calling this function:
+    /// 1. A key gets expired if it reached it's TTL.
+    /// 2. The key last access time is updated.
+    ///
+    /// This API should not be used when we write to the key after obtaining
+    /// the object linked to the key, but only for read only operations.
+    ///
+    /// Flags change the behavior of this command:
+    ///
+    ///  LOOKUP_NONE (or zero): no special flags are passed.
+    ///  LOOKUP_NOTOUCH: don't alter the last access time of the key.
+    pub fn lookupKeyReadWithFlags(
+        self: *Database,
+        key: *Object,
+        flags: u32,
+    ) ?*Object {
+        if (self.expireIfNeeded(key)) {
+            return null;
+        }
+        return self.lookupKey(key, flags);
     }
 
     pub fn destroy(self: *Database) void {
@@ -249,3 +305,5 @@ const Dict = @import("Dict.zig");
 const Object = @import("Object.zig");
 const evict = @import("evict.zig");
 const sds = @import("sds.zig");
+const log = std.log.scoped(.db);
+const lazyfree = @import("lazyfree.zig");

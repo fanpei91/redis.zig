@@ -17,12 +17,14 @@ pub const CONFIG_MIN_RESERVED_FDS = 32;
 pub const CONFIG_DEFAULT_UNIX_SOCKET_PERM = 0;
 pub const CONFIG_BINDADDR_MAX = 16;
 pub const OBJ_SHARED_INTEGERS = 10000;
+pub const OBJ_SHARED_BULKHDR_LEN = 32;
 pub const CONFIG_MAX_LINE = 1024;
 pub const CONFIG_DEFAULT_PROTECTED_MODE = true;
 pub const CONFIG_DEFAULT_TCP_KEEPALIVE = 300;
 pub const CONFIG_DEFAULT_PROTO_MAX_BULK_LEN = (512 * 1024 * 1024); // Bulk request max size
 pub const CONFIG_AUTHPASS_MAX_LEN = 512;
 pub const NET_MAX_WRITES_PER_EVENT = (1024 * 64);
+pub const CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE = false;
 
 // Protocol and I/O related defines
 pub const PROTO_MAX_QUERYBUF_LEN = 1024 * 1024 * 1024; // 1GB max query buffer.
@@ -100,6 +102,7 @@ const commandTables = [_]Command{
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
     .{ .name = "select", .proc = selectCommand, .arity = 2 },
     .{ .name = "set", .proc = setCommand, .arity = -3 },
+    .{ .name = "get", .proc = getCommand, .arity = 2 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -131,6 +134,8 @@ const SharedObjects = struct {
     colon: *Object,
     plus: *Object,
     integers: [OBJ_SHARED_INTEGERS]*Object,
+    bulkhdr: [OBJ_SHARED_BULKHDR_LEN]*Object, // $<value>\r\n
+    mbulkhdr: [OBJ_SHARED_BULKHDR_LEN]*Object, // *<value>\r\n
     minstring: sds.String,
     maxstring: sds.String,
 
@@ -243,12 +248,20 @@ const SharedObjects = struct {
             .string,
             sds.new("+"),
         );
-
         for (0..OBJ_SHARED_INTEGERS) |i| {
             var obj = Object.createInt(@intCast(i));
             shared.integers[i] = obj.makeShared();
         }
-
+        for (0..OBJ_SHARED_BULKHDR_LEN) |i| {
+            shared.bulkhdr[i] = Object.create(
+                .string,
+                sds.catPrintf(sds.empty(), "${}\r\n", .{i}),
+            );
+            shared.mbulkhdr[i] = Object.create(
+                .string,
+                sds.catPrintf(sds.empty(), "*{}\r\n", .{i}),
+            );
+        }
         shared.minstring = sds.new("minstring");
         shared.maxstring = sds.new("maxstring");
     }
@@ -279,9 +292,9 @@ const SharedObjects = struct {
         shared.space.decrRefCount();
         shared.colon.decrRefCount();
         shared.plus.decrRefCount();
-        for (shared.integers) |obj| {
-            obj.free();
-        }
+        for (shared.integers) |obj| obj.free();
+        for (shared.bulkhdr) |obj| obj.decrRefCount();
+        for (shared.mbulkhdr) |obj| obj.decrRefCount();
         sds.free(shared.minstring);
         sds.free(shared.maxstring);
         shared = undefined;
@@ -289,8 +302,8 @@ const SharedObjects = struct {
 };
 
 const commandTableDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
+    .hash = dictSdsCaseHash,
+    .eql = dictSdsCaseEql,
     .dupeKey = null,
     .dupeVal = null,
     .freeKey = dictSdsFree,
@@ -389,6 +402,8 @@ lfu_decay_time: i32, // LFU counter decay factor.
 unixtime: atomic.Value(i64), // Unix time sampled every cron cycle.
 mstime: i64, // 'unixtime' in milliseconds.
 ustime: i64, // 'unixtime' in microseconds.
+// Lazy free
+lazyfree_lazy_expire: bool,
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
@@ -434,6 +449,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.lruclock.store(evict.getLRUClock());
     server.unixtime = .init(0);
     server.updateCachedTime();
+    server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
 
     try config.load(server, configfile, options);
     server.hz = server.config_hz;
@@ -502,6 +518,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
         server.maxmemory = 3 * 1024 * 1024 * 1024; // 3GB
         server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
+
+    try bio.init();
 }
 
 /// This function will try to raise the max number of open files accordingly to
@@ -908,7 +926,6 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
 
     // Now lookup the command and check ASAP about trivial error conditions
     // such as wrong arity, bad command name and so forth.
-    sds.toLower(cmd);
     cli.cmd = self.lookupCommand(cmd);
     if (cli.cmd == null) {
         var args = sds.empty();
@@ -1022,7 +1039,10 @@ pub fn destroy() void {
     }
     if (server.sofd != -1) posix.close(server.sofd);
 
+    bio.deinit();
+
     SharedObjects.destroy();
+
     instance = undefined;
 }
 
@@ -1030,8 +1050,24 @@ fn dictSdsHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
     return Dict.genHash(sds.asBytes(sds.cast(key)));
 }
 
+fn dictSdsCaseHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
+    var stack_impl = std.heap.stackFallback(
+        1024,
+        allocator.child,
+    );
+    const stack_allocator = stack_impl.get();
+    const copy = sds.dupeAlloc(stack_allocator, sds.cast(key));
+    defer sds.freeAlloc(stack_allocator, copy);
+    sds.toLower(copy);
+    return Dict.genHash(sds.asBytes(copy));
+}
+
 fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
     return sds.cmp(sds.cast(key1), sds.cast(key2)) == .eq;
+}
+
+fn dictSdsCaseEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
+    return sds.caseCmp(sds.cast(key1), sds.cast(key2)) == .eq;
 }
 
 fn dictSdsFree(_: Dict.PrivData, key: Dict.Key) void {
@@ -1087,6 +1123,7 @@ fn pingCommand(cli: *Client) void {
 
 const selectCommand = dbc.selectCommand;
 const setCommand = stringc.setCommand;
+const getCommand = stringc.getCommand;
 
 const server = &instance;
 const Object = @import("Object.zig");
@@ -1113,3 +1150,4 @@ const c = @cImport({
 });
 const stringc = @import("t_string.zig");
 const dbc = @import("db.zig");
+const bio = @import("bio.zig");

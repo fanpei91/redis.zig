@@ -98,6 +98,18 @@ pub fn newLen(
     init: ?[*]const u8,
     initlen: usize,
 ) String {
+    return newLenAlloc(
+        allocator.child,
+        init,
+        initlen,
+    );
+}
+
+pub fn newLenAlloc(
+    alloc: Allocator,
+    init: ?[*]const u8,
+    initlen: usize,
+) String {
     // Empty strings are usually created in order to append. Use type 8
     // since type 5 is not good at this.
     var typ = reqType(initlen);
@@ -107,7 +119,7 @@ pub fn newLen(
 
     const hdr_len = hdrSize(typ);
     const mem_size = hdr_len + initlen;
-    const mem = allocator.alloc(u8, mem_size);
+    const mem = alloc.alloc(u8, mem_size) catch allocator.oom();
 
     const s: String = mem.ptr + hdr_len;
     setType(s, typ);
@@ -130,6 +142,11 @@ pub fn fromLonglong(
 
 pub fn dupe(s: String) String {
     return new(s[0..getLen(s)]);
+}
+
+pub fn dupeAlloc(alloc: Allocator, s: String) String {
+    const bytes = asBytes(s);
+    return newLenAlloc(alloc, bytes.ptr, bytes.len);
 }
 
 /// Modify an sds string in-place to make it empty (zero length).
@@ -213,7 +230,7 @@ pub fn catPrintf(
     const buf = std.fmt.bufPrint(&static_buf, fmt, args) catch {
         @branchHint(.unlikely);
         const alloc_buf = std.fmt.allocPrint(
-            allocator.allocator(),
+            allocator.child,
             fmt,
             args,
         ) catch allocator.oom();
@@ -382,9 +399,9 @@ pub fn split(
 
     var it = std.mem.splitSequence(u8, str, sep);
     while (it.next()) |token| {
-        tokens.append(allocator.allocator(), new(token)) catch allocator.oom();
+        tokens.append(allocator.child, new(token)) catch allocator.oom();
     }
-    return tokens.toOwnedSlice(allocator.allocator()) catch allocator.oom();
+    return tokens.toOwnedSlice(allocator.child) catch allocator.oom();
 }
 
 /// Split a line into arguments, where every argument can be in the
@@ -491,14 +508,14 @@ pub fn splitArgs(
                     }
                 }
                 vector.append(
-                    allocator.allocator(),
+                    allocator.child,
                     current.?,
                 ) catch allocator.oom();
                 current = null;
                 continue;
             }
             return vector.toOwnedSlice(
-                allocator.allocator(),
+                allocator.child,
             ) catch allocator.oom();
         }
     }
@@ -510,7 +527,7 @@ pub fn splitArgs(
     for (vector.items) |item| {
         free(item);
     }
-    vector.deinit(allocator.allocator());
+    vector.deinit(allocator.child);
 
     return null;
 }
@@ -604,6 +621,23 @@ pub fn cmp(s1: String, s2: String) std.math.Order {
     return std.mem.order(u8, lhs, rhs);
 }
 
+pub fn caseCmp(s1: String, s2: String) std.math.Order {
+    const lhs = asBytes(s1);
+    const rhs = asBytes(s2);
+
+    const n = @min(lhs.len, rhs.len);
+    for (lhs[0..n], rhs[0..n]) |lhs_elem, rhs_elem| {
+        const l = std.ascii.toLower(lhs_elem);
+        const r = std.ascii.toLower(rhs_elem);
+        switch (std.math.order(l, r)) {
+            .eq => continue,
+            .lt => return .lt,
+            .gt => return .gt,
+        }
+    }
+    return std.math.order(lhs.len, rhs.len);
+}
+
 pub fn getLen(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
@@ -657,10 +691,14 @@ pub fn setLength(s: String, new_len: usize) void {
 }
 
 pub fn free(s: String) void {
+    freeAlloc(allocator.child, s);
+}
+
+pub fn freeAlloc(alloc: Allocator, s: String) void {
     const hdr_len = hdrSize(getType(s));
     const mem: [*]u8 = s - hdr_len;
     const mem_size = getAllocMemSize(s);
-    allocator.free(mem[0..mem_size]);
+    alloc.free(mem[0..mem_size]);
 }
 
 inline fn getType(s: String) u8 {
@@ -873,11 +911,11 @@ test mapChars {
 
 test join {
     var tokens = std.ArrayList([]const u8).empty;
-    defer tokens.deinit(allocator.allocator());
+    defer tokens.deinit(allocator.child);
 
-    tokens.append(allocator.allocator(), "hello") catch allocator.oom();
-    tokens.append(allocator.allocator(), "world") catch allocator.oom();
-    tokens.append(allocator.allocator(), "zig") catch allocator.oom();
+    tokens.append(allocator.child, "hello") catch allocator.oom();
+    tokens.append(allocator.child, "world") catch allocator.oom();
+    tokens.append(allocator.child, "zig") catch allocator.oom();
 
     const joined = join(tokens.items, "|");
     defer free(joined);
@@ -1066,6 +1104,36 @@ test "cmp.lt" {
     try expectEqual(std.math.Order.lt, cmp(s1, s2));
 }
 
+test "cmpCase.gt" {
+    const s1 = new("Foo");
+    defer free(s1);
+
+    const s2 = new("foA");
+    defer free(s2);
+
+    try expectEqual(std.math.Order.gt, caseCmp(s1, s2));
+}
+
+test "cmpCase.eq" {
+    const s1 = new("bar");
+    defer free(s1);
+
+    const s2 = new("Bar");
+    defer free(s2);
+
+    try expectEqual(std.math.Order.eq, caseCmp(s1, s2));
+}
+
+test "cmpCase.lt" {
+    const s1 = new("aar");
+    defer free(s1);
+
+    const s2 = new("Bar");
+    defer free(s2);
+
+    try expectEqual(std.math.Order.lt, caseCmp(s1, s2));
+}
+
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const builtin = @import("builtin");
@@ -1084,3 +1152,4 @@ const memcpy = memzig.memcpy;
 const memset = memzig.memset;
 const memmove = memzig.memmove;
 const util = @import("util.zig");
+const Allocator = std.mem.Allocator;

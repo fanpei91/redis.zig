@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) !void {
 
     // all test
     {
-        const mod = b.addModule("server", .{
+        const mod = b.addModule("main", .{
             .root_source_file = b.path("src/Server.zig"),
             .target = target,
             .optimize = optimize,

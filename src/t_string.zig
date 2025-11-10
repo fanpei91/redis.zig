@@ -43,6 +43,11 @@ pub fn setCommand(cli: *Client) void {
     set(cli, flags, key, val, expire, unit, null, null);
 }
 
+/// GET key
+pub fn getCommand(cli: *Client) void {
+    _ = get(cli);
+}
+
 const OBJ_SET_NO_FLAGS = 0;
 const OBJ_SET_NX = (1 << 0); // Set if key not exists.
 const OBJ_SET_XX = (1 << 1); // Set if key exists.
@@ -117,6 +122,23 @@ fn set(
         else
             Server.shared.ok,
     );
+}
+
+fn get(cli: *Client) bool {
+    const key = cli.argv.?[1];
+    const val = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return true;
+    };
+    if (val.type != .string) {
+        cli.addReply(Server.shared.wrongtypeerr);
+        return false;
+    }
+    cli.addReplyBulk(val);
+    return true;
 }
 
 const std = @import("std");

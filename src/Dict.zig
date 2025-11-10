@@ -40,13 +40,14 @@ pub const VTable = struct {
 };
 
 pub const Entry = struct {
-    key: Key,
-    v: union {
+    const UnionValue = union {
         val: Value,
         u64: u64,
         s64: i64,
         d: f64,
-    },
+    };
+    key: Key,
+    v: UnionValue,
     next: ?*Entry = null,
 
     fn destroy(
@@ -54,7 +55,7 @@ pub const Entry = struct {
         ctx: *Context,
     ) void {
         ctx.freeKey(self.key);
-        ctx.freeVal(self.v.val);
+        ctx.freeVal(self.v);
         allocator.destroy(self);
     }
 };
@@ -147,9 +148,9 @@ const Context = struct {
         }
     }
 
-    fn freeVal(self: *Context, val: Value) void {
+    fn freeVal(self: *Context, uv: Entry.UnionValue) void {
         if (self.vtable.freeVal) |free| {
-            free(self.priv_data, val);
+            free(self.priv_data, uv.val);
         }
     }
 };
@@ -379,7 +380,7 @@ pub fn getSome(self: *Dict, n: u32) []*Entry {
     }
 
     var items = std.ArrayList(*Entry).initCapacity(
-        allocator.allocator(),
+        allocator.child,
         count,
     ) catch allocator.oom();
 
@@ -414,7 +415,7 @@ pub fn getSome(self: *Dict, n: u32) []*Entry {
                 empty_visits = 0;
                 while (entry) |ent| {
                     items.append(
-                        allocator.allocator(),
+                        allocator.child,
                         ent,
                     ) catch allocator.oom();
                     entry = ent.next;
@@ -426,7 +427,7 @@ pub fn getSome(self: *Dict, n: u32) []*Entry {
         i = (i + 1) & max_sizemask; // Increment index by 1.
     }
 
-    return items.toOwnedSlice(allocator.allocator()) catch allocator.oom();
+    return items.toOwnedSlice(allocator.child) catch allocator.oom();
 }
 
 pub const scanEntryFunc = *const fn (priv_data: PrivData, e: *const Entry) void;
@@ -509,6 +510,8 @@ pub fn unlink(self: *Dict, key: Key) ?*Entry {
     return self.genericDelete(key, false);
 }
 
+/// You need to call this function to really free the entry after a call
+/// to unlink().
 pub fn freeUnlinkedEntry(self: *Dict, entry: *Entry) void {
     entry.destroy(&self.ctx);
 }
@@ -613,7 +616,7 @@ pub fn setVal(self: *Dict, entry: *Entry, val: Value) void {
 }
 
 pub fn freeVal(self: *Dict, entry: *Entry) void {
-    self.ctx.freeVal(entry.v.val);
+    self.ctx.freeVal(entry.v);
 }
 
 pub fn destroy(self: *Dict) void {
@@ -757,14 +760,14 @@ test "add() | addOrFind() || find() | fetchVal()" {
     const cnt = 100;
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator.allocator(),
+            allocator.child,
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator.allocator(),
+            allocator.child,
             "val-{}",
             .{i},
         ) catch unreachable;
@@ -787,14 +790,14 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator.allocator(),
+            allocator.child,
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator.allocator(),
+            allocator.child,
             "val-{}",
             .{i},
         ) catch unreachable;
@@ -1003,14 +1006,14 @@ const TestSdsVtable = struct {
     fn batchAdd(dict: *Dict, cnt: usize) void {
         for (0..cnt) |i| {
             const key = std.fmt.allocPrint(
-                allocator.allocator(),
+                allocator.child,
                 "key-{}",
                 .{i},
             ) catch unreachable;
             defer allocator.free(key);
 
             const val = std.fmt.allocPrint(
-                allocator.allocator(),
+                allocator.child,
                 "val-{}",
                 .{i},
             ) catch unreachable;

@@ -337,6 +337,16 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "lazyfree-lazy-expire") and argc == 2) {
+                server.lazyfree_lazy_expire = parseYesNo(
+                    sds.asBytes(argv[1]),
+                ) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }

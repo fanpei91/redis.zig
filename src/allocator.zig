@@ -1,12 +1,17 @@
+pub const child = if (builtin.is_test)
+    std.testing.allocator
+else
+    debug.allocator();
+
 pub fn alloc(comptime T: type, n: usize) []T {
-    return allocator().alloc(T, n) catch oom();
+    return child.alloc(T, n) catch oom();
 }
 
 pub fn realloc(old_mem: anytype, new_n: usize) t: {
     const Slice = @typeInfo(@TypeOf(old_mem)).pointer;
     break :t []align(Slice.alignment) Slice.child;
 } {
-    return allocator().realloc(old_mem, new_n) catch oom();
+    return child.realloc(old_mem, new_n) catch oom();
 }
 
 pub fn alignedAlloc(
@@ -15,34 +20,27 @@ pub fn alignedAlloc(
     comptime alignment: ?std.mem.Alignment,
     n: usize,
 ) []T {
-    return allocator().alignedAlloc(T, alignment, n) catch oom();
+    return child.alignedAlloc(T, alignment, n) catch oom();
 }
 
 pub fn dupe(comptime T: type, m: []const T) []T {
-    return allocator().dupe(T, m) catch oom();
+    return child.dupe(T, m) catch oom();
 }
 
 pub fn free(memory: anytype) void {
-    allocator().free(memory);
+    child.free(memory);
 }
 
 pub fn create(comptime T: type) *T {
-    return allocator().create(T) catch oom();
+    return child.create(T) catch oom();
 }
 
 pub fn destroy(ptr: anytype) void {
-    allocator().destroy(ptr);
+    child.destroy(ptr);
 }
 
 pub inline fn oom() noreturn {
-    @panic("OOM");
-}
-
-pub fn allocator() std.mem.Allocator {
-    if (builtin.is_test) {
-        return std.testing.allocator;
-    }
-    return debug.allocator();
+    @panic("Out Of Memory");
 }
 
 var debug = std.heap.DebugAllocator(.{}).init;
