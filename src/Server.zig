@@ -109,6 +109,8 @@ const commandTable = [_]Command{
     .{ .name = "psetex", .proc = psetexCommand, .arity = 4 },
     .{ .name = "getset", .proc = getsetCommand, .arity = 3 },
     .{ .name = "get", .proc = getCommand, .arity = 2 },
+    .{ .name = "incr", .proc = incrCommand, .arity = 2 },
+    .{ .name = "decr", .proc = decrCommand, .arity = 2 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -1136,6 +1138,8 @@ const setexCommand = stringc.setexCommand;
 const psetexCommand = stringc.psetexCommand;
 const getsetCommand = stringc.getsetCommand;
 const getCommand = stringc.getCommand;
+const incrCommand = stringc.incrCommand;
+const decrCommand = stringc.decrCommand;
 
 const server = &instance;
 const Object = @import("Object.zig");

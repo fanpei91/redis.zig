@@ -116,6 +116,56 @@ pub fn getCommand(cli: *Client) void {
     _ = get(cli);
 }
 
+/// INCR key
+pub fn incrCommand(cli: *Client) void {
+    incr(cli, 1);
+}
+
+/// DECR key
+pub fn decrCommand(cli: *Client) void {
+    incr(cli, -1);
+}
+
+fn incr(cli: *Client, by: i64) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    const o = cli.db.lookupKeyWrite(key);
+    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
+
+    var value: i64 = 0;
+    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) return;
+
+    if ((by < 0 and value < 0 and by < std.math.minInt(i64) - value) or
+        (by > 0 and value > 0 and by > std.math.maxInt(i64) - value))
+    {
+        cli.addReplyErr("increment or decrement would overflow");
+        return;
+    }
+
+    value += by;
+
+    var new: *Object = undefined;
+    if ((o != null) and
+        (o.?.refcount == 1 and o.?.encoding == .int) and
+        (value < 0 or value >= Server.OBJ_SHARED_INTEGERS))
+    {
+        new = o.?;
+        new.data = .{ .int = value };
+    } else {
+        new = Object.createStringFromLonglongForValue(value);
+        if (o != null) {
+            cli.db.overwrite(key, new);
+        } else {
+            cli.db.add(key, new);
+        }
+    }
+
+    cli.addReply(Server.shared.colon);
+    cli.addReply(new);
+    cli.addReply(Server.shared.crlf);
+}
+
 const OBJ_SET_NO_FLAGS = 0;
 const OBJ_SET_NX = (1 << 0); // Set if key not exists.
 const OBJ_SET_XX = (1 << 1); // Set if key exists.

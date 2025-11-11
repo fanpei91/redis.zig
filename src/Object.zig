@@ -449,6 +449,14 @@ pub fn getLongLongOrReply(
     return true;
 }
 
+pub fn checkTypeOrReply(self: *const Object, cli: *Client, typ: Type) bool {
+    if (self.type != typ) {
+        cli.addReply(Server.shared.wrongtypeerr);
+        return true;
+    }
+    return false;
+}
+
 pub fn strEncoding(self: *Object) []const u8 {
     return self.encoding.toString();
 }
