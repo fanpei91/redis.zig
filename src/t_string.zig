@@ -101,6 +101,16 @@ pub fn psetexCommand(cli: *Client) void {
     );
 }
 
+/// GETSET key value
+pub fn getsetCommand(cli: *Client) void {
+    if (!get(cli)) return;
+    const argv = cli.argv.?;
+    argv[2] = argv[2].tryEncoding();
+    const key = argv[1];
+    const val = argv[2];
+    cli.db.setKey(key, val);
+}
+
 /// GET key
 pub fn getCommand(cli: *Client) void {
     _ = get(cli);

@@ -107,6 +107,7 @@ const commandTable = [_]Command{
     .{ .name = "setnx", .proc = setnxCommand, .arity = 3 },
     .{ .name = "setex", .proc = setexCommand, .arity = 4 },
     .{ .name = "psetex", .proc = psetexCommand, .arity = 4 },
+    .{ .name = "getset", .proc = getsetCommand, .arity = 3 },
     .{ .name = "get", .proc = getCommand, .arity = 2 },
 };
 
@@ -1133,6 +1134,7 @@ const setCommand = stringc.setCommand;
 const setnxCommand = stringc.setnxCommand;
 const setexCommand = stringc.setexCommand;
 const psetexCommand = stringc.psetexCommand;
+const getsetCommand = stringc.getsetCommand;
 const getCommand = stringc.getCommand;
 
 const server = &instance;
