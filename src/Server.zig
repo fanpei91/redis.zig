@@ -3,7 +3,6 @@ pub const CONFIG_DEFAULT_DYNAMIC_HZ = true; // Adapt hz to # of clients.
 pub const CONFIG_DEFAULT_HZ = 10; // Time interrupt calls/sec.
 pub const CONFIG_MIN_HZ = 1;
 pub const CONFIG_MAX_HZ = 500;
-pub const MAX_CLIENTS_PER_CLOCK_TICK = 200; // HZ is adapted based on that.
 pub const CONFIG_DEFAULT_TCP_BACKLOG = 511; // TCP listen backlog.
 pub const CONFIG_DEFAULT_CLIENT_TIMEOUT = 0; // Default client timeout: infinite
 pub const CONFIG_DEFAULT_SERVER_PORT = 6379; // TCP port.
@@ -16,15 +15,16 @@ pub const CONFIG_DEFAULT_LFU_DECAY_TIME = 1;
 pub const CONFIG_MIN_RESERVED_FDS = 32;
 pub const CONFIG_DEFAULT_UNIX_SOCKET_PERM = 0;
 pub const CONFIG_BINDADDR_MAX = 16;
-pub const OBJ_SHARED_INTEGERS = 10000;
-pub const OBJ_SHARED_BULKHDR_LEN = 32;
 pub const CONFIG_MAX_LINE = 1024;
 pub const CONFIG_DEFAULT_PROTECTED_MODE = true;
 pub const CONFIG_DEFAULT_TCP_KEEPALIVE = 300;
 pub const CONFIG_DEFAULT_PROTO_MAX_BULK_LEN = (512 * 1024 * 1024); // Bulk request max size
 pub const CONFIG_AUTHPASS_MAX_LEN = 512;
-pub const NET_MAX_WRITES_PER_EVENT = (1024 * 64);
 pub const CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE = false;
+pub const MAX_CLIENTS_PER_CLOCK_TICK = 200; // HZ is adapted based on that.
+pub const OBJ_SHARED_INTEGERS = 10000;
+pub const OBJ_SHARED_BULKHDR_LEN = 32;
+pub const NET_MAX_WRITES_PER_EVENT = (1024 * 64);
 
 // Protocol and I/O related defines
 pub const PROTO_MAX_QUERYBUF_LEN = 1024 * 1024 * 1024; // 1GB max query buffer.
@@ -97,10 +97,12 @@ pub const Command = struct {
 /// name: a string representing the command name.
 /// proc: pointer to the function implementing the command.
 /// arity: number of arguments, it is possible to use -N to say >= N.
-const commandTables = [_]Command{
+const commandTable = [_]Command{
     .{ .name = "ping", .proc = pingCommand, .arity = -1 },
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
     .{ .name = "select", .proc = selectCommand, .arity = 2 },
+    .{ .name = "ttl", .proc = ttlCommand, .arity = 2 },
+    .{ .name = "pttl", .proc = pttlCommand, .arity = 2 },
     .{ .name = "set", .proc = setCommand, .arity = -3 },
     .{ .name = "get", .proc = getCommand, .arity = 2 },
 };
@@ -983,8 +985,8 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
 }
 
 fn populateCommandTable(self: *Server) void {
-    for (0..commandTables.len) |i| {
-        const command = &commandTables[i];
+    for (0..commandTable.len) |i| {
+        const command = &commandTable[i];
         const ok = self.commands.add(
             sds.new(command.name),
             @constCast(command),
@@ -1056,10 +1058,10 @@ fn dictSdsCaseHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
         allocator.child,
     );
     const stack_allocator = stack_impl.get();
-    const copy = sds.dupeAlloc(stack_allocator, sds.cast(key));
-    defer sds.freeAlloc(stack_allocator, copy);
-    sds.toLower(copy);
-    return Dict.genHash(sds.asBytes(copy));
+    const dupkey = sds.dupeAlloc(stack_allocator, sds.cast(key));
+    defer sds.freeAlloc(stack_allocator, dupkey);
+    sds.toLower(dupkey);
+    return Dict.genHash(sds.asBytes(dupkey));
 }
 
 fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
@@ -1122,6 +1124,8 @@ fn pingCommand(cli: *Client) void {
 }
 
 const selectCommand = dbc.selectCommand;
+const ttlCommand = expirec.ttlCommand;
+const pttlCommand = expirec.pttlCommand;
 const setCommand = stringc.setCommand;
 const getCommand = stringc.getCommand;
 
@@ -1151,3 +1155,4 @@ const c = @cImport({
 const stringc = @import("t_string.zig");
 const dbc = @import("db.zig");
 const bio = @import("bio.zig");
+const expirec = @import("expire.zig");

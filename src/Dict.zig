@@ -40,14 +40,14 @@ pub const VTable = struct {
 };
 
 pub const Entry = struct {
-    const UnionValue = union {
+    const Val = union {
         val: Value,
         u64: u64,
         s64: i64,
         d: f64,
     };
     key: Key,
-    v: UnionValue,
+    v: Val,
     next: ?*Entry = null,
 
     fn destroy(
@@ -148,9 +148,9 @@ const Context = struct {
         }
     }
 
-    fn freeVal(self: *Context, uv: Entry.UnionValue) void {
+    fn freeVal(self: *Context, ev: Entry.Val) void {
         if (self.vtable.freeVal) |free| {
-            free(self.priv_data, uv.val);
+            free(self.priv_data, ev.val);
         }
     }
 };

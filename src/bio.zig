@@ -18,53 +18,6 @@ var newjob_cond: [NUM_OPS]std.Thread.Condition = undefined;
 var jobs: [NUM_OPS]*JobList = undefined;
 var cancel: [NUM_OPS]std.atomic.Value(bool) = undefined;
 
-pub const Job = struct {
-    /// Background job opcodes
-    pub const Type = enum(u8) {
-        closeFile = 0, // Deferred close(2) syscall.
-        aofFsync = 1, // Deferred AOF fsync.
-        lazyFree = 2, // Deferred objects freeing.
-    };
-
-    // Job specific arguments pointers. If we need to pass more than three
-    // arguments we can just pass a pointer to a structure or alike.
-    arg1: ?*anyopaque,
-    arg2: ?*anyopaque,
-    arg3: ?*anyopaque,
-
-    fn free(job: Job, job_type: Type) void {
-        switch (job_type) {
-            .lazyFree => {
-                // What we free changes depending on what arguments are set:
-                // arg1 -> free the object at pointer.
-                // arg2 & arg3 -> free two dictionaries (a Redis DB).
-                // only arg3 -> free the skiplist.
-                if (job.arg1) |arg1| {
-                    lazyfree.freeObjectFromBioThread(
-                        @ptrCast(@alignCast(arg1)),
-                    );
-                    return;
-                }
-                if (job.arg2) |arg2| if (job.arg3) |arg3| {
-                    lazyfree.freeDatabaseFromBioThread(
-                        @ptrCast(@alignCast(arg2)),
-                        @ptrCast(@alignCast(arg3)),
-                    );
-                    return;
-                };
-                if (job.arg3) |arg3| {
-                    // TODO: free slots map
-                    _ = arg3;
-                    return;
-                }
-            },
-            // TODO: closeFile
-            // TODO: aofFsync
-            else => {},
-        }
-    }
-};
-
 pub fn init() std.Thread.SpawnError!void {
     mutex = .{ .{}, .{}, .{} };
     newjob_cond = .{ .{}, .{}, .{} };
@@ -101,7 +54,7 @@ fn processBackgroundJobs(job_type: Job.Type) void {
         const ln = jbs.first.?;
         defer jbs.removeNode(ln);
         const job = ln.value;
-        job.free(job_type);
+        job.do(job_type);
     }
 }
 
@@ -132,11 +85,60 @@ pub fn deinit() void {
     for (jobs, 0..) |j, t| {
         var it = j.iterator(.forward);
         while (it.next()) |node| {
-            node.value.free(@as(Job.Type, @enumFromInt(t)));
+            node.value.do(@as(Job.Type, @enumFromInt(t)));
         }
         j.release();
     }
 }
+
+pub const Job = struct {
+    /// Background job opcodes
+    pub const Type = enum(u8) {
+        closeFile = 0, // Deferred close(2) syscall.
+        aofFsync = 1, // Deferred AOF fsync.
+        lazyFree = 2, // Deferred objects freeing.
+    };
+
+    // Job specific arguments pointers. If we need to pass more than three
+    // arguments we can just pass a pointer to a structure or alike.
+    arg1: ?*anyopaque,
+    arg2: ?*anyopaque,
+    arg3: ?*anyopaque,
+
+    fn do(job: Job, job_type: Job.Type) void {
+        switch (job_type) {
+            .lazyFree => job.lazyFree(),
+            // TODO: closeFile
+            // TODO: aofFsync
+            else => {},
+        }
+    }
+
+    fn lazyFree(job: Job) void {
+        // What we free changes depending on what arguments are set:
+        // arg1 -> free the object at pointer.
+        // arg2 & arg3 -> free two dictionaries (a Redis DB).
+        // only arg3 -> free the skiplist.
+        if (job.arg1) |arg1| {
+            lazyfree.freeObjectFromBioThread(
+                @ptrCast(@alignCast(arg1)),
+            );
+            return;
+        }
+        if (job.arg2) |arg2| if (job.arg3) |arg3| {
+            lazyfree.freeDatabaseFromBioThread(
+                @ptrCast(@alignCast(arg2)),
+                @ptrCast(@alignCast(arg3)),
+            );
+            return;
+        };
+        if (job.arg3) |arg3| {
+            // TODO: free slots map
+            _ = arg3;
+            return;
+        }
+    }
+};
 
 const std = @import("std");
 const allocator = @import("allocator.zig");

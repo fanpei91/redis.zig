@@ -94,10 +94,7 @@ pub fn empty() String {
 /// and 'initlen'.
 ///
 /// If init is null, the buffer is left uninitialized;
-pub fn newLen(
-    init: ?[*]const u8,
-    initlen: usize,
-) String {
+pub fn newLen(init: ?[*]const u8, initlen: usize) String {
     return newLenAlloc(
         allocator.child,
         init,
@@ -132,9 +129,7 @@ pub fn newLenAlloc(
     return s;
 }
 
-pub fn fromLonglong(
-    num: i64,
-) String {
+pub fn fromLonglong(num: i64) String {
     var buf: [20]u8 = undefined;
     const digits = util.ll2string(&buf, num);
     return new(digits);
@@ -163,10 +158,7 @@ pub fn clear(s: String) void {
 ///
 /// Note: this does not change the *length* of the sds string as returned
 /// by getLen(), but only the free buffer space we have.
-pub fn makeRoomFor(
-    s: String,
-    add_len: usize,
-) String {
+pub fn makeRoomFor(s: String, add_len: usize) String {
     if (getAvail(s) >= add_len) return s;
 
     const old_len = getLen(s);
@@ -210,10 +202,7 @@ pub fn makeRoomFor(
     return ns;
 }
 
-pub fn cat(
-    s: String,
-    src: []const u8,
-) String {
+pub fn cat(s: String, src: []const u8) String {
     const cur_len = getLen(s);
     const ns = makeRoomFor(s, src.len);
     memcpy(ns + cur_len, src, src.len);
@@ -221,11 +210,7 @@ pub fn cat(
     return ns;
 }
 
-pub fn catPrintf(
-    s: String,
-    comptime fmt: []const u8,
-    args: anytype,
-) String {
+pub fn catPrintf(s: String, comptime fmt: []const u8, args: anytype) String {
     var static_buf: [1024]u8 = undefined;
     const buf = std.fmt.bufPrint(&static_buf, fmt, args) catch {
         @branchHint(.unlikely);
@@ -240,10 +225,7 @@ pub fn catPrintf(
     return cat(s, buf);
 }
 
-pub fn catRepr(
-    s: String,
-    raw: []const u8,
-) String {
+pub fn catRepr(s: String, raw: []const u8) String {
     var ns = cat(s, "\"");
 
     for (raw) |b| {
@@ -269,9 +251,7 @@ pub fn catRepr(
     return ns;
 }
 
-pub fn removeAvailSpace(
-    s: String,
-) String {
+pub fn removeAvailSpace(s: String) String {
     if (getAvail(s) == 0) return s;
 
     const len = getLen(s);
@@ -337,10 +317,7 @@ pub fn incrLen(s: String, incr: isize) void {
     setLength(s, new_len);
 }
 
-pub fn growZero(
-    s: String,
-    new_len: usize,
-) String {
+pub fn growZero(s: String, new_len: usize) String {
     const curr_len = getLen(s);
     if (new_len <= curr_len) return s;
 
@@ -351,10 +328,7 @@ pub fn growZero(
     return ns;
 }
 
-pub fn copy(
-    s: String,
-    src: []const u8,
-) String {
+pub fn copy(s: String, src: []const u8) String {
     var ns = s;
     if (getAlloc(s) < src.len) {
         ns = makeRoomFor(s, src.len - getLen(s));
@@ -379,10 +353,7 @@ pub fn mapChars(s: String, from: []const u8, to: []const u8) String {
     return s;
 }
 
-pub fn join(
-    slices: []const []const u8,
-    sep: []const u8,
-) String {
+pub fn join(slices: []const []const u8, sep: []const u8) String {
     var joined = empty();
     for (slices, 0..) |slice, i| {
         joined = cat(joined, slice);
@@ -391,10 +362,7 @@ pub fn join(
     return joined;
 }
 
-pub fn split(
-    str: []const u8,
-    sep: []const u8,
-) []String {
+pub fn split(str: []const u8, sep: []const u8) []String {
     var tokens = std.ArrayList(String).empty;
 
     var it = std.mem.splitSequence(u8, str, sep);
@@ -421,9 +389,7 @@ pub fn split(
 /// input string is empty, or NULL if the input contains unbalanced
 /// quotes or closed quotes followed by non space characters
 /// as in: "foo"bar or "foo'
-pub fn splitArgs(
-    line: []const u8,
-) ?[]String {
+pub fn splitArgs(line: []const u8) ?[]String {
     var vector = std.ArrayList(String).empty;
     var current: ?String = null;
 
