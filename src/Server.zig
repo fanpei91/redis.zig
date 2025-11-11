@@ -104,6 +104,7 @@ const commandTable = [_]Command{
     .{ .name = "ttl", .proc = ttlCommand, .arity = 2 },
     .{ .name = "pttl", .proc = pttlCommand, .arity = 2 },
     .{ .name = "set", .proc = setCommand, .arity = -3 },
+    .{ .name = "setnx", .proc = setnxCommand, .arity = 3 },
     .{ .name = "get", .proc = getCommand, .arity = 2 },
 };
 
@@ -1127,6 +1128,7 @@ const selectCommand = dbc.selectCommand;
 const ttlCommand = expirec.ttlCommand;
 const pttlCommand = expirec.pttlCommand;
 const setCommand = stringc.setCommand;
+const setnxCommand = stringc.setnxCommand;
 const getCommand = stringc.getCommand;
 
 const server = &instance;

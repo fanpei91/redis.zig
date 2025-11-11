@@ -43,6 +43,26 @@ pub fn setCommand(cli: *Client) void {
     set(cli, flags, key, val, expire, unit, null, null);
 }
 
+/// SETNX key val
+/// RESP: 0 if the key was not set.
+/// RESP: 1 if the key was set.
+pub fn setnxCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    argv[2] = argv[2].tryEncoding();
+    const key = argv[1];
+    const val = argv[2];
+    set(
+        cli,
+        OBJ_SET_NX,
+        key,
+        val,
+        null,
+        Server.UNIT_SECONDS,
+        Server.shared.cone,
+        Server.shared.czero,
+    );
+}
+
 /// GET key
 pub fn getCommand(cli: *Client) void {
     _ = get(cli);
