@@ -82,6 +82,25 @@ pub fn setexCommand(cli: *Client) void {
     );
 }
 
+/// PSETEX key milliseconds value
+pub fn psetexCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    argv[3] = argv[3].tryEncoding();
+    const key = argv[1];
+    const val = argv[3];
+    const expire = argv[2];
+    set(
+        cli,
+        OBJ_SET_NO_FLAGS,
+        key,
+        val,
+        expire,
+        Server.UNIT_MILLISECONDS,
+        null,
+        null,
+    );
+}
+
 /// GET key
 pub fn getCommand(cli: *Client) void {
     _ = get(cli);
