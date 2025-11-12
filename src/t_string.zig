@@ -144,6 +144,21 @@ pub fn decrbyCommand(cli: *Client) void {
     incr(cli, -decrement);
 }
 
+/// STRLEN key
+pub fn strlenCommand(cli: *Client) void {
+    const key = cli.argv.?[1];
+    const val = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (val.checkTypeOrReply(cli, .string)) return;
+    const len = val.stringLen();
+    cli.addReplyLongLong(@intCast(len));
+}
+
 fn incr(cli: *Client, by: i64) void {
     const argv = cli.argv.?;
     const key = argv[1];

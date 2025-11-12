@@ -113,6 +113,7 @@ const commandTable = [_]Command{
     .{ .name = "decr", .proc = decrCommand, .arity = 2 },
     .{ .name = "incrby", .proc = incrbyCommand, .arity = 3 },
     .{ .name = "decrby", .proc = decrbyCommand, .arity = 3 },
+    .{ .name = "strlen", .proc = strlenCommand, .arity = 2 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -1144,6 +1145,7 @@ const incrCommand = stringc.incrCommand;
 const decrCommand = stringc.decrCommand;
 const incrbyCommand = stringc.incrbyCommand;
 const decrbyCommand = stringc.decrbyCommand;
+const strlenCommand = stringc.strlenCommand;
 
 const server = &instance;
 const Object = @import("Object.zig");
