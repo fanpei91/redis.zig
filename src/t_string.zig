@@ -126,6 +126,24 @@ pub fn decrCommand(cli: *Client) void {
     incr(cli, -1);
 }
 
+/// INCRBY key increment
+pub fn incrbyCommand(cli: *Client) void {
+    var increment: i64 = undefined;
+    if (!cli.argv.?[2].getLongLongOrReply(cli, &increment, null)) {
+        return;
+    }
+    incr(cli, increment);
+}
+
+/// DECRBY key decrement
+pub fn decrbyCommand(cli: *Client) void {
+    var decrement: i64 = undefined;
+    if (!cli.argv.?[2].getLongLongOrReply(cli, &decrement, null)) {
+        return;
+    }
+    incr(cli, -decrement);
+}
+
 fn incr(cli: *Client, by: i64) void {
     const argv = cli.argv.?;
     const key = argv[1];
