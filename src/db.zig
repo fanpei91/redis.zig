@@ -104,6 +104,50 @@ pub const Database = struct {
         return entry.v.s64;
     }
 
+    /// Prepare the string object stored at 'key' to be modified destructively
+    /// to implement commands like SETBIT or APPEND.
+    ///
+    /// An object is usually ready to be modified unless one of the two conditions
+    /// are true:
+    ///
+    /// 1) The object 'o' is shared (refcount > 1), we don't want to affect
+    ///    other users.
+    /// 2) The object encoding is not "RAW".
+    ///
+    /// If the object is found in one of the above conditions (or both) by the
+    /// function, an unshared / not-encoded copy of the string object is stored
+    /// at 'key' in the specified 'db'. Otherwise the object 'o' itself is
+    /// returned.
+    ///
+    /// USAGE:
+    ///
+    /// The object 'o' is what the caller already obtained by looking up 'key'
+    /// in 'db', the usage pattern looks like this:
+    ///
+    /// o = db.lookupKeyWrite(key);
+    /// if (o.checkTypeOrReply(cli, .string)) return;
+    /// o = db.unshareStringValue(key,o);
+    ///
+    /// At this point the caller is ready to modify the object, for example
+    /// using an sds.cat() call to append some data, or anything else.
+    pub fn unshareStringValue(
+        self: *Database,
+        key: *Object,
+        o: *Object,
+    ) *Object {
+        std.debug.assert(o.type == .string);
+        if (o.refcount != 1 or o.encoding != .raw) {
+            const decoded = o.getDecoded();
+            const new = Object.createRawString(
+                sds.asBytes(sds.cast(decoded.data.ptr)),
+            );
+            decoded.decrRefCount();
+            self.overwrite(key, new);
+            return new;
+        }
+        return o;
+    }
+
     /// Lookup a key for write operations, and as a side effect, if needed,
     /// expires the key if its TTL is reached.
     ///

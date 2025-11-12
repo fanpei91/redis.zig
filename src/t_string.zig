@@ -159,6 +159,39 @@ pub fn strlenCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(len));
 }
 
+/// APPEND key value
+pub fn appendCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    var totlen: usize = undefined;
+    if (cli.db.lookupKeyWrite(key)) |obj| {
+        if (obj.checkTypeOrReply(cli, .string)) {
+            return;
+        }
+        const append = argv[2];
+        totlen = obj.stringLen() + sds.getLen(sds.cast(append.data.ptr));
+        if (!checkStringLengthOrReply(totlen, cli)) {
+            return;
+        }
+        const o = cli.db.unshareStringValue(key, obj);
+        o.data = .{
+            .ptr = sds.cat(
+                sds.cast(o.data.ptr),
+                sds.asBytes(sds.cast(append.data.ptr)),
+            ),
+        };
+        totlen = sds.getLen(sds.cast(o.data.ptr));
+    } else {
+        argv[2] = argv[2].tryEncoding();
+        const append = argv[2];
+        cli.db.add(key, append);
+        append.incrRefCount();
+        totlen = append.stringLen();
+    }
+    cli.addReplyLongLong(@intCast(totlen));
+}
+
 fn incr(cli: *Client, by: i64) void {
     const argv = cli.argv.?;
     const key = argv[1];
@@ -292,9 +325,16 @@ fn get(cli: *Client) bool {
     return true;
 }
 
+fn checkStringLengthOrReply(size: usize, cli: *Client) bool {
+    if (size > 512 * 1024 * 1024) {
+        cli.addReplyErr("string exceeds maximum allowed size (512MB)");
+        return false;
+    }
+    return true;
+}
+
 const std = @import("std");
 const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
-const server = &Server.instance;
 const sds = @import("sds.zig");

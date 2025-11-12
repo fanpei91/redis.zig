@@ -23,7 +23,7 @@ pub fn init() std.Thread.SpawnError!void {
     newjob_cond = .{ .{}, .{}, .{} };
     cancel = .{ .init(false), .init(false), .init(false) };
     for (0..NUM_OPS) |i| {
-        jobs[i] = JobList.create(&.{});
+        jobs[i] = JobList.create(&.{ .free = Job.free });
         threads[i] = try std.Thread.spawn(
             .{
                 .allocator = allocator.child,
@@ -64,11 +64,10 @@ pub fn createBackgroundJob(
     arg2: ?*anyopaque,
     arg3: ?*anyopaque,
 ) void {
-    const job: Job = .{
-        .arg1 = arg1,
-        .arg2 = arg2,
-        .arg3 = arg3,
-    };
+    const job = allocator.create(Job);
+    job.arg1 = arg1;
+    job.arg2 = arg2;
+    job.arg3 = arg3;
 
     const i: usize = @intFromEnum(job_type);
     mutex[i].lock();
@@ -105,7 +104,7 @@ pub const Job = struct {
     arg2: ?*anyopaque,
     arg3: ?*anyopaque,
 
-    fn do(job: Job, job_type: Job.Type) void {
+    fn do(job: *Job, job_type: Job.Type) void {
         switch (job_type) {
             .lazyFree => job.lazyFree(),
             // TODO: closeFile
@@ -114,7 +113,7 @@ pub const Job = struct {
         }
     }
 
-    fn lazyFree(job: Job) void {
+    fn lazyFree(job: *Job) void {
         // What we free changes depending on what arguments are set:
         // arg1 -> free the object at pointer.
         // arg2 & arg3 -> free two dictionaries (a Redis DB).
@@ -138,10 +137,14 @@ pub const Job = struct {
             return;
         }
     }
+
+    fn free(job: *Job) void {
+        allocator.destroy(job);
+    }
 };
 
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const JobList = @import("adlist.zig").List(void, Job);
+const JobList = @import("adlist.zig").List(void, *Job);
 const lazyfree = @import("lazyfree.zig");
 const log = std.log.scoped(.bio);

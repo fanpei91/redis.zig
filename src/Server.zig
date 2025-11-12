@@ -100,20 +100,21 @@ pub const Command = struct {
 const commandTable = [_]Command{
     .{ .name = "ping", .proc = pingCommand, .arity = -1 },
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
-    .{ .name = "select", .proc = selectCommand, .arity = 2 },
-    .{ .name = "ttl", .proc = ttlCommand, .arity = 2 },
-    .{ .name = "pttl", .proc = pttlCommand, .arity = 2 },
-    .{ .name = "set", .proc = setCommand, .arity = -3 },
-    .{ .name = "setnx", .proc = setnxCommand, .arity = 3 },
-    .{ .name = "setex", .proc = setexCommand, .arity = 4 },
-    .{ .name = "psetex", .proc = psetexCommand, .arity = 4 },
-    .{ .name = "getset", .proc = getsetCommand, .arity = 3 },
-    .{ .name = "get", .proc = getCommand, .arity = 2 },
-    .{ .name = "incr", .proc = incrCommand, .arity = 2 },
-    .{ .name = "decr", .proc = decrCommand, .arity = 2 },
-    .{ .name = "incrby", .proc = incrbyCommand, .arity = 3 },
-    .{ .name = "decrby", .proc = decrbyCommand, .arity = 3 },
-    .{ .name = "strlen", .proc = strlenCommand, .arity = 2 },
+    .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
+    .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
+    .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
+    .{ .name = "set", .proc = string.setCommand, .arity = -3 },
+    .{ .name = "setnx", .proc = string.setnxCommand, .arity = 3 },
+    .{ .name = "setex", .proc = string.setexCommand, .arity = 4 },
+    .{ .name = "psetex", .proc = string.psetexCommand, .arity = 4 },
+    .{ .name = "getset", .proc = string.getsetCommand, .arity = 3 },
+    .{ .name = "get", .proc = string.getCommand, .arity = 2 },
+    .{ .name = "incr", .proc = string.incrCommand, .arity = 2 },
+    .{ .name = "decr", .proc = string.decrCommand, .arity = 2 },
+    .{ .name = "incrby", .proc = string.incrbyCommand, .arity = 3 },
+    .{ .name = "decrby", .proc = string.decrbyCommand, .arity = 3 },
+    .{ .name = "strlen", .proc = string.strlenCommand, .arity = 2 },
+    .{ .name = "append", .proc = string.appendCommand, .arity = 3 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -1132,21 +1133,6 @@ fn pingCommand(cli: *Client) void {
     }
 }
 
-const selectCommand = dbc.selectCommand;
-const ttlCommand = expirec.ttlCommand;
-const pttlCommand = expirec.pttlCommand;
-const setCommand = stringc.setCommand;
-const setnxCommand = stringc.setnxCommand;
-const setexCommand = stringc.setexCommand;
-const psetexCommand = stringc.psetexCommand;
-const getsetCommand = stringc.getsetCommand;
-const getCommand = stringc.getCommand;
-const incrCommand = stringc.incrCommand;
-const decrCommand = stringc.decrCommand;
-const incrbyCommand = stringc.incrbyCommand;
-const decrbyCommand = stringc.decrbyCommand;
-const strlenCommand = stringc.strlenCommand;
-
 const server = &instance;
 const Object = @import("Object.zig");
 const std = @import("std");
@@ -1170,7 +1156,7 @@ const Rax = @import("rax/Rax.zig");
 const c = @cImport({
     @cInclude("sys/signal.h");
 });
-const stringc = @import("t_string.zig");
-const dbc = @import("db.zig");
+const string = @import("t_string.zig");
+const dbx = @import("db.zig");
 const bio = @import("bio.zig");
-const expirec = @import("expire.zig");
+const expire = @import("expire.zig");
