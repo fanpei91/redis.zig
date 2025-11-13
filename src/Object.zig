@@ -64,17 +64,9 @@ pub fn create(typ: Type, ptr: *anyopaque) *Object {
 }
 
 pub fn createInt(int: i64) *Object {
-    const obj = allocator.create(Object);
-    obj.type = .string;
+    const obj = create(.string, @ptrFromInt(1));
     obj.encoding = .int;
-    if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
-        obj.lru = @intCast((evict.LFUGetTimeInMinutes() << 8) | evict.LFU_INIT_VAL);
-    } else {
-        obj.lru = @intCast(evict.LRUClock());
-    }
-    obj.refcount = 1;
     obj.data = .{ .int = int };
-
     return obj;
 }
 
@@ -413,8 +405,21 @@ pub fn trimStringIfNeeded(self: *Object) void {
     }
 }
 
-pub fn sdsEncoded(self: *const Object) bool {
-    return self.encoding == .raw or self.encoding == .embstr;
+pub fn getLongLongOrReply(
+    self: *const Object,
+    cli: *Client,
+    target: *i64,
+    msg: ?[]const u8,
+) bool {
+    if (!self.getLongLong(target)) {
+        if (msg) |m| {
+            cli.addReplyErr(m);
+        } else {
+            cli.addReplyErr("value is not an integer or out of range");
+        }
+        return false;
+    }
+    return true;
 }
 
 pub fn getLongLong(self: *const Object, llval: *i64) bool {
@@ -432,19 +437,38 @@ pub fn getLongLong(self: *const Object, llval: *i64) bool {
     @panic("Unknown string encoding");
 }
 
-pub fn getLongLongOrReply(
+pub fn sdsEncoded(self: *const Object) bool {
+    return self.encoding == .raw or self.encoding == .embstr;
+}
+
+pub fn getLongDoubleFromObjectOrReply(
     self: *const Object,
     cli: *Client,
-    target: *i64,
+    target: *f80,
     msg: ?[]const u8,
 ) bool {
-    if (!self.getLongLong(target)) {
-        if (msg) |m| {
-            cli.addReplyErr(m);
-        } else {
-            cli.addReplyErr("value is not an integer or out of range");
-        }
-        return false;
+    if (self.getLongDoubleFromObject(target)) {
+        return true;
+    }
+    if (msg) |err| {
+        cli.addReplyErr(err);
+    } else {
+        cli.addReplyErr("value is not a valid float");
+    }
+    return false;
+}
+
+pub fn getLongDoubleFromObject(self: *const Object, target: *f80) bool {
+    assert(self.type == .string);
+    if (self.sdsEncoded()) {
+        target.* = std.fmt.parseFloat(
+            f80,
+            sds.asBytes(sds.cast(self.data.ptr)),
+        ) catch return false;
+    } else if (self.encoding == .int) {
+        target.* = @floatFromInt(self.data.int);
+    } else {
+        @panic("Unknown string encoding");
     }
     return true;
 }

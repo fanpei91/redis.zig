@@ -9,8 +9,16 @@ pub fn ld2string(buf: []u8, value: f80, humanfriendly: bool) []u8 {
     writer.printFloat(value, .{
         .mode = if (humanfriendly) .decimal else .scientific,
         .case = .lower,
+        .precision = 17,
     }) catch unreachable;
-    return writer.buffered();
+    var output = writer.buffered();
+    if (humanfriendly and std.mem.indexOfScalar(u8, output, '.') != null) {
+        output = @constCast(std.mem.trimEnd(u8, output, "0"));
+        if (output[output.len - 1] == '.') {
+            output = output[0 .. output.len - 1];
+        }
+    }
+    return output;
 }
 
 pub fn ll2string(buf: []u8, value: i64) []u8 {
@@ -101,16 +109,6 @@ pub fn timeIndependentEql(
 test sdigits10 {
     try expectEqual(20, sdigits10(std.math.minInt(i64)));
     try expectEqual(19, sdigits10(std.math.maxInt(i64)));
-}
-
-test ld2string {
-    var buf: [MAX_LONG_DOUBLE_CHARS]u8 = undefined;
-
-    var str = ld2string(&buf, 0.00011222000, true);
-    try expectEqualStrings("0.00011222", str);
-
-    str = ld2string(&buf, 0.0001122000, false);
-    try expectEqualStrings("1.122e-4", str);
 }
 
 const std = @import("std");

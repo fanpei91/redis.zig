@@ -113,6 +113,7 @@ const commandTable = [_]Command{
     .{ .name = "decr", .proc = string.decrCommand, .arity = 2 },
     .{ .name = "incrby", .proc = string.incrbyCommand, .arity = 3 },
     .{ .name = "decrby", .proc = string.decrbyCommand, .arity = 3 },
+    .{ .name = "incrbyfloat", .proc = string.incrbyfloatCommand, .arity = 3 },
     .{ .name = "strlen", .proc = string.strlenCommand, .arity = 2 },
     .{ .name = "append", .proc = string.appendCommand, .arity = 3 },
 };

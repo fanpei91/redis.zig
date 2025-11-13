@@ -144,6 +144,35 @@ pub fn decrbyCommand(cli: *Client) void {
     incr(cli, -decrement);
 }
 
+/// INCRBYFLOAT key increment
+pub fn incrbyfloatCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    const o = cli.db.lookupKeyWrite(key);
+    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
+
+    var value: f80 = undefined;
+    var increment: f80 = undefined;
+    if (!o.?.getLongDoubleFromObjectOrReply(cli, &value, null) or
+        !argv[2].getLongDoubleFromObjectOrReply(cli, &increment, null))
+    {
+        return;
+    }
+    value += increment;
+    if (std.math.isNan(value) or std.math.isInf(value)) {
+        cli.addReplyErr("increment would produce NaN or Infinity");
+        return;
+    }
+    const new = Object.createStringFromLongDouble(value, true);
+    if (o != null) {
+        cli.db.overwrite(key, new);
+    } else {
+        cli.db.add(key, new);
+    }
+    cli.addReplyBulk(new);
+}
+
 /// STRLEN key
 pub fn strlenCommand(cli: *Client) void {
     const key = cli.argv.?[1];
