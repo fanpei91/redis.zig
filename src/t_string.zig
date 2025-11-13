@@ -101,6 +101,28 @@ pub fn psetexCommand(cli: *Client) void {
     );
 }
 
+/// GET key
+pub fn getCommand(cli: *Client) void {
+    _ = get(cli);
+}
+
+/// MGET key [key ...]
+pub fn mgetCommand(cli: *Client) void {
+    cli.addReplyMultiBulkLen(cli.argc - 1);
+    const argv = cli.argv.?;
+    for (argv[1..]) |key| {
+        const val = cli.db.lookupKeyRead(key) orelse {
+            cli.addReply(Server.shared.nullbulk);
+            continue;
+        };
+        if (val.type != .string) {
+            cli.addReply(Server.shared.nullbulk);
+        } else {
+            cli.addReplyBulk(val);
+        }
+    }
+}
+
 /// GETSET key value
 pub fn getsetCommand(cli: *Client) void {
     if (!get(cli)) return;
@@ -109,11 +131,6 @@ pub fn getsetCommand(cli: *Client) void {
     const key = argv[1];
     const val = argv[2];
     cli.db.setKey(key, val);
-}
-
-/// GET key
-pub fn getCommand(cli: *Client) void {
-    _ = get(cli);
 }
 
 /// INCR key

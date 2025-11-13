@@ -492,6 +492,14 @@ pub const Client = struct {
         }
     }
 
+    pub fn addReplyMultiBulkLen(self: *Client, len: usize) void {
+        if (len < Server.shared.mbulkhdr.len) {
+            self.addReply(Server.shared.mbulkhdr[len]);
+        } else {
+            self.addReplyLongLongWithPrefix(@intCast(len), '*');
+        }
+    }
+
     /// Add a Redis Object as a bulk reply
     pub fn addReplyBulk(self: *Client, obj: *Object) void {
         self.addReplyBulkLen(obj);
