@@ -101,6 +101,16 @@ pub fn psetexCommand(cli: *Client) void {
     );
 }
 
+/// MSET key value [key value ...]
+pub fn msetCommand(cli: *Client) void {
+    mset(cli, false);
+}
+
+/// MSETNX key value [key value ...]
+pub fn msetnxCommand(cli: *Client) void {
+    mset(cli, true);
+}
+
 /// GET key
 pub fn getCommand(cli: *Client) void {
     _ = get(cli);
@@ -352,6 +362,36 @@ fn set(
         else
             Server.shared.ok,
     );
+}
+
+fn mset(cli: *Client, nx: bool) void {
+    if (cli.argc % 2 == 0) {
+        cli.addReplyErr("wrong number of arguments for MSET");
+        return;
+    }
+
+    const argv = cli.argv.?;
+    // Handle the NX flag. The MSETNX semantic is to return zero and don't
+    // set anything if at least one key alerady exists.
+    if (nx) {
+        var j: usize = 1;
+        while (j < cli.argc) : (j += 2) {
+            const key = argv[j];
+            if (cli.db.lookupKeyWrite(key) != null) {
+                cli.addReply(Server.shared.czero);
+                return;
+            }
+        }
+    }
+
+    var j: usize = 1;
+    while (j < cli.argc) : (j += 2) {
+        argv[j + 1] = argv[j + 1].tryEncoding();
+        const key = argv[j];
+        const val = argv[j + 1];
+        cli.db.setKey(key, val);
+    }
+    cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
 
 fn get(cli: *Client) bool {

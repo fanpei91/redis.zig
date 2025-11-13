@@ -107,6 +107,8 @@ const commandTable = [_]Command{
     .{ .name = "setnx", .proc = string.setnxCommand, .arity = 3 },
     .{ .name = "setex", .proc = string.setexCommand, .arity = 4 },
     .{ .name = "psetex", .proc = string.psetexCommand, .arity = 4 },
+    .{ .name = "mset", .proc = string.msetCommand, .arity = -3 },
+    .{ .name = "msetnx", .proc = string.msetnxCommand, .arity = -3 },
     .{ .name = "get", .proc = string.getCommand, .arity = 2 },
     .{ .name = "mget", .proc = string.mgetCommand, .arity = -2 },
     .{ .name = "getset", .proc = string.getsetCommand, .arity = 3 },
