@@ -5,6 +5,18 @@ pub const MAX_LONG_DOUBLE_CHARS = 5 * 1024;
 
 pub fn ld2string(buf: []u8, value: f80, humanfriendly: bool) []u8 {
     assert(buf.len >= MAX_LONG_DOUBLE_CHARS);
+    if (std.math.isInf(value)) {
+        var output: []u8 = undefined;
+        if (value > 0) {
+            output = buf[0..3];
+            @memcpy(output, "inf");
+        } else {
+            output = buf[0..4];
+            @memcpy(output, "-inf");
+        }
+        return output;
+    }
+
     var writer: std.Io.Writer = .fixed(buf);
     writer.printFloat(value, .{
         .mode = if (humanfriendly) .decimal else .scientific,
