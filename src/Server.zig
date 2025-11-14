@@ -99,6 +99,7 @@ pub const Command = struct {
 /// arity: number of arguments, it is possible to use -N to say >= N.
 const commandTable = [_]Command{
     .{ .name = "ping", .proc = pingCommand, .arity = -1 },
+    .{ .name = "echo", .proc = echoCommand, .arity = 2 },
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
     .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
@@ -1100,6 +1101,7 @@ fn dictObjectFree(_: Dict.PrivData, val: Dict.Value) void {
     }
 }
 
+// AUTH password
 fn authCommand(cli: *Client) void {
     if (server.requirepass == null) {
         cli.addReplyErrFormat(
@@ -1122,6 +1124,7 @@ fn authCommand(cli: *Client) void {
     cli.addReplyErr("invalid password");
 }
 
+// PING
 fn pingCommand(cli: *Client) void {
     // The command takes zero or one arguments.
     if (cli.argc > 2) {
@@ -1137,6 +1140,11 @@ fn pingCommand(cli: *Client) void {
     } else {
         cli.addReply(cli.argv.?[1]);
     }
+}
+
+/// ECHO message
+fn echoCommand(cli: *Client) void {
+    cli.addReplyBulk(cli.argv.?[1]);
 }
 
 const server = &instance;
