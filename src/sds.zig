@@ -117,6 +117,7 @@ pub fn newLenAlloc(
     const hdr_len = hdrSize(typ);
     const mem_size = hdr_len + initlen;
     const mem = alloc.alloc(u8, mem_size) catch allocator.oom();
+    if (init == null) @memset(mem, 0);
 
     const s: String = mem.ptr + hdr_len;
     setType(s, typ);
@@ -317,6 +318,11 @@ pub fn incrLen(s: String, incr: isize) void {
     setLength(s, new_len);
 }
 
+/// Grow the sds to have the specified length. Bytes that were not part of
+/// the original length of the sds will be set to zero.
+///
+/// if the specified length is smaller than the current length, no operation
+/// is performed.
 pub fn growZero(s: String, new_len: usize) String {
     const curr_len = getLen(s);
     if (new_len <= curr_len) return s;

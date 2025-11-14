@@ -119,6 +119,7 @@ const commandTable = [_]Command{
     .{ .name = "incrbyfloat", .proc = string.incrbyfloatCommand, .arity = 3 },
     .{ .name = "strlen", .proc = string.strlenCommand, .arity = 2 },
     .{ .name = "append", .proc = string.appendCommand, .arity = 3 },
+    .{ .name = "setrange", .proc = string.setrangeCommand, .arity = 4 },
 };
 
 pub var shared: SharedObjects = undefined;

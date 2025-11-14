@@ -248,6 +248,69 @@ pub fn appendCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(totlen));
 }
 
+/// SETRANGE key offset value
+pub fn setrangeCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+
+    var offset: i64 = undefined;
+    if (!argv[2].getLongLongOrReply(cli, &offset, null)) {
+        return;
+    }
+    if (offset < 0) {
+        cli.addReplyErr("offset is out of range");
+        return;
+    }
+
+    const key = argv[1];
+    const value = sds.cast(argv[3].data.ptr);
+    const length = @as(usize, @intCast(offset)) + sds.getLen(value);
+    var o = cli.db.lookupKeyWrite(key);
+    if (o == null) {
+        // Return 0 when setting nothing on a non-existing string
+        if (sds.getLen(value) == 0) {
+            cli.addReply(Server.shared.czero);
+            return;
+        }
+
+        // Return when the resulting string exceeds allowed size
+        if (!checkStringLengthOrReply(length, cli)) {
+            return;
+        }
+
+        o = Object.create(.string, sds.newLen(null, length));
+        cli.db.add(key, o.?);
+    } else {
+        const obj = o.?;
+        if (obj.checkTypeOrReply(cli, .string)) {
+            return;
+        }
+
+        // Return existing string length when setting nothing
+        const olen = obj.stringLen();
+        if (sds.getLen(value) == 0) {
+            cli.addReplyLongLong(@intCast(olen));
+            return;
+        }
+
+        if (!checkStringLengthOrReply(length, cli)) {
+            return;
+        }
+
+        // Create a copy when the object is shared or encoded.
+        o = cli.db.unshareStringValue(key, obj);
+    }
+    const obj = o.?;
+    var s = sds.cast(obj.data.ptr);
+    obj.data = .{ .ptr = sds.growZero(s, length) };
+    s = sds.cast(obj.data.ptr);
+    memcpy(
+        s + @as(usize, @intCast(offset)),
+        value,
+        sds.getLen(value),
+    );
+    cli.addReplyLongLong(@intCast(sds.getLen(s)));
+}
+
 fn incr(cli: *Client, by: i64) void {
     const argv = cli.argv.?;
     const key = argv[1];
@@ -424,3 +487,5 @@ const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
 const sds = @import("sds.zig");
+const memzig = @import("mem.zig");
+const memcpy = memzig.memcpy;
