@@ -311,44 +311,57 @@ pub fn setrangeCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(sds.getLen(s)));
 }
 
-fn incr(cli: *Client, by: i64) void {
+/// GETRANGE key start end
+pub fn getrangeCommand(cli: *Client) void {
     const argv = cli.argv.?;
+    var start: i64 = undefined;
+    var end: i64 = undefined;
+
+    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
+        return;
+    }
+    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
+        return;
+    }
     const key = argv[1];
-
-    const o = cli.db.lookupKeyWrite(key);
-    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
-
-    var value: i64 = 0;
-    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) return;
-
-    if ((by < 0 and value < 0 and by < std.math.minInt(i64) - value) or
-        (by > 0 and value > 0 and by > std.math.maxInt(i64) - value))
-    {
-        cli.addReplyErr("increment or decrement would overflow");
+    const obj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptybulk,
+    ) orelse {
+        return;
+    };
+    if (obj.checkTypeOrReply(cli, .string)) {
         return;
     }
 
-    value += by;
-
-    var new: *Object = undefined;
-    if ((o != null) and
-        (o.?.refcount == 1 and o.?.encoding == .int) and
-        (value < 0 or value >= Server.OBJ_SHARED_INTEGERS))
-    {
-        new = o.?;
-        new.data = .{ .int = value };
+    var buf: [32]u8 = undefined;
+    var str: []u8 = undefined;
+    if (obj.encoding == .int) {
+        str = util.ll2string(&buf, obj.data.int);
     } else {
-        new = Object.createStringFromLonglongForValue(value);
-        if (o != null) {
-            cli.db.overwrite(key, new);
-        } else {
-            cli.db.add(key, new);
-        }
+        str = sds.asBytes(sds.cast(obj.data.ptr));
     }
 
-    cli.addReply(Server.shared.colon);
-    cli.addReply(new);
-    cli.addReply(Server.shared.crlf);
+    // Convert negative indexes
+    if (start < 0 and end < 0 and start > end) {
+        cli.addReply(Server.shared.emptybulk);
+        return;
+    }
+    const len: i64 = @intCast(str.len);
+    if (start < 0) start = len +% start;
+    if (end < 0) end = len +% end;
+    if (start < 0) start = 0;
+    if (end < 0) end = 0;
+    if (end >= len) end = len - 1;
+
+    // Precondition: end >= 0 && end < strlen, so the only condition where
+    // nothing can be returned is: start > end.
+    if (start > end or len == 0) {
+        cli.addReply(Server.shared.emptybulk);
+        return;
+    }
+    cli.addReplyBulkString(str[@intCast(start)..@intCast(end + 1)]);
 }
 
 const OBJ_SET_NO_FLAGS = 0;
@@ -427,6 +440,46 @@ fn set(
     );
 }
 
+fn incr(cli: *Client, by: i64) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    const o = cli.db.lookupKeyWrite(key);
+    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
+
+    var value: i64 = 0;
+    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) return;
+
+    if ((by < 0 and value < 0 and by < std.math.minInt(i64) - value) or
+        (by > 0 and value > 0 and by > std.math.maxInt(i64) - value))
+    {
+        cli.addReplyErr("increment or decrement would overflow");
+        return;
+    }
+
+    value += by;
+
+    var new: *Object = undefined;
+    if ((o != null) and
+        (o.?.refcount == 1 and o.?.encoding == .int) and
+        (value < 0 or value >= Server.OBJ_SHARED_INTEGERS))
+    {
+        new = o.?;
+        new.data = .{ .int = value };
+    } else {
+        new = Object.createStringFromLonglongForValue(value);
+        if (o != null) {
+            cli.db.overwrite(key, new);
+        } else {
+            cli.db.add(key, new);
+        }
+    }
+
+    cli.addReply(Server.shared.colon);
+    cli.addReply(new);
+    cli.addReply(Server.shared.crlf);
+}
+
 fn mset(cli: *Client, nx: bool) void {
     if (cli.argc % 2 == 0) {
         cli.addReplyErr("wrong number of arguments for MSET");
@@ -489,3 +542,4 @@ const Object = @import("Object.zig");
 const sds = @import("sds.zig");
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
+const util = @import("util.zig");

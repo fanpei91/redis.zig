@@ -120,6 +120,7 @@ const commandTable = [_]Command{
     .{ .name = "strlen", .proc = string.strlenCommand, .arity = 2 },
     .{ .name = "append", .proc = string.appendCommand, .arity = 3 },
     .{ .name = "setrange", .proc = string.setrangeCommand, .arity = 4 },
+    .{ .name = "getrange", .proc = string.getrangeCommand, .arity = 4 },
 };
 
 pub var shared: SharedObjects = undefined;

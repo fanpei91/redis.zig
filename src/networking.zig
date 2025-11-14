@@ -507,6 +507,12 @@ pub const Client = struct {
         self.addReply(Server.shared.crlf);
     }
 
+    pub fn addReplyBulkString(self: *Client, buf: []const u8) void {
+        self.addReplyLongLongWithPrefix(@intCast(buf.len), '$');
+        self.addReplyString(buf);
+        self.addReply(Server.shared.crlf);
+    }
+
     /// Create the length prefix of a bulk reply, example: $2234
     fn addReplyBulkLen(self: *Client, obj: *Object) void {
         var len: usize = 0;
