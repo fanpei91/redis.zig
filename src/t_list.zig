@@ -1,5 +1,3 @@
-const LIST_MAX_ITEM_SIZE = ((1 << 32) - 1024);
-
 /// LPUSH key element [element ...]
 pub fn lpushCommand(cli: *Client) void {
     push(cli, Server.LIST_HEAD);
@@ -8,6 +6,16 @@ pub fn lpushCommand(cli: *Client) void {
 /// RPUSH key element [element ...]
 pub fn rpushCommand(cli: *Client) void {
     push(cli, Server.LIST_TAIL);
+}
+
+/// LPUSHX key element [element ...]
+pub fn lpushxCommand(cli: *Client) void {
+    pushx(cli, Server.LIST_HEAD);
+}
+
+/// RPUSHX key element [element ...]
+pub fn rpushxCommand(cli: *Client) void {
+    pushx(cli, Server.LIST_TAIL);
 }
 
 /// LLEN key
@@ -24,23 +32,11 @@ pub fn llenCommand(cli: *Client) void {
     cli.addReplyLongLong(listLength(lobj.?));
 }
 
+/// LPUSH/RPUSH key element [element ...]
 fn push(cli: *Client, where: comptime_int) void {
     const argv = cli.argv.?;
-    for (argv[2..]) |arg| {
-        if (sds.getLen(sds.cast(arg.data.ptr)) > LIST_MAX_ITEM_SIZE) {
-            cli.addReplyErr("Element too large");
-            return;
-        }
-    }
-
     const key = argv[1];
-    const lobj = cli.db.lookupKeyWrite(key);
-    if (lobj != null and lobj.?.type != .list) {
-        cli.addReply(Server.shared.wrongtypeerr);
-        return;
-    }
-
-    const list = lobj orelse blk: {
+    const list = cli.db.lookupKeyWrite(key) orelse blk: {
         const obj = Object.createQuickList();
         const ql: *QuickList = @ptrCast(@alignCast(obj.data.ptr));
         ql.setOptions(
@@ -50,6 +46,30 @@ fn push(cli: *Client, where: comptime_int) void {
         cli.db.add(key, obj);
         break :blk obj;
     };
+    if (list.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    for (argv[2..]) |element| {
+        listPush(list, element, where);
+    }
+    cli.addReplyLongLong(listLength(list));
+}
+
+/// LPUSHX/RPUSHX key element [element ...]
+fn pushx(cli: *Client, where: comptime_int) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const list = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (list.checkTypeOrReply(cli, .list)) {
+        return;
+    }
 
     for (argv[2..]) |element| {
         listPush(list, element, where);

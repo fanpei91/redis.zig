@@ -158,6 +158,19 @@ pub const Database = struct {
         return self.lookupKey(key, Server.LOOKUP_NONE);
     }
 
+    pub fn lookupKeyWriteOrReply(
+        self: *Database,
+        cli: *Client,
+        key: *Object,
+        reply: *Object,
+    ) ?*Object {
+        const obj = self.lookupKeyWrite(key) orelse {
+            cli.addReply(reply);
+            return null;
+        };
+        return obj;
+    }
+
     pub fn lookupKeyReadOrReply(
         self: *Database,
         cli: *Client,
