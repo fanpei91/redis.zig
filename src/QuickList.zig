@@ -547,7 +547,7 @@ pub fn new(fill: i16, compress: u16) *QuickList {
     return ql;
 }
 
-pub fn setOptions(self: *QuickList, fill: i16, depth: u16) void {
+pub fn setOptions(self: *QuickList, fill: i32, depth: i32) void {
     self.setFill(fill);
     self.setCompressDepth(depth);
 }
@@ -1146,12 +1146,26 @@ fn delIndex(self: *QuickList, node: *Node, p: *[*]u8) bool {
     return gone;
 }
 
-fn setFill(self: *QuickList, fill: i16) void {
-    self.fill = if (fill < -5) -5 else fill;
+const FILL_MAX = 1 << 15;
+fn setFill(self: *QuickList, fill: i32) void {
+    var v = fill;
+    if (fill > FILL_MAX) {
+        v = FILL_MAX;
+    } else if (fill < -5) {
+        v = -5;
+    }
+    self.fill = @intCast(v);
 }
 
-fn setCompressDepth(self: *QuickList, depth: u16) void {
-    self.compress = depth;
+const COMPRESS_MAX = 1 << 16;
+fn setCompressDepth(self: *QuickList, compress: i32) void {
+    var v = compress;
+    if (compress > COMPRESS_MAX) {
+        v = COMPRESS_MAX;
+    } else if (compress < 0) {
+        v = 0;
+    }
+    self.compress = @intCast(v);
 }
 
 fn insertNodeBefore(self: *QuickList, old_node: ?*Node, new_node: *Node) void {

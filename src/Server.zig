@@ -82,6 +82,14 @@ pub const LOOKUP_NOTOUCH = (1 << 0);
 // in order to make sure of not over provisioning more than 128 fds.
 pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 
+// List related stuff
+pub const LIST_HEAD = 0;
+pub const LIST_TAIL = 1;
+
+// List defaults
+pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
+pub const OBJ_LIST_COMPRESS_DEPTH = 0;
+
 pub const Command = struct {
     pub const Proc = *const fn (cli: *Client) void;
 
@@ -104,24 +112,26 @@ const commandTable = [_]Command{
     .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
     .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
-    .{ .name = "set", .proc = string.setCommand, .arity = -3 },
-    .{ .name = "setnx", .proc = string.setnxCommand, .arity = 3 },
-    .{ .name = "setex", .proc = string.setexCommand, .arity = 4 },
-    .{ .name = "psetex", .proc = string.psetexCommand, .arity = 4 },
-    .{ .name = "mset", .proc = string.msetCommand, .arity = -3 },
-    .{ .name = "msetnx", .proc = string.msetnxCommand, .arity = -3 },
-    .{ .name = "get", .proc = string.getCommand, .arity = 2 },
-    .{ .name = "mget", .proc = string.mgetCommand, .arity = -2 },
-    .{ .name = "getset", .proc = string.getsetCommand, .arity = 3 },
-    .{ .name = "incr", .proc = string.incrCommand, .arity = 2 },
-    .{ .name = "decr", .proc = string.decrCommand, .arity = 2 },
-    .{ .name = "incrby", .proc = string.incrbyCommand, .arity = 3 },
-    .{ .name = "decrby", .proc = string.decrbyCommand, .arity = 3 },
-    .{ .name = "incrbyfloat", .proc = string.incrbyfloatCommand, .arity = 3 },
-    .{ .name = "strlen", .proc = string.strlenCommand, .arity = 2 },
-    .{ .name = "append", .proc = string.appendCommand, .arity = 3 },
-    .{ .name = "setrange", .proc = string.setrangeCommand, .arity = 4 },
-    .{ .name = "getrange", .proc = string.getrangeCommand, .arity = 4 },
+    .{ .name = "set", .proc = stringx.setCommand, .arity = -3 },
+    .{ .name = "setnx", .proc = stringx.setnxCommand, .arity = 3 },
+    .{ .name = "setex", .proc = stringx.setexCommand, .arity = 4 },
+    .{ .name = "psetex", .proc = stringx.psetexCommand, .arity = 4 },
+    .{ .name = "mset", .proc = stringx.msetCommand, .arity = -3 },
+    .{ .name = "msetnx", .proc = stringx.msetnxCommand, .arity = -3 },
+    .{ .name = "get", .proc = stringx.getCommand, .arity = 2 },
+    .{ .name = "mget", .proc = stringx.mgetCommand, .arity = -2 },
+    .{ .name = "getset", .proc = stringx.getsetCommand, .arity = 3 },
+    .{ .name = "incr", .proc = stringx.incrCommand, .arity = 2 },
+    .{ .name = "decr", .proc = stringx.decrCommand, .arity = 2 },
+    .{ .name = "incrby", .proc = stringx.incrbyCommand, .arity = 3 },
+    .{ .name = "decrby", .proc = stringx.decrbyCommand, .arity = 3 },
+    .{ .name = "incrbyfloat", .proc = stringx.incrbyfloatCommand, .arity = 3 },
+    .{ .name = "strlen", .proc = stringx.strlenCommand, .arity = 2 },
+    .{ .name = "append", .proc = stringx.appendCommand, .arity = 3 },
+    .{ .name = "setrange", .proc = stringx.setrangeCommand, .arity = 4 },
+    .{ .name = "getrange", .proc = stringx.getrangeCommand, .arity = 4 },
+    .{ .name = "lpush", .proc = listx.lpushCommand, .arity = -3 },
+    .{ .name = "rpush", .proc = listx.rpushCommand, .arity = -3 },
 };
 
 pub var shared: SharedObjects = undefined;
@@ -423,6 +433,9 @@ mstime: i64, // 'unixtime' in milliseconds.
 ustime: i64, // 'unixtime' in microseconds.
 // Lazy free
 lazyfree_lazy_expire: bool,
+// List parameters
+list_max_ziplist_size: i32,
+list_compress_depth: i32,
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
@@ -469,6 +482,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.unixtime = .init(0);
     server.updateCachedTime();
     server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
+    server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
+    server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
 
     try config.load(server, configfile, options);
     server.hz = server.config_hz;
@@ -1170,7 +1185,8 @@ const Rax = @import("rax/Rax.zig");
 const c = @cImport({
     @cInclude("sys/signal.h");
 });
-const string = @import("t_string.zig");
+const stringx = @import("t_string.zig");
+const listx = @import("t_list.zig");
 const dbx = @import("db.zig");
 const bio = @import("bio.zig");
 const expire = @import("expire.zig");

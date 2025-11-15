@@ -347,6 +347,24 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "list-max-ziplist-size") and argc == 2) {
+                server.list_max_ziplist_size = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch continue;
+                continue;
+            }
+
+            if (eql(option, "list-compress-depth") and argc == 2) {
+                server.list_compress_depth = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch continue;
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }
