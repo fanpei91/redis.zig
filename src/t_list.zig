@@ -10,6 +10,20 @@ pub fn rpushCommand(cli: *Client) void {
     push(cli, Server.LIST_TAIL);
 }
 
+/// LLEN key
+pub fn llenCommand(cli: *Client) void {
+    const key = cli.argv.?[1];
+    const lobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    );
+    if (lobj == null or lobj.?.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+    cli.addReplyLongLong(listLength(lobj.?));
+}
+
 fn push(cli: *Client, where: comptime_int) void {
     const argv = cli.argv.?;
     for (argv[2..]) |arg| {
@@ -40,7 +54,7 @@ fn push(cli: *Client, where: comptime_int) void {
     for (argv[2..]) |element| {
         listPush(list, element, where);
     }
-    cli.addReplyLongLong(@intCast(listLength(list)));
+    cli.addReplyLongLong(listLength(list));
 }
 
 fn listPush(lobj: *Object, element: *Object, where: comptime_int) void {
@@ -57,10 +71,10 @@ fn listPush(lobj: *Object, element: *Object, where: comptime_int) void {
     }
 }
 
-fn listLength(lobj: *Object) u64 {
+fn listLength(lobj: *Object) i64 {
     if (lobj.encoding == .quicklist) {
         const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
-        return ql.count;
+        return @intCast(ql.count);
     } else {
         @panic("Unknown list encoding");
     }
