@@ -551,33 +551,37 @@ pub fn setOptions(self: *QuickList, fill: i32, depth: i32) void {
     self.setFill(fill);
     self.setCompressDepth(depth);
 }
-
+pub const popSaverValue = union(enum) {
+    num: i64,
+    str: []u8,
+};
 pub fn pop(
     self: *QuickList,
     where: Where,
-    callback: ?*const fn (union(enum) { num: i64, str: []u8 }) void,
-) bool {
-    if (self.count == 0) return false;
+    saver: ?*const fn (popSaverValue) *anyopaque,
+) ?*anyopaque {
+    if (self.count == 0) return null;
     const node = (if (where == .head) self.head else self.tail) orelse
-        return false;
+        return null;
 
     const pos: i32 = if (where == .head) 0 else -1;
-    var entry = ZipList.cast(node.zl.?).index(pos) orelse return false;
-    const un = ZipList.get(entry) orelse return false;
+    var entry = ZipList.cast(node.zl.?).index(pos) orelse return null;
+    const un = ZipList.get(entry) orelse return null;
+    var val: ?*anyopaque = null;
     switch (un) {
         .num => |v| {
-            if (callback) |cb| {
-                cb(.{ .num = v });
+            if (saver) |cb| {
+                val = cb(.{ .num = v });
             }
         },
         .str => |v| {
-            if (callback) |cb| {
-                cb(.{ .str = v });
+            if (saver) |cb| {
+                val = cb(.{ .str = v });
             }
         },
     }
     _ = self.delIndex(node, &entry);
-    return true;
+    return val;
 }
 
 pub fn push(self: *QuickList, value: []const u8, where: Where) void {
@@ -1315,15 +1319,14 @@ test "pop()" {
     ql.push("b", .tail);
     ql.push("1", .tail);
 
-    try expect(ql.pop(.head, null));
+    _ = ql.pop(.head, null);
     try expectEqual(2, ql.count);
 
-    try expect(ql.pop(.tail, null));
+    _ = ql.pop(.tail, null);
     try expectEqual(1, ql.count);
 
-    try expect(ql.pop(.tail, null));
+    _ = ql.pop(.tail, null);
     try expectEqual(0, ql.count);
-    try expect(!ql.pop(.tail, null));
 }
 
 test "createFromZiplist()" {

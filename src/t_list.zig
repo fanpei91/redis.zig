@@ -18,6 +18,16 @@ pub fn rpushxCommand(cli: *Client) void {
     pushx(cli, Server.LIST_TAIL);
 }
 
+/// LPOP key
+pub fn lpopCommand(cli: *Client) void {
+    pop(cli, Server.LIST_HEAD);
+}
+
+/// RPOP key
+pub fn rpopCommand(cli: *Client) void {
+    pop(cli, Server.LIST_TAIL);
+}
+
 /// LLEN key
 pub fn llenCommand(cli: *Client) void {
     const key = cli.argv.?[1];
@@ -77,6 +87,29 @@ fn pushx(cli: *Client, where: comptime_int) void {
     cli.addReplyLongLong(listLength(list));
 }
 
+/// LPOP/RPOP key
+fn pop(cli: *Client, where: comptime_int) void {
+    const key = cli.argv.?[1];
+    const lobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+    const value = listPop(lobj, where) orelse {
+        cli.addReply(Server.shared.nullbulk);
+        return;
+    };
+    defer value.decrRefCount();
+    cli.addReplyBulk(value);
+
+    if (listLength(lobj) == 0) {
+        _ = cli.db.delete(key);
+    }
+}
+
 fn listPush(lobj: *Object, element: *Object, where: comptime_int) void {
     if (lobj.encoding == .quicklist) {
         const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
@@ -89,6 +122,26 @@ fn listPush(lobj: *Object, element: *Object, where: comptime_int) void {
     } else {
         @panic("Unknown list encoding");
     }
+}
+
+fn listPop(lobj: *Object, where: comptime_int) ?*Object {
+    if (lobj.encoding == .quicklist) {
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+        const obj = ql.pop(
+            if (where == Server.LIST_HEAD) .head else .tail,
+            listPopSaver,
+        ) orelse return null;
+        return @ptrCast(@alignCast(obj));
+    } else {
+        @panic("Unknown list encoding");
+    }
+}
+
+fn listPopSaver(value: QuickList.popSaverValue) *anyopaque {
+    return switch (value) {
+        .num => |v| Object.createStringFromLonglong(v),
+        .str => |v| Object.createString(v),
+    };
 }
 
 fn listLength(lobj: *Object) i64 {

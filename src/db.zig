@@ -44,6 +44,15 @@ pub const Database = struct {
         std.debug.assert(ok);
     }
 
+    /// This is a wrapper whose behavior depends on the Redis lazy free
+    /// configuration. Deletes the key synchronously or asynchronously.
+    pub fn delete(self: *Database, key: *Object) bool {
+        if (server.lazyfree_lazy_expire) {
+            return lazyfree.asyncDelete(self, key);
+        }
+        return self.syncDelete(key);
+    }
+
     /// Overwrite an existing key with a new value. Incrementing the reference
     /// count of the new value is up to the caller.
     /// This function does not modify the expire time of the existing key.
