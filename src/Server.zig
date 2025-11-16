@@ -82,10 +82,6 @@ pub const LOOKUP_NOTOUCH = (1 << 0);
 // in order to make sure of not over provisioning more than 128 fds.
 pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 
-// List related stuff
-pub const LIST_HEAD = 0;
-pub const LIST_TAIL = 1;
-
 // List defaults
 pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
 pub const OBJ_LIST_COMPRESS_DEPTH = 0;
@@ -136,6 +132,7 @@ const commandTable = [_]Command{
     .{ .name = "rpushx", .proc = listx.rpushxCommand, .arity = -3 },
     .{ .name = "lpop", .proc = listx.lpopCommand, .arity = 2 },
     .{ .name = "rpop", .proc = listx.rpopCommand, .arity = 2 },
+    .{ .name = "linsert", .proc = listx.linsertCommand, .arity = 5 },
     .{ .name = "llen", .proc = listx.llenCommand, .arity = 2 },
 };
 
