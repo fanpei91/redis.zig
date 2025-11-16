@@ -134,6 +134,7 @@ const commandTable = [_]Command{
     .{ .name = "rpop", .proc = listx.rpopCommand, .arity = 2 },
     .{ .name = "linsert", .proc = listx.linsertCommand, .arity = 5 },
     .{ .name = "lindex", .proc = listx.lindexCommand, .arity = 3 },
+    .{ .name = "lset", .proc = listx.lsetCommand, .arity = 4 },
     .{ .name = "llen", .proc = listx.llenCommand, .arity = 2 },
 };
 

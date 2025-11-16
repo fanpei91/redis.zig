@@ -245,6 +245,38 @@ pub fn lindexCommand(cli: *Client) void {
     cli.addReply(Server.shared.nullbulk);
 }
 
+/// LSET key index element
+pub fn lsetCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const lobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nokeyerr,
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    var index: i64 = undefined;
+    if (!argv[2].getLongLongOrReply(cli, &index, null)) {
+        return;
+    }
+
+    if (lobj.encoding != .quicklist) {
+        @branchHint(.unlikely);
+        @panic("Unknown list encoding");
+    }
+
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+    const element = sds.asBytes(sds.cast(argv[3].data.ptr));
+    if (ql.replaceAtIndex(index, element)) {
+        cli.addReply(Server.shared.ok);
+        return;
+    }
+    cli.addReply(Server.shared.outofrangeerr);
+}
+
 /// LLEN key
 pub fn llenCommand(cli: *Client) void {
     const key = cli.argv.?[1];
