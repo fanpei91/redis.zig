@@ -492,6 +492,12 @@ pub const Client = struct {
         }
     }
 
+    pub fn addReplyBulkLongLong(self: *Client, ll: i64) void {
+        var buf: [64]u8 = undefined;
+        const str = util.ll2string(&buf, ll);
+        self.addReplyBulkString(str);
+    }
+
     pub fn addReplyMultiBulkLen(self: *Client, len: usize) void {
         if (len < Server.shared.mbulkhdr.len) {
             self.addReply(Server.shared.mbulkhdr[len]);

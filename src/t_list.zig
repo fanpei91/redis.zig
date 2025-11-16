@@ -291,6 +291,58 @@ pub fn llenCommand(cli: *Client) void {
     cli.addReplyLongLong(List.length(lobj));
 }
 
+/// LRANGE key start stop
+pub fn lrangeCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    var start: i64 = undefined;
+    var end: i64 = undefined;
+
+    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
+        return;
+    }
+    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
+        return;
+    }
+
+    const key = argv[1];
+    const lobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    const llen: i64 = List.length(lobj);
+    if (start < 0) start = llen +% start;
+    if (end < 0) end = llen +% end;
+    if (start < 0) start = 0;
+    if (end < 0) end = 0;
+    if (end >= llen) end = llen - 1;
+
+    // Precondition: end >= 0 && end < llen, so the only condition where
+    // nothing can be returned is: start > end.
+    if (start > end or llen == 0) {
+        cli.addReply(Server.shared.emptymultibulk);
+        return;
+    }
+
+    // Return the result in form of a multi-bulk reply
+    var rangelen = end - start + 1;
+    cli.addReplyMultiBulkLen(@intCast(rangelen));
+    var iter = List.iterator(lobj, start, .tail);
+    while (rangelen > 0) : (rangelen -= 1) {
+        var entry: List.Entry = undefined;
+        _ = iter.next(&entry);
+        if (entry.entry.value) |value| {
+            cli.addReplyBulkString(value[0..entry.entry.sz]);
+        } else {
+            cli.addReplyBulkLongLong(entry.entry.longval);
+        }
+    }
+}
+
 /// LPUSH/RPUSH key element [element ...]
 fn push(cli: *Client, where: Where) void {
     const argv = cli.argv.?;
