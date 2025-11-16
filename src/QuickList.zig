@@ -793,8 +793,8 @@ pub fn iteratorAtIndex(
 /// from the tail, -1 is the last element, -2 the penultimate
 /// and so on. If the index is out of range false is returned.
 ///
-/// Returns true if element found
-/// Returns false if element not found
+/// Returns true if element found.
+/// Returns false if element not found.
 pub fn index(self: *const QuickList, idx: i64, entry: *Entry) bool {
     Entry.init(entry);
     entry.quicklist = @constCast(self);

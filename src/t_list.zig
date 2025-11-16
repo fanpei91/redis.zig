@@ -43,8 +43,9 @@ pub const List = struct {
         iter: ?QuickList.Iterator,
 
         /// Stores pointer to current the entry in the provided entry structure
-        /// and advances the position of the iterator. Returns true when the current
-        /// entry is in fact an entry, false otherwise.
+        /// and advances the position of the iterator.
+        /// Returns true when the current entry is in fact an entry,
+        /// false otherwise.
         pub fn next(self: *Iterator, entry: *Entry) bool {
             assert(self.encoding == self.subject.encoding);
             if (self.encoding != .quicklist) {
@@ -55,6 +56,16 @@ pub const List = struct {
             return self.iter.?.next(&entry.entry);
         }
     };
+
+    pub fn create() *Object {
+        const obj = Object.createQuickList();
+        const ql: *QuickList = @ptrCast(@alignCast(obj.data.ptr));
+        ql.setOptions(
+            server.list_max_ziplist_size,
+            server.list_compress_depth,
+        );
+        return obj;
+    }
 
     /// Create an iterator at the specified index.
     pub fn iterator(lobj: *Object, index: i64, direction: Where) Iterator {
@@ -195,6 +206,45 @@ pub fn linsertCommand(cli: *Client) void {
     cli.addReply(Server.shared.cnegone);
 }
 
+/// LINDEX key index
+pub fn lindexCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const lobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    var index: i64 = undefined;
+    if (!argv[2].getLongLongOrReply(cli, &index, null)) {
+        return;
+    }
+
+    if (lobj.encoding != .quicklist) {
+        @branchHint(.unlikely);
+        @panic("Unknown list encoding");
+    }
+
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+    var entry: QuickList.Entry = undefined;
+    if (ql.index(index, &entry)) {
+        var obj: *Object = undefined;
+        defer obj.decrRefCount();
+        if (entry.value) |value| {
+            obj = Object.createString(value[0..entry.sz]);
+        } else {
+            obj = Object.createStringFromLonglong(entry.longval);
+        }
+        cli.addReplyBulk(obj);
+        return;
+    }
+    cli.addReply(Server.shared.nullbulk);
+}
+
 /// LLEN key
 pub fn llenCommand(cli: *Client) void {
     const key = cli.argv.?[1];
@@ -202,11 +252,11 @@ pub fn llenCommand(cli: *Client) void {
         cli,
         key,
         Server.shared.czero,
-    );
-    if (lobj == null or lobj.?.checkTypeOrReply(cli, .list)) {
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
         return;
     }
-    cli.addReplyLongLong(List.length(lobj.?));
+    cli.addReplyLongLong(List.length(lobj));
 }
 
 /// LPUSH/RPUSH key element [element ...]
@@ -214,12 +264,7 @@ fn push(cli: *Client, where: Where) void {
     const argv = cli.argv.?;
     const key = argv[1];
     const list = cli.db.lookupKeyWrite(key) orelse blk: {
-        const obj = Object.createQuickList();
-        const ql: *QuickList = @ptrCast(@alignCast(obj.data.ptr));
-        ql.setOptions(
-            server.list_max_ziplist_size,
-            server.list_compress_depth,
-        );
+        const obj = List.create();
         cli.db.add(key, obj);
         break :blk obj;
     };
