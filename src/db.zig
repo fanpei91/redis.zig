@@ -48,6 +48,11 @@ pub fn renamenxCommand(cli: *Client) void {
     rename(cli, true);
 }
 
+/// DBSIZE
+pub fn dbsizeCommand(cli: *Client) void {
+    cli.addReplyLongLong(@intCast(cli.db.dict.size()));
+}
+
 /// DEL/UNLINK key [key ...]
 fn del(cli: *Client, lazy: bool) void {
     const argv = cli.argv.?;
