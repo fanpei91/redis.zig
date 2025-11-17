@@ -86,258 +86,7 @@ pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
 pub const OBJ_LIST_COMPRESS_DEPTH = 0;
 
-pub const Command = struct {
-    pub const Proc = *const fn (cli: *Client) void;
-
-    name: []const u8,
-    proc: Proc,
-    arity: i32,
-};
-
-/// Our command table.
-///
-/// Every entry is composed of the following fields:
-///
-/// name: a string representing the command name.
-/// proc: pointer to the function implementing the command.
-/// arity: number of arguments, it is possible to use -N to say >= N.
-const commandTable = [_]Command{
-    .{ .name = "ping", .proc = pingCommand, .arity = -1 },
-    .{ .name = "echo", .proc = echoCommand, .arity = 2 },
-    .{ .name = "auth", .proc = authCommand, .arity = 2 },
-    .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
-    .{ .name = "exists", .proc = dbx.existsCommand, .arity = -2 },
-    .{ .name = "del", .proc = dbx.delCommand, .arity = -2 },
-    .{ .name = "unlink", .proc = dbx.unlinkCommand, .arity = -2 },
-    .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
-    .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
-    .{ .name = "set", .proc = stringx.setCommand, .arity = -3 },
-    .{ .name = "setnx", .proc = stringx.setnxCommand, .arity = 3 },
-    .{ .name = "setex", .proc = stringx.setexCommand, .arity = 4 },
-    .{ .name = "psetex", .proc = stringx.psetexCommand, .arity = 4 },
-    .{ .name = "mset", .proc = stringx.msetCommand, .arity = -3 },
-    .{ .name = "msetnx", .proc = stringx.msetnxCommand, .arity = -3 },
-    .{ .name = "get", .proc = stringx.getCommand, .arity = 2 },
-    .{ .name = "mget", .proc = stringx.mgetCommand, .arity = -2 },
-    .{ .name = "getset", .proc = stringx.getsetCommand, .arity = 3 },
-    .{ .name = "incr", .proc = stringx.incrCommand, .arity = 2 },
-    .{ .name = "decr", .proc = stringx.decrCommand, .arity = 2 },
-    .{ .name = "incrby", .proc = stringx.incrbyCommand, .arity = 3 },
-    .{ .name = "decrby", .proc = stringx.decrbyCommand, .arity = 3 },
-    .{ .name = "incrbyfloat", .proc = stringx.incrbyfloatCommand, .arity = 3 },
-    .{ .name = "strlen", .proc = stringx.strlenCommand, .arity = 2 },
-    .{ .name = "append", .proc = stringx.appendCommand, .arity = 3 },
-    .{ .name = "setrange", .proc = stringx.setrangeCommand, .arity = 4 },
-    .{ .name = "getrange", .proc = stringx.getrangeCommand, .arity = 4 },
-    .{ .name = "lpush", .proc = listx.lpushCommand, .arity = -3 },
-    .{ .name = "rpush", .proc = listx.rpushCommand, .arity = -3 },
-    .{ .name = "lpushx", .proc = listx.lpushxCommand, .arity = -3 },
-    .{ .name = "rpushx", .proc = listx.rpushxCommand, .arity = -3 },
-    .{ .name = "lpop", .proc = listx.lpopCommand, .arity = 2 },
-    .{ .name = "rpop", .proc = listx.rpopCommand, .arity = 2 },
-    .{ .name = "linsert", .proc = listx.linsertCommand, .arity = 5 },
-    .{ .name = "lindex", .proc = listx.lindexCommand, .arity = 3 },
-    .{ .name = "lset", .proc = listx.lsetCommand, .arity = 4 },
-    .{ .name = "llen", .proc = listx.llenCommand, .arity = 2 },
-    .{ .name = "lrange", .proc = listx.lrangeCommand, .arity = 4 },
-    .{ .name = "ltrim", .proc = listx.ltrimCommand, .arity = 4 },
-};
-
 pub var shared: SharedObjects = undefined;
-
-const SharedObjects = struct {
-    crlf: *Object,
-    ok: *Object,
-    err: *Object,
-    emptybulk: *Object,
-    czero: *Object,
-    cone: *Object,
-    cnegone: *Object,
-    nullbulk: *Object,
-    nullmultibulk: *Object,
-    emptymultibulk: *Object,
-    pong: *Object,
-    queued: *Object,
-    emptyscan: *Object,
-    wrongtypeerr: *Object,
-    nokeyerr: *Object,
-    syntaxerr: *Object,
-    sameobjecterr: *Object,
-    outofrangeerr: *Object,
-    noautherr: *Object,
-    oomerr: *Object,
-    execaborterr: *Object,
-    busykeyerr: *Object,
-    space: *Object,
-    colon: *Object,
-    plus: *Object,
-    integers: [OBJ_SHARED_INTEGERS]*Object,
-    bulkhdr: [OBJ_SHARED_BULKHDR_LEN]*Object, // $<value>\r\n
-    mbulkhdr: [OBJ_SHARED_BULKHDR_LEN]*Object, // *<value>\r\n
-    minstring: sds.String,
-    maxstring: sds.String,
-
-    fn create() void {
-        shared.crlf = Object.create(
-            .string,
-            sds.new("\r\n"),
-        );
-        shared.ok = Object.create(
-            .string,
-            sds.new("+OK\r\n"),
-        );
-        shared.err = Object.create(
-            .string,
-            sds.new("-ERR\r\n"),
-        );
-        shared.emptybulk = Object.create(
-            .string,
-            sds.new("$0\r\n\r\n"),
-        );
-        shared.czero = Object.create(
-            .string,
-            sds.new(":0\r\n"),
-        );
-        shared.cone = Object.create(
-            .string,
-            sds.new(":1\r\n"),
-        );
-        shared.cnegone = Object.create(
-            .string,
-            sds.new(":-1\r\n"),
-        );
-        shared.nullbulk = Object.create(
-            .string,
-            sds.new("$-1\r\n"),
-        );
-        shared.nullmultibulk = Object.create(
-            .string,
-            sds.new("*-1\r\n"),
-        );
-        shared.emptymultibulk = Object.create(
-            .string,
-            sds.new("*0\r\n"),
-        );
-        shared.pong = Object.create(
-            .string,
-            sds.new("+PONG\r\n"),
-        );
-        shared.queued = Object.create(
-            .string,
-            sds.new("+QUEUED\r\n"),
-        );
-        shared.emptyscan = Object.create(
-            .string,
-            sds.new("*2\r\n$1\r\n0\r\n*0\r\n"),
-        );
-        shared.wrongtypeerr = Object.create(
-            .string,
-            sds.new(
-                "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-            ),
-        );
-        shared.nokeyerr = Object.create(
-            .string,
-            sds.new("-ERR no such key\r\n"),
-        );
-        shared.syntaxerr = Object.create(
-            .string,
-            sds.new("-ERR syntax error\r\n"),
-        );
-        shared.sameobjecterr = Object.create(
-            .string,
-            sds.new(
-                "-ERR source and destination objects are the same\r\n",
-            ),
-        );
-        shared.outofrangeerr = Object.create(
-            .string,
-            sds.new("-ERR index out of range\r\n"),
-        );
-        shared.noautherr = Object.create(
-            .string,
-            sds.new("-NOAUTH Authentication required.\r\n"),
-        );
-        shared.oomerr = Object.create(
-            .string,
-            sds.new(
-                "-OOM command not allowed when used memory > 'maxmemory'.\r\n",
-            ),
-        );
-        shared.execaborterr = Object.create(
-            .string,
-            sds.new(
-                "-EXECABORT Transaction discarded because of previous errors.\r\n",
-            ),
-        );
-        shared.busykeyerr = Object.create(
-            .string,
-            sds.new("-BUSYKEY Target key name already exists.\r\n"),
-        );
-        shared.space = Object.create(
-            .string,
-            sds.new(" "),
-        );
-        shared.colon = Object.create(
-            .string,
-            sds.new(":"),
-        );
-        shared.plus = Object.create(
-            .string,
-            sds.new("+"),
-        );
-        for (0..OBJ_SHARED_INTEGERS) |i| {
-            var obj = Object.createInt(@intCast(i));
-            shared.integers[i] = obj.makeShared();
-        }
-        for (0..OBJ_SHARED_BULKHDR_LEN) |i| {
-            shared.bulkhdr[i] = Object.create(
-                .string,
-                sds.catPrintf(sds.empty(), "${}\r\n", .{i}),
-            );
-            shared.mbulkhdr[i] = Object.create(
-                .string,
-                sds.catPrintf(sds.empty(), "*{}\r\n", .{i}),
-            );
-        }
-        shared.minstring = sds.new("minstring");
-        shared.maxstring = sds.new("maxstring");
-    }
-
-    fn destroy() void {
-        shared.crlf.decrRefCount();
-        shared.ok.decrRefCount();
-        shared.err.decrRefCount();
-        shared.emptybulk.decrRefCount();
-        shared.czero.decrRefCount();
-        shared.cone.decrRefCount();
-        shared.cnegone.decrRefCount();
-        shared.nullbulk.decrRefCount();
-        shared.nullmultibulk.decrRefCount();
-        shared.emptymultibulk.decrRefCount();
-        shared.pong.decrRefCount();
-        shared.queued.decrRefCount();
-        shared.emptyscan.decrRefCount();
-        shared.wrongtypeerr.decrRefCount();
-        shared.nokeyerr.decrRefCount();
-        shared.syntaxerr.decrRefCount();
-        shared.sameobjecterr.decrRefCount();
-        shared.outofrangeerr.decrRefCount();
-        shared.noautherr.decrRefCount();
-        shared.oomerr.decrRefCount();
-        shared.execaborterr.decrRefCount();
-        shared.busykeyerr.decrRefCount();
-        shared.space.decrRefCount();
-        shared.colon.decrRefCount();
-        shared.plus.decrRefCount();
-        for (shared.integers) |obj| obj.free();
-        for (shared.bulkhdr) |obj| obj.decrRefCount();
-        for (shared.mbulkhdr) |obj| obj.decrRefCount();
-        sds.free(shared.minstring);
-        sds.free(shared.maxstring);
-        shared = undefined;
-    }
-};
 
 const commandTableDictVTable: *const Dict.VTable = &.{
     .hash = dictSdsCaseHash,
@@ -389,8 +138,6 @@ pub const zsetDictVTable: *const Dict.VTable = &.{
 };
 
 pub var instance: Server = undefined;
-
-pub const ClientList = List(*Client, *Client);
 
 const Server = @This();
 // General
@@ -508,8 +255,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     errdefer server.clients_to_close.release();
     server.next_client_id = .init(1);
 
-    SharedObjects.create();
-    errdefer SharedObjects.destroy();
+    shared = SharedObjects.create();
+    errdefer shared.destroy();
 
     try server.adjustOpenFilesLimit();
     server.el = try ae.EventLoop.create(
@@ -1026,8 +773,8 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
 }
 
 fn populateCommandTable(self: *Server) void {
-    for (0..commandTable.len) |i| {
-        const command = &commandTable[i];
+    for (0..commandtable.table.len) |i| {
+        const command = &commandtable.table[i];
         const ok = self.commands.add(
             sds.new(command.name),
             @constCast(command),
@@ -1084,7 +831,7 @@ pub fn destroy() void {
 
     bio.deinit();
 
-    SharedObjects.destroy();
+    shared.destroy();
 
     instance = undefined;
 }
@@ -1126,7 +873,7 @@ fn dictObjectFree(_: Dict.PrivData, val: Dict.Value) void {
 }
 
 // AUTH password
-fn authCommand(cli: *Client) void {
+pub fn authCommand(cli: *Client) void {
     if (server.requirepass == null) {
         cli.addReplyErrFormat(
             "Client sent AUTH, but no password is set",
@@ -1149,7 +896,7 @@ fn authCommand(cli: *Client) void {
 }
 
 // PING
-fn pingCommand(cli: *Client) void {
+pub fn pingCommand(cli: *Client) void {
     // The command takes zero or one arguments.
     if (cli.argc > 2) {
         cli.addReplyErrFormat(
@@ -1167,7 +914,7 @@ fn pingCommand(cli: *Client) void {
 }
 
 /// ECHO message
-fn echoCommand(cli: *Client) void {
+pub fn echoCommand(cli: *Client) void {
     cli.addReplyBulk(cli.argv.?[1]);
 }
 
@@ -1199,3 +946,7 @@ const listx = @import("t_list.zig");
 const dbx = @import("db.zig");
 const bio = @import("bio.zig");
 const expire = @import("expire.zig");
+const SharedObjects = @import("SharedObjects.zig");
+const commandtable = @import("commandtable.zig");
+pub const Command = commandtable.Command;
+pub const ClientList = List(*Client, *Client);
