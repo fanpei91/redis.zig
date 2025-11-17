@@ -9,6 +9,7 @@ pub const table = [_]Command{
     .{ .name = "ping", .proc = Server.pingCommand, .arity = -1 },
     .{ .name = "echo", .proc = Server.echoCommand, .arity = 2 },
     .{ .name = "auth", .proc = Server.authCommand, .arity = 2 },
+    .{ .name = "time", .proc = Server.timeCommand, .arity = 1 },
     .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
     .{ .name = "exists", .proc = dbx.existsCommand, .arity = -2 },
     .{ .name = "del", .proc = dbx.delCommand, .arity = -2 },

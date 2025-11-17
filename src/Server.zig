@@ -918,6 +918,16 @@ pub fn echoCommand(cli: *Client) void {
     cli.addReplyBulk(cli.argv.?[1]);
 }
 
+/// TIME
+pub fn timeCommand(cli: *Client) void {
+    const ustime = std.time.microTimestamp();
+    const sec = @divFloor(ustime, std.time.us_per_s);
+    const usec = @rem(ustime, std.time.us_per_s);
+    cli.addReplyMultiBulkLen(2);
+    cli.addReplyBulkLongLong(sec);
+    cli.addReplyBulkLongLong(usec);
+}
+
 const server = &instance;
 const Object = @import("Object.zig");
 const std = @import("std");
