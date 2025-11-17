@@ -22,6 +22,18 @@ pub fn persistCommand(cli: *Client) void {
     }
 }
 
+/// TOUCH key [key ...]
+pub fn touchCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    var touched: i64 = 0;
+    for (argv[1..]) |key| {
+        if (cli.db.lookupKeyRead(key) != null) {
+            touched += 1;
+        }
+    }
+    cli.addReplyLongLong(touched);
+}
+
 /// Implements TTL and PTTL
 fn ttl(cli: *Client, output_ms: bool) void {
     const key = cli.argv.?[1];
