@@ -137,6 +137,7 @@ const commandTable = [_]Command{
     .{ .name = "lset", .proc = listx.lsetCommand, .arity = 4 },
     .{ .name = "llen", .proc = listx.llenCommand, .arity = 2 },
     .{ .name = "lrange", .proc = listx.lrangeCommand, .arity = 4 },
+    .{ .name = "ltrim", .proc = listx.ltrimCommand, .arity = 4 },
 };
 
 pub var shared: SharedObjects = undefined;

@@ -291,7 +291,7 @@ pub fn llenCommand(cli: *Client) void {
     cli.addReplyLongLong(List.length(lobj));
 }
 
-/// LRANGE key start stop
+/// LRANGE key start end
 pub fn lrangeCommand(cli: *Client) void {
     const argv = cli.argv.?;
     var start: i64 = undefined;
@@ -315,18 +315,18 @@ pub fn lrangeCommand(cli: *Client) void {
     }
 
     const llen: i64 = List.length(lobj);
+    // convert negative indexes
     if (start < 0) start = llen +% start;
     if (end < 0) end = llen +% end;
     if (start < 0) start = 0;
-    if (end < 0) end = 0;
-    if (end >= llen) end = llen - 1;
 
-    // Precondition: end >= 0 && end < llen, so the only condition where
-    // nothing can be returned is: start > end.
-    if (start > end or llen == 0) {
+    // Invariant: start >= 0, so this test will be true when end < 0.
+    // The range is empty when start > end or start >= length.
+    if (start > end or start >= llen) {
         cli.addReply(Server.shared.emptymultibulk);
         return;
     }
+    if (end >= llen) end = llen - 1;
 
     // Return the result in form of a multi-bulk reply
     var rangelen = end - start + 1;
@@ -341,6 +341,64 @@ pub fn lrangeCommand(cli: *Client) void {
             cli.addReplyBulkLongLong(entry.entry.longval);
         }
     }
+}
+
+/// LTRIM key start end
+pub fn ltrimCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    var start: i64 = undefined;
+    var end: i64 = undefined;
+
+    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
+        return;
+    }
+    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
+        return;
+    }
+
+    const key = argv[1];
+    const lobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.ok,
+    ) orelse return;
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    const llen: i64 = List.length(lobj);
+    // convert negative indexes
+    if (start < 0) start = llen +% start;
+    if (end < 0) end = llen +% end;
+    if (start < 0) start = 0;
+
+    var ltrim: i64 = undefined;
+    var rtrim: i64 = undefined;
+
+    // Invariant: start >= 0, so this test will be true when end < 0.
+    // The range is empty when start > end or start >= length.
+    if (start > end or start >= llen) {
+        // Out of range start or start > end result in empty list
+        ltrim = llen;
+        rtrim = 0;
+    } else {
+        if (end >= llen) end = llen - 1;
+        ltrim = start;
+        rtrim = llen - end - 1;
+    }
+
+    if (lobj.encoding != .quicklist) {
+        @branchHint(.unlikely);
+        @panic("Unknown list encoding");
+    }
+
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+    _ = ql.delRange(0, ltrim);
+    _ = ql.delRange(-rtrim, rtrim);
+    if (List.length(lobj) == 0) {
+        _ = cli.db.delete(key);
+    }
+    cli.addReply(Server.shared.ok);
 }
 
 /// LPUSH/RPUSH key element [element ...]
