@@ -28,6 +28,31 @@ pub fn existsCommand(cli: *Client) void {
     cli.addReplyLongLong(count);
 }
 
+/// DEL key [key ...]
+pub fn delCommand(cli: *Client) void {
+    del(cli, false);
+}
+
+/// UNLINK key [key ...]
+pub fn unlinkCommand(cli: *Client) void {
+    del(cli, true);
+}
+
+/// DEL/UNLINK key [key ...]
+fn del(cli: *Client, lazy: bool) void {
+    const argv = cli.argv.?;
+    var numdel: i64 = 0;
+    for (argv[1..]) |key| {
+        _ = cli.db.expireIfNeeded(key);
+        const deleted = if (lazy)
+            lazyfree.asyncDelete(cli.db, key)
+        else
+            cli.db.syncDelete(key);
+        if (deleted) numdel += 1;
+    }
+    cli.addReplyLongLong(numdel);
+}
+
 pub fn select(cli: *Client, id: i64) bool {
     if (id < 0 or id >= server.dbnum) {
         return false;

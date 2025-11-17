@@ -107,6 +107,8 @@ const commandTable = [_]Command{
     .{ .name = "auth", .proc = authCommand, .arity = 2 },
     .{ .name = "select", .proc = dbx.selectCommand, .arity = 2 },
     .{ .name = "exists", .proc = dbx.existsCommand, .arity = -2 },
+    .{ .name = "del", .proc = dbx.delCommand, .arity = -2 },
+    .{ .name = "unlink", .proc = dbx.unlinkCommand, .arity = -2 },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
     .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
     .{ .name = "set", .proc = stringx.setCommand, .arity = -3 },
