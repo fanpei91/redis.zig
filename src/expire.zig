@@ -34,6 +34,68 @@ pub fn touchCommand(cli: *Client) void {
     cli.addReplyLongLong(touched);
 }
 
+/// EXPIRE key seconds
+pub fn expireCommand(cli: *Client) void {
+    expireAt(cli, std.time.milliTimestamp(), Server.UNIT_SECONDS);
+}
+
+/// EXPIREAT key sec_time
+pub fn expireatCommand(cli: *Client) void {
+    expireAt(cli, 0, Server.UNIT_SECONDS);
+}
+
+/// PEXPIRE key milliseconds
+pub fn pexpireCommand(cli: *Client) void {
+    expireAt(cli, std.time.milliTimestamp(), Server.UNIT_MILLISECONDS);
+}
+
+/// PEXPIREAT key ms_time
+pub fn pexpireatCommand(cli: *Client) void {
+    expireAt(cli, 0, Server.UNIT_MILLISECONDS);
+}
+
+/// This is the generic command implementation for EXPIRE, PEXPIRE, EXPIREAT
+/// and PEXPIREAT. Because the commad second argument may be relative or absolute
+/// the "basetime" argument is used to signal what the base time is (either 0
+/// for *AT variants of the command, or the current time for relative expires).
+///
+/// unit is either UNIT_SECONDS or UNIT_MILLISECONDS, and is only used for
+/// the argv[2] parameter. The basetime is always specified in milliseconds.
+fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
+    const argv = cli.argv.?;
+
+    // unix time in milliseconds when the key will expire.
+    var when: i64 = undefined;
+    if (!argv[2].getLongLongOrReply(cli, &when, null)) {
+        return;
+    }
+
+    if (unit == Server.UNIT_SECONDS) {
+        when *= std.time.ms_per_s;
+    }
+    when += basetime;
+
+    // No key, return zero.
+    const key = argv[1];
+    if (cli.db.lookupKeyWrite(key) == null) {
+        cli.addReply(Server.shared.czero);
+        return;
+    }
+
+    if (checkAlreadyExpired(when)) {
+        const deleted = cli.db.delete(key);
+        std.debug.assert(deleted);
+        cli.addReply(Server.shared.cone);
+        return;
+    }
+    cli.db.setExpire(cli, key, when);
+    cli.addReply(Server.shared.cone);
+}
+
+fn checkAlreadyExpired(when: i64) bool {
+    return std.time.milliTimestamp() >= when;
+}
+
 /// Implements TTL and PTTL
 fn ttl(cli: *Client, output_ms: bool) void {
     const key = cli.argv.?[1];
@@ -69,4 +131,3 @@ const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
 const server = &Server.instance;
-const sds = @import("sds.zig");
