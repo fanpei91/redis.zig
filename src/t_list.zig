@@ -15,7 +15,7 @@ pub const List = struct {
             }
             return QuickList.eql(
                 self.entry.zi.?,
-                sds.asBytes(sds.cast(obj.data.ptr)),
+                sds.asBytes(sds.cast(obj.v.ptr)),
             );
         }
 
@@ -27,7 +27,7 @@ pub const List = struct {
             const value = obj.getDecoded();
             defer value.decrRefCount();
             const ql = self.entry.quicklist.?;
-            const str = sds.asBytes(sds.cast(value.data.ptr));
+            const str = sds.asBytes(sds.cast(value.v.ptr));
             if (where == .tail) {
                 ql.insertAfter(&self.entry, str);
             } else {
@@ -59,7 +59,7 @@ pub const List = struct {
 
     pub fn create() *Object {
         const obj = Object.createQuickList();
-        const ql: *QuickList = @ptrCast(@alignCast(obj.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(obj.v.ptr));
         ql.setOptions(
             server.list_max_ziplist_size,
             server.list_compress_depth,
@@ -73,7 +73,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
         return .{
             .subject = lobj,
             .encoding = lobj.encoding,
@@ -92,7 +92,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
         return @intCast(ql.count);
     }
 
@@ -101,11 +101,11 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
         const value = element.getDecoded();
         defer value.decrRefCount();
         ql.push(
-            sds.asBytes(sds.cast(value.data.ptr)),
+            sds.asBytes(sds.cast(value.v.ptr)),
             if (where == .head) .head else .tail,
         );
     }
@@ -115,7 +115,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
         const obj = ql.pop(
             if (where == .head) .head else .tail,
             popSaver,
@@ -166,7 +166,7 @@ pub fn linsertCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
     var where: Where = undefined;
-    const arg2 = sds.asBytes(sds.cast(argv[2].data.ptr));
+    const arg2 = sds.asBytes(sds.cast(argv[2].v.ptr));
     if (std.ascii.eqlIgnoreCase(arg2, "after")) {
         where = .tail;
     } else if (std.ascii.eqlIgnoreCase(arg2, "before")) {
@@ -229,7 +229,7 @@ pub fn lindexCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
     var entry: QuickList.Entry = undefined;
     if (ql.index(index, &entry)) {
         var obj: *Object = undefined;
@@ -268,8 +268,8 @@ pub fn lsetCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
-    const element = sds.asBytes(sds.cast(argv[3].data.ptr));
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+    const element = sds.asBytes(sds.cast(argv[3].v.ptr));
     if (ql.replaceAtIndex(index, element)) {
         cli.addReply(Server.shared.ok);
         return;
@@ -392,7 +392,7 @@ pub fn ltrimCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.data.ptr));
+    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
     _ = ql.delRange(0, ltrim);
     _ = ql.delRange(-rtrim, rtrim);
     if (List.length(lobj) == 0) {

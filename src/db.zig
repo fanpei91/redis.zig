@@ -38,6 +38,16 @@ pub fn unlinkCommand(cli: *Client) void {
     del(cli, true);
 }
 
+/// RENAME key newkey
+pub fn renameCommand(cli: *Client) void {
+    rename(cli, false);
+}
+
+/// RENAMENX key newkey
+pub fn renamenxCommand(cli: *Client) void {
+    rename(cli, true);
+}
+
 /// DEL/UNLINK key [key ...]
 fn del(cli: *Client, lazy: bool) void {
     const argv = cli.argv.?;
@@ -51,6 +61,49 @@ fn del(cli: *Client, lazy: bool) void {
         if (deleted) numdel += 1;
     }
     cli.addReplyLongLong(numdel);
+}
+
+/// RENAME/RENAMENX key newkey
+fn rename(cli: *Client, nx: bool) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const newkey = argv[2];
+
+    const obj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nokeyerr,
+    ) orelse return;
+    // When source and dest key is the same, no operation is performed,
+    // if the key exists, however we still return an error on unexisting key.
+    const samekey = sds.cmp(
+        sds.cast(key.v.ptr),
+        sds.cast(newkey.v.ptr),
+    ) == .eq;
+    if (samekey) {
+        cli.addReply(if (nx) Server.shared.czero else Server.shared.ok);
+        return;
+    }
+
+    if (cli.db.lookupKeyWrite(newkey) != null) {
+        if (nx) {
+            cli.addReply(Server.shared.czero);
+            return;
+        }
+        // Overwrite: delete the old key before creating the new one
+        // with the same name.
+        _ = cli.db.delete(newkey);
+    }
+
+    cli.db.add(newkey, obj);
+    obj.incrRefCount();
+    const expire = cli.db.getExpire(key);
+    if (expire != -1) {
+        cli.db.setExpire(cli, newkey, expire);
+    }
+    _ = cli.db.delete(key);
+
+    cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
 
 pub fn select(cli: *Client, id: i64) bool {
@@ -102,7 +155,7 @@ pub const Database = struct {
     ///
     /// The program is aborted if the key already exists.
     pub fn add(self: *Database, key: *Object, val: *Object) void {
-        const copy = sds.dupe(sds.cast(key.data.ptr));
+        const copy = sds.dupe(sds.cast(key.v.ptr));
         const ok = self.dict.add(copy, val);
         std.debug.assert(ok);
     }
@@ -122,7 +175,7 @@ pub const Database = struct {
     ///
     /// The program is aborted if the key was not already present.
     pub fn overwrite(self: *Database, key: *Object, val: *Object) void {
-        const entry = self.dict.find(key.data.ptr);
+        const entry = self.dict.find(key.v.ptr);
         var auxentry = entry.?.*;
         std.debug.assert(entry != null);
         const old: *Object = @ptrCast(@alignCast(entry.?.v.val.?));
@@ -136,8 +189,8 @@ pub const Database = struct {
     pub fn removeExpire(self: *Database, key: *Object) bool {
         // An expire may only be removed if there is a corresponding entry in
         // the main dict. Otherwise, the key will never be freed.
-        std.debug.assert(self.dict.find(key.data.ptr) != null);
-        return self.expires.delete(key.data.ptr);
+        std.debug.assert(self.dict.find(key.v.ptr) != null);
+        return self.expires.delete(key.v.ptr);
     }
 
     /// Set an expire to the specified key. The 'when' parameter is the absolute
@@ -150,7 +203,7 @@ pub const Database = struct {
         when: i64,
     ) void {
         _ = cli;
-        const de = self.dict.find(key.data.ptr);
+        const de = self.dict.find(key.v.ptr);
         std.debug.assert(de != null);
         // Reuse the sds from the main dict in the expire dict
         const ee = self.expires.addOrFind(
@@ -166,13 +219,13 @@ pub const Database = struct {
             return -1;
         }
         const entry = self.expires.find(
-            key.data.ptr,
+            key.v.ptr,
         ) orelse {
             return -1;
         };
         // The entry was found in the expire dict, this means it should also
         // be present in the main dict (safety check).
-        std.debug.assert(self.dict.find(key.data.ptr) != null);
+        std.debug.assert(self.dict.find(key.v.ptr) != null);
         return entry.v.s64;
     }
 
@@ -211,7 +264,7 @@ pub const Database = struct {
         if (o.refcount != 1 or o.encoding != .raw) {
             const decoded = o.getDecoded();
             const new = Object.createRawString(
-                sds.asBytes(sds.cast(decoded.data.ptr)),
+                sds.asBytes(sds.cast(decoded.v.ptr)),
             );
             decoded.decrRefCount();
             self.overwrite(key, new);
@@ -294,7 +347,7 @@ pub const Database = struct {
     /// implementations that should instead rely on lookupKeyRead(),
     /// lookupKeyWrite() and lookupKeyReadWithFlags().
     fn lookupKey(self: *Database, key: *Object, flags: u32) ?*Object {
-        const entry = self.dict.find(key.data.ptr) orelse {
+        const entry = self.dict.find(key.v.ptr) orelse {
             return null;
         };
         const val: *Object = @ptrCast(@alignCast(entry.v.val.?));
@@ -333,9 +386,9 @@ pub const Database = struct {
     /// from the DB.
     fn syncDelete(self: *Database, key: *Object) bool {
         if (self.expires.size() > 0) {
-            _ = self.expires.delete(key.data.ptr);
+            _ = self.expires.delete(key.v.ptr);
         }
-        if (self.dict.delete(key.data.ptr)) {
+        if (self.dict.delete(key.v.ptr)) {
             return true;
         }
         return false;

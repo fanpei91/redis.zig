@@ -41,7 +41,7 @@ type: Type,
 encoding: Encoding,
 lru: std.meta.Int(.unsigned, Server.LRU_BITS),
 refcount: i32,
-data: union {
+v: union {
     ptr: *anyopaque,
     int: i64,
 },
@@ -58,7 +58,7 @@ pub fn create(typ: Type, ptr: *anyopaque) *Object {
         obj.lru = @intCast(evict.LRUClock());
     }
     obj.refcount = 1;
-    obj.data = .{ .ptr = ptr };
+    obj.v = .{ .ptr = ptr };
 
     return obj;
 }
@@ -66,7 +66,7 @@ pub fn create(typ: Type, ptr: *anyopaque) *Object {
 pub fn createInt(int: i64) *Object {
     const obj = create(.string, @ptrFromInt(1));
     obj.encoding = .int;
-    obj.data = .{ .int = int };
+    obj.v = .{ .int = int };
     return obj;
 }
 
@@ -120,7 +120,7 @@ fn createEmbeddedString(str: []const u8) *Object {
         obj.lru = @intCast(evict.LRUClock());
     }
     obj.refcount = 1;
-    obj.data = .{ .ptr = s };
+    obj.v = .{ .ptr = s };
 
     return obj;
 }
@@ -187,16 +187,16 @@ pub fn dupeString(self: *const Object) *Object {
     switch (self.encoding) {
         .raw => {
             return createRawString(
-                sds.asBytes(sds.cast(self.data.ptr)),
+                sds.asBytes(sds.cast(self.v.ptr)),
             );
         },
         .embstr => {
             return createEmbeddedString(
-                sds.asBytes(sds.cast(self.data.ptr)),
+                sds.asBytes(sds.cast(self.v.ptr)),
             );
         },
         .int => {
-            const o = createInt(self.data.int);
+            const o = createInt(self.v.int);
             return o;
         },
         else => @panic("Wrong encoding."),
@@ -211,22 +211,22 @@ pub fn compareStrings(self: *Object, other: *Object) std.math.Order {
 
     if (self.encoding == .int and other.encoding == .int) {
         return std.math.order(
-            self.data.int,
-            other.data.int,
+            self.v.int,
+            other.v.int,
         );
     }
 
     assert(self.encoding != .int);
     assert(other.encoding != .int);
 
-    const a: sds.String = @ptrCast(self.data.ptr);
-    const b: sds.String = @ptrCast(other.data.ptr);
+    const a: sds.String = @ptrCast(self.v.ptr);
+    const b: sds.String = @ptrCast(other.v.ptr);
     return sds.cmp(a, b);
 }
 
 pub fn equalStrings(self: *Object, other: *Object) bool {
     if (self.encoding == .int and other.encoding == .int) {
-        return self.data.int == other.data.int;
+        return self.v.int == other.v.int;
     }
     return self.compareStrings(other) == .eq;
 }
@@ -312,9 +312,9 @@ pub fn resetRefCount(self: *Object) *Object {
 pub fn stringLen(self: *Object) usize {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        return sds.getLen(sds.cast(self.data.ptr));
+        return sds.getLen(sds.cast(self.v.ptr));
     }
-    return util.sdigits10(self.data.int);
+    return util.sdigits10(self.v.int);
 }
 
 pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *i64) bool {
@@ -330,7 +330,7 @@ pub fn getDecoded(self: *Object) *Object {
     }
     if (self.type == .string and self.encoding == .int) {
         var buf: [20]u8 = undefined;
-        const digits = util.ll2string(&buf, self.data.int);
+        const digits = util.ll2string(&buf, self.v.int);
         return createString(digits);
     }
     @panic("Unknown encoding type");
@@ -343,7 +343,7 @@ pub fn tryEncoding(self: *Object) *Object {
     if (!self.sdsEncoded()) return self;
     if (self.refcount > 1) return self;
 
-    const slice = sds.asBytes(sds.cast(self.data.ptr));
+    const slice = sds.asBytes(sds.cast(self.v.ptr));
     var value: i64 = undefined;
     if (slice.len <= 20 and util.string2l(slice, &value)) {
         const use_shared_integers = (Server.instance.maxmemory == 0 or
@@ -355,9 +355,9 @@ pub fn tryEncoding(self: *Object) *Object {
             return obj;
         } else {
             if (self.encoding == .raw) {
-                sds.free(sds.cast(self.data.ptr));
+                sds.free(sds.cast(self.v.ptr));
                 self.encoding = .int;
-                self.data = .{ .int = value };
+                self.v = .{ .int = value };
                 return self;
             } else if (self.encoding == .embstr) {
                 self.decrRefCount();
@@ -398,10 +398,10 @@ pub fn trimStringIfNeeded(self: *Object) void {
     if (self.encoding != .raw) {
         return;
     }
-    var s = sds.cast(self.data.ptr);
+    var s = sds.cast(self.v.ptr);
     if (sds.getAvail(s) > sds.getLen(s) / 10) {
         s = sds.removeAvailSpace(s);
-        self.data = .{ .ptr = s };
+        self.v = .{ .ptr = s };
     }
 }
 
@@ -426,12 +426,12 @@ pub fn getLongLong(self: *const Object, llval: *i64) bool {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
         return util.string2ll(
-            sds.asBytes(sds.cast(self.data.ptr)),
+            sds.asBytes(sds.cast(self.v.ptr)),
             llval,
         );
     }
     if (self.encoding == .int) {
-        llval.* = self.data.int;
+        llval.* = self.v.int;
         return true;
     }
     @panic("Unknown string encoding");
@@ -463,10 +463,10 @@ pub fn getLongDoubleFromObject(self: *const Object, target: *f80) bool {
     if (self.sdsEncoded()) {
         target.* = std.fmt.parseFloat(
             f80,
-            sds.asBytes(sds.cast(self.data.ptr)),
+            sds.asBytes(sds.cast(self.v.ptr)),
         ) catch return false;
     } else if (self.encoding == .int) {
-        target.* = @floatFromInt(self.data.int);
+        target.* = @floatFromInt(self.v.int);
     } else {
         @panic("Unknown string encoding");
     }
@@ -487,7 +487,7 @@ pub fn strEncoding(self: *Object) []const u8 {
 
 pub fn free(self: *Object) void {
     if (self.type == .string and self.encoding == .embstr) {
-        const s: sds.String = @ptrCast(self.data.ptr);
+        const s: sds.String = @ptrCast(self.v.ptr);
         const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
         const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
         allocator.free(mem[0..mem_size]);
@@ -498,14 +498,14 @@ pub fn free(self: *Object) void {
 
 fn freeString(self: *Object) void {
     if (self.encoding == .raw) {
-        const s: sds.String = @ptrCast(self.data.ptr);
+        const s: sds.String = @ptrCast(self.v.ptr);
         sds.free(s);
     }
 }
 
 fn freeList(self: *Object) void {
     if (self.encoding == .quicklist) {
-        const ql: *QuickList = @ptrCast(@alignCast(self.data.ptr));
+        const ql: *QuickList = @ptrCast(@alignCast(self.v.ptr));
         ql.release();
     } else {
         @panic("Unknown list encoding type");
@@ -515,11 +515,11 @@ fn freeList(self: *Object) void {
 fn freeSet(self: *Object) void {
     switch (self.encoding) {
         .intset => {
-            const is: *IntSet = @ptrCast(@alignCast(self.data.ptr));
+            const is: *IntSet = @ptrCast(@alignCast(self.v.ptr));
             is.free();
         },
         .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
+            const d: *Dict = @ptrCast(@alignCast(self.v.ptr));
             d.destroy();
         },
         else => @panic("Unknown set encoding type"),
@@ -529,11 +529,11 @@ fn freeSet(self: *Object) void {
 fn freeZset(self: *Object) void {
     switch (self.encoding) {
         .skiplist => {
-            const zl: *Zset = @ptrCast(@alignCast(self.data.ptr));
+            const zl: *Zset = @ptrCast(@alignCast(self.v.ptr));
             zl.destroy();
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.data.ptr);
+            const zl: *ZipList = ZipList.cast(self.v.ptr);
             zl.free();
         },
         else => @panic("Unknown sorted set encoding type"),
@@ -543,11 +543,11 @@ fn freeZset(self: *Object) void {
 fn freeHash(self: *Object) void {
     switch (self.encoding) {
         .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.data.ptr));
+            const d: *Dict = @ptrCast(@alignCast(self.v.ptr));
             d.destroy();
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.data.ptr);
+            const zl: *ZipList = ZipList.cast(self.v.ptr);
             zl.free();
         },
         else => @panic("Unknown hash encoding type"),
@@ -560,7 +560,7 @@ test createEmbeddedString {
 
     var o = createEmbeddedString("hello");
     defer o.decrRefCount();
-    const s: sds.String = @ptrCast(o.data.ptr);
+    const s: sds.String = @ptrCast(o.v.ptr);
     try expectEqualStrings("hello", sds.asBytes(s));
 }
 

@@ -707,7 +707,7 @@ fn databaseCron() void {
 /// other operations can be performed by the caller. Otherwise
 /// if false is returned the client was destroyed (i.e. after QUIT).
 pub fn processCommand(self: *Server, cli: *Client) bool {
-    const cmd: sds.String = sds.cast(cli.argv.?[0].data.ptr);
+    const cmd: sds.String = sds.cast(cli.argv.?[0].v.ptr);
     if (std.ascii.eqlIgnoreCase(sds.asBytes(cmd), "quit")) {
         cli.addReply(shared.ok);
         cli.flags |= CLIENT_CLOSE_AFTER_REPLY;
@@ -722,7 +722,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         defer sds.free(args);
         var i: usize = 1;
         while (i < cli.argc and sds.getLen(args) < 128) : (i += 1) {
-            const arg: sds.String = @ptrCast(cli.argv.?[i].data.ptr);
+            const arg: sds.String = @ptrCast(cli.argv.?[i].v.ptr);
             var remaining = 128 - sds.getLen(args);
             if (remaining > sds.getLen(arg)) {
                 remaining = sds.getLen(arg);
@@ -881,7 +881,7 @@ pub fn authCommand(cli: *Client) void {
         );
         return;
     }
-    const password = sds.cast(cli.argv.?[1].data.ptr);
+    const password = sds.cast(cli.argv.?[1].v.ptr);
     if (util.timeIndependentEql(
         CONFIG_AUTHPASS_MAX_LEN,
         sds.asBytes(password),
@@ -909,7 +909,7 @@ pub fn pingCommand(cli: *Client) void {
     if (cli.argc == 1) {
         cli.addReply(shared.pong);
     } else {
-        cli.addReply(cli.argv.?[1]);
+        cli.addReplyBulk(cli.argv.?[1]);
     }
 }
 

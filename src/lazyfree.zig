@@ -8,13 +8,13 @@ pub fn asyncDelete(db: *Database, key: *Object) bool {
     // Deleting an entry from the expires dict will not free the sds of
     // the key, because it is shared with the main dictionary.
     if (db.expires.size() > 0) {
-        _ = db.expires.delete(key.data.ptr);
+        _ = db.expires.delete(key.v.ptr);
     }
 
     // If the value is composed of a few allocations, to free in a lazy way
     // is actually just slower... So under a certain limit we just free
     // the object synchronously.
-    const entry = db.dict.unlink(key.data.ptr);
+    const entry = db.dict.unlink(key.v.ptr);
     if (entry) |ent| {
         const val: *Object = @ptrCast(@alignCast(ent.v.val.?));
         const free_effort = getFreeEffort(val);
@@ -56,7 +56,7 @@ pub fn asyncDelete(db: *Database, key: *Object) bool {
 /// For lists the function returns the number of elements in the quicklist
 /// representing the list.
 fn getFreeEffort(obj: *Object) u64 {
-    const ptr = obj.data.ptr;
+    const ptr = obj.v.ptr;
 
     if (obj.type == .list) {
         const ql: *Quicklist = @ptrCast(@alignCast(ptr));

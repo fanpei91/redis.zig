@@ -523,9 +523,9 @@ pub const Client = struct {
     fn addReplyBulkLen(self: *Client, obj: *Object) void {
         var len: usize = 0;
         if (obj.sdsEncoded()) {
-            len = sds.getLen(sds.cast(obj.data.ptr));
+            len = sds.getLen(sds.cast(obj.v.ptr));
         } else {
-            len = util.sdigits10(obj.data.int);
+            len = util.sdigits10(obj.v.int);
         }
         if (len < Server.shared.bulkhdr.len) {
             self.addReply(Server.shared.bulkhdr[len]);
@@ -559,9 +559,9 @@ pub const Client = struct {
         var s: []u8 = undefined;
 
         if (obj.sdsEncoded()) {
-            s = sds.asBytes(sds.cast(obj.data.ptr));
+            s = sds.asBytes(sds.cast(obj.v.ptr));
         } else if (obj.encoding == .int) {
-            s = util.ll2string(&buf, obj.data.int);
+            s = util.ll2string(&buf, obj.v.int);
         } else {
             @panic("Wrong obj.encoding in addReply()");
         }

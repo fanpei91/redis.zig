@@ -8,7 +8,7 @@ pub fn setCommand(cli: *Client) void {
 
     var j: usize = 3;
     while (j < cli.argc) : (j += 1) {
-        const arg = sds.asBytes(sds.cast(argv[j].data.ptr));
+        const arg = sds.asBytes(sds.cast(argv[j].v.ptr));
         const next = if (j == cli.argc - 1) null else argv[j + 1];
 
         if (eqlCase(arg, "nx") and flags & OBJ_SET_XX == 0) {
@@ -226,18 +226,18 @@ pub fn appendCommand(cli: *Client) void {
             return;
         }
         const append = argv[2];
-        totlen = obj.stringLen() + sds.getLen(sds.cast(append.data.ptr));
+        totlen = obj.stringLen() + sds.getLen(sds.cast(append.v.ptr));
         if (!checkStringLengthOrReply(totlen, cli)) {
             return;
         }
         const o = cli.db.unshareStringValue(key, obj);
-        o.data = .{
+        o.v = .{
             .ptr = sds.cat(
-                sds.cast(o.data.ptr),
-                sds.asBytes(sds.cast(append.data.ptr)),
+                sds.cast(o.v.ptr),
+                sds.asBytes(sds.cast(append.v.ptr)),
             ),
         };
-        totlen = sds.getLen(sds.cast(o.data.ptr));
+        totlen = sds.getLen(sds.cast(o.v.ptr));
     } else {
         argv[2] = argv[2].tryEncoding();
         const append = argv[2];
@@ -262,7 +262,7 @@ pub fn setrangeCommand(cli: *Client) void {
     }
 
     const key = argv[1];
-    const value = sds.cast(argv[3].data.ptr);
+    const value = sds.cast(argv[3].v.ptr);
     const length = @as(usize, @intCast(offset)) + sds.getLen(value);
     var o = cli.db.lookupKeyWrite(key);
     if (o == null) {
@@ -300,9 +300,9 @@ pub fn setrangeCommand(cli: *Client) void {
         o = cli.db.unshareStringValue(key, obj);
     }
     const obj = o.?;
-    var s = sds.cast(obj.data.ptr);
-    obj.data = .{ .ptr = sds.growZero(s, length) };
-    s = sds.cast(obj.data.ptr);
+    var s = sds.cast(obj.v.ptr);
+    obj.v = .{ .ptr = sds.growZero(s, length) };
+    s = sds.cast(obj.v.ptr);
     memcpy(
         s + @as(usize, @intCast(offset)),
         value,
@@ -338,9 +338,9 @@ pub fn getrangeCommand(cli: *Client) void {
     var buf: [32]u8 = undefined;
     var str: []u8 = undefined;
     if (obj.encoding == .int) {
-        str = util.ll2string(&buf, obj.data.int);
+        str = util.ll2string(&buf, obj.v.int);
     } else {
-        str = sds.asBytes(sds.cast(obj.data.ptr));
+        str = sds.asBytes(sds.cast(obj.v.ptr));
     }
 
     // Convert negative indexes
@@ -465,7 +465,7 @@ fn incr(cli: *Client, by: i64) void {
         (value < 0 or value >= Server.OBJ_SHARED_INTEGERS))
     {
         new = o.?;
-        new.data = .{ .int = value };
+        new.v = .{ .int = value };
     } else {
         new = Object.createStringFromLonglongForValue(value);
         if (o != null) {

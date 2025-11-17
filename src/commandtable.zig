@@ -13,6 +13,8 @@ pub const table = [_]Command{
     .{ .name = "exists", .proc = dbx.existsCommand, .arity = -2 },
     .{ .name = "del", .proc = dbx.delCommand, .arity = -2 },
     .{ .name = "unlink", .proc = dbx.unlinkCommand, .arity = -2 },
+    .{ .name = "rename", .proc = dbx.renameCommand, .arity = 3 },
+    .{ .name = "renamenx", .proc = dbx.renamenxCommand, .arity = 3 },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
     .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
     .{ .name = "set", .proc = stringx.setCommand, .arity = -3 },
