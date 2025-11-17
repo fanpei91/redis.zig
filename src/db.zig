@@ -1,3 +1,41 @@
+/// SELECT index
+pub fn selectCommand(cli: *Client) void {
+    var id: i64 = undefined;
+    const obj = cli.argv.?[1];
+    const ok = obj.getLongLongOrReply(
+        cli,
+        &id,
+        "invalid DB index",
+    );
+    if (!ok) return;
+
+    if (!select(cli, id)) {
+        cli.addReplyErr("DB index is out of range");
+        return;
+    }
+    cli.addReply(Server.shared.ok);
+}
+
+/// EXISTS key [key ...]
+pub fn existsCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    var count: i64 = 0;
+    for (argv[1..]) |key| {
+        if (cli.db.lookupKeyRead(key) != null) {
+            count += 1;
+        }
+    }
+    cli.addReplyLongLong(count);
+}
+
+pub fn select(cli: *Client, id: i64) bool {
+    if (id < 0 or id >= server.dbnum) {
+        return false;
+    }
+    cli.db = &server.db[@intCast(id)];
+    return true;
+}
+
 pub const Database = struct {
     id: usize, // Database ID
     dict: *Dict, // The keyspace for this DB
@@ -312,31 +350,6 @@ pub const Database = struct {
         self.* = undefined;
     }
 };
-
-pub fn select(cli: *Client, id: i64) bool {
-    if (id < 0 or id >= server.dbnum) {
-        return false;
-    }
-    cli.db = &server.db[@intCast(id)];
-    return true;
-}
-
-pub fn selectCommand(cli: *Client) void {
-    var id: i64 = undefined;
-    const obj = cli.argv.?[1];
-    const ok = obj.getLongLongOrReply(
-        cli,
-        &id,
-        "invalid DB index",
-    );
-    if (!ok) return;
-
-    if (!select(cli, id)) {
-        cli.addReplyErr("DB index is out of range");
-        return;
-    }
-    cli.addReply(Server.shared.ok);
-}
 
 const std = @import("std");
 const Client = @import("networking.zig").Client;
