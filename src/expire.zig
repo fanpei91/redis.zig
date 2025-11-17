@@ -8,6 +8,20 @@ pub fn pttlCommand(cli: *Client) void {
     ttl(cli, true);
 }
 
+/// PERSIST key
+pub fn persistCommand(cli: *Client) void {
+    const key = cli.argv.?[1];
+    if (cli.db.lookupKeyWrite(key) != null) {
+        if (cli.db.removeExpire(key)) {
+            cli.addReply(Server.shared.cone);
+        } else {
+            cli.addReply(Server.shared.czero);
+        }
+    } else {
+        cli.addReply(Server.shared.czero);
+    }
+}
+
 /// Implements TTL and PTTL
 fn ttl(cli: *Client, output_ms: bool) void {
     const key = cli.argv.?[1];

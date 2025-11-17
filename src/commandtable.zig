@@ -17,6 +17,7 @@ pub const table = [_]Command{
     .{ .name = "renamenx", .proc = dbx.renamenxCommand, .arity = 3 },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2 },
     .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2 },
+    .{ .name = "persist", .proc = expire.persistCommand, .arity = 2 },
     .{ .name = "set", .proc = stringx.setCommand, .arity = -3 },
     .{ .name = "setnx", .proc = stringx.setnxCommand, .arity = 3 },
     .{ .name = "setex", .proc = stringx.setexCommand, .arity = 4 },
