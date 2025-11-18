@@ -1,136 +1,3 @@
-pub const Where = enum {
-    head,
-    tail,
-};
-
-pub const List = struct {
-    pub const Entry = struct {
-        iter: *Iterator,
-        entry: QuickList.Entry,
-
-        pub fn eql(self: *Entry, obj: *Object) bool {
-            if (self.iter.encoding != .quicklist) {
-                @branchHint(.unlikely);
-                @panic("Unknown list encoding");
-            }
-            return QuickList.eql(
-                self.entry.zi.?,
-                sds.asBytes(sds.cast(obj.v.ptr)),
-            );
-        }
-
-        pub fn insert(self: *Entry, obj: *Object, where: Where) void {
-            if (self.iter.encoding != .quicklist) {
-                @branchHint(.unlikely);
-                @panic("Unknown list encoding");
-            }
-            const value = obj.getDecoded();
-            defer value.decrRefCount();
-            const ql = self.entry.quicklist.?;
-            const str = sds.asBytes(sds.cast(value.v.ptr));
-            if (where == .tail) {
-                ql.insertAfter(&self.entry, str);
-            } else {
-                ql.insertBefore(&self.entry, str);
-            }
-        }
-    };
-
-    pub const Iterator = struct {
-        subject: *Object,
-        encoding: Object.Encoding,
-        direction: Where,
-        iter: ?QuickList.Iterator,
-
-        /// Stores pointer to current the entry in the provided entry structure
-        /// and advances the position of the iterator.
-        /// Returns true when the current entry is in fact an entry,
-        /// false otherwise.
-        pub fn next(self: *Iterator, entry: *Entry) bool {
-            assert(self.encoding == self.subject.encoding);
-            if (self.encoding != .quicklist) {
-                @branchHint(.unlikely);
-                @panic("Unknown list encoding");
-            }
-            entry.iter = self;
-            return self.iter.?.next(&entry.entry);
-        }
-    };
-
-    pub fn create() *Object {
-        const obj = Object.createQuickList();
-        const ql: *QuickList = @ptrCast(@alignCast(obj.v.ptr));
-        ql.setOptions(
-            server.list_max_ziplist_size,
-            server.list_compress_depth,
-        );
-        return obj;
-    }
-
-    /// Create an iterator at the specified index.
-    pub fn iterator(lobj: *Object, index: i64, direction: Where) Iterator {
-        if (lobj.encoding != .quicklist) {
-            @branchHint(.unlikely);
-            @panic("Unknown list encoding");
-        }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
-        return .{
-            .subject = lobj,
-            .encoding = lobj.encoding,
-            .direction = direction,
-            .iter = ql.iteratorAtIndex(
-                // .head means start at TAIL and move *towards* head.
-                // .tail means start at HEAD and move *towards tail.
-                if (direction == .head) .tail else .head,
-                index,
-            ),
-        };
-    }
-
-    pub fn length(lobj: *Object) i64 {
-        if (lobj.encoding != .quicklist) {
-            @branchHint(.unlikely);
-            @panic("Unknown list encoding");
-        }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
-        return @intCast(ql.count);
-    }
-
-    pub fn push(lobj: *Object, element: *Object, where: Where) void {
-        if (lobj.encoding != .quicklist) {
-            @branchHint(.unlikely);
-            @panic("Unknown list encoding");
-        }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
-        const value = element.getDecoded();
-        defer value.decrRefCount();
-        ql.push(
-            sds.asBytes(sds.cast(value.v.ptr)),
-            if (where == .head) .head else .tail,
-        );
-    }
-
-    pub fn pop(lobj: *Object, where: Where) ?*Object {
-        if (lobj.encoding != .quicklist) {
-            @branchHint(.unlikely);
-            @panic("Unknown list encoding");
-        }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
-        const obj = ql.pop(
-            if (where == .head) .head else .tail,
-            popSaver,
-        ) orelse return null;
-        return @ptrCast(@alignCast(obj));
-    }
-
-    fn popSaver(value: QuickList.popSaverValue) *anyopaque {
-        return switch (value) {
-            .num => |v| Object.createStringFromLonglong(v),
-            .str => |v| Object.createString(v),
-        };
-    }
-};
-
 /// LPUSH key element [element ...]
 pub fn lpushCommand(cli: *Client) void {
     push(cli, .head);
@@ -401,6 +268,55 @@ pub fn ltrimCommand(cli: *Client) void {
     cli.addReply(Server.shared.ok);
 }
 
+/// LREM key count element
+pub fn lremCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+
+    var toremove: i64 = undefined;
+    if (!argv[2].getLongLongOrReply(cli, &toremove, null)) {
+        return;
+    }
+
+    const key = argv[1];
+    const lobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        cli.addReply(Server.shared.czero);
+        return;
+    };
+    if (lobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    const element = argv[3];
+    var iter: List.Iterator = blk: {
+        if (toremove < 0) {
+            toremove = -toremove;
+            break :blk List.iterator(lobj, -1, .head);
+        }
+        break :blk List.iterator(lobj, 0, .tail);
+    };
+    var removed: i64 = 0;
+    var entry: List.Entry = undefined;
+    while (iter.next(&entry)) {
+        if (entry.eql(element)) {
+            entry.delete();
+            removed += 1;
+            if (toremove > 0 and removed == toremove) {
+                break;
+            }
+        }
+    }
+
+    if (List.length(lobj) == 0) {
+        _ = cli.db.delete(key);
+    }
+
+    cli.addReplyLongLong(removed);
+}
+
 /// LPUSH/RPUSH key element [element ...]
 fn push(cli: *Client, where: Where) void {
     const argv = cli.argv.?;
@@ -463,6 +379,147 @@ fn pop(cli: *Client, where: Where) void {
         _ = cli.db.delete(key);
     }
 }
+
+pub const Where = enum {
+    head,
+    tail,
+};
+
+pub const List = struct {
+    pub const Entry = struct {
+        iter: *Iterator,
+        entry: QuickList.Entry,
+
+        pub fn eql(self: *Entry, obj: *Object) bool {
+            if (self.iter.encoding != .quicklist) {
+                @branchHint(.unlikely);
+                @panic("Unknown list encoding");
+            }
+            return QuickList.eql(
+                self.entry.zi.?,
+                sds.asBytes(sds.cast(obj.v.ptr)),
+            );
+        }
+
+        pub fn delete(self: *Entry) void {
+            if (self.iter.encoding != .quicklist) {
+                @branchHint(.unlikely);
+                @panic("Unknown list encoding");
+            }
+            self.iter.iter.?.delEntry(&self.entry);
+        }
+
+        pub fn insert(self: *Entry, obj: *Object, where: Where) void {
+            if (self.iter.encoding != .quicklist) {
+                @branchHint(.unlikely);
+                @panic("Unknown list encoding");
+            }
+            const value = obj.getDecoded();
+            defer value.decrRefCount();
+            const ql = self.entry.quicklist.?;
+            const str = sds.asBytes(sds.cast(value.v.ptr));
+            if (where == .tail) {
+                ql.insertAfter(&self.entry, str);
+            } else {
+                ql.insertBefore(&self.entry, str);
+            }
+        }
+    };
+
+    pub const Iterator = struct {
+        subject: *Object,
+        encoding: Object.Encoding,
+        direction: Where,
+        iter: ?QuickList.Iterator,
+
+        /// Stores pointer to current the entry in the provided entry structure
+        /// and advances the position of the iterator.
+        /// Returns true when the current entry is in fact an entry,
+        /// false otherwise.
+        pub fn next(self: *Iterator, entry: *Entry) bool {
+            assert(self.encoding == self.subject.encoding);
+            if (self.encoding != .quicklist) {
+                @branchHint(.unlikely);
+                @panic("Unknown list encoding");
+            }
+            entry.iter = self;
+            return self.iter.?.next(&entry.entry);
+        }
+    };
+
+    pub fn create() *Object {
+        const obj = Object.createQuickList();
+        const ql: *QuickList = @ptrCast(@alignCast(obj.v.ptr));
+        ql.setOptions(
+            server.list_max_ziplist_size,
+            server.list_compress_depth,
+        );
+        return obj;
+    }
+
+    /// Create an iterator at the specified index.
+    pub fn iterator(lobj: *Object, index: i64, direction: Where) Iterator {
+        if (lobj.encoding != .quicklist) {
+            @branchHint(.unlikely);
+            @panic("Unknown list encoding");
+        }
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        return .{
+            .subject = lobj,
+            .encoding = lobj.encoding,
+            .direction = direction,
+            .iter = ql.iteratorAtIndex(
+                // .head means start at TAIL and move *towards* head.
+                // .tail means start at HEAD and move *towards tail.
+                if (direction == .head) .tail else .head,
+                index,
+            ),
+        };
+    }
+
+    pub fn length(lobj: *Object) i64 {
+        if (lobj.encoding != .quicklist) {
+            @branchHint(.unlikely);
+            @panic("Unknown list encoding");
+        }
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        return @intCast(ql.count);
+    }
+
+    pub fn push(lobj: *Object, element: *Object, where: Where) void {
+        if (lobj.encoding != .quicklist) {
+            @branchHint(.unlikely);
+            @panic("Unknown list encoding");
+        }
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        const value = element.getDecoded();
+        defer value.decrRefCount();
+        ql.push(
+            sds.asBytes(sds.cast(value.v.ptr)),
+            if (where == .head) .head else .tail,
+        );
+    }
+
+    pub fn pop(lobj: *Object, where: Where) ?*Object {
+        if (lobj.encoding != .quicklist) {
+            @branchHint(.unlikely);
+            @panic("Unknown list encoding");
+        }
+        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        const obj = ql.pop(
+            if (where == .head) .head else .tail,
+            popSaver,
+        ) orelse return null;
+        return @ptrCast(@alignCast(obj));
+    }
+
+    fn popSaver(value: QuickList.popSaverValue) *anyopaque {
+        return switch (value) {
+            .num => |v| Object.createStringFromLonglong(v),
+            .str => |v| Object.createString(v),
+        };
+    }
+};
 
 const std = @import("std");
 const Client = @import("networking.zig").Client;

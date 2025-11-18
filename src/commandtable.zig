@@ -57,6 +57,7 @@ pub const table = [_]Command{
     .{ .name = "llen", .proc = list.llenCommand, .arity = 2 },
     .{ .name = "lrange", .proc = list.lrangeCommand, .arity = 4 },
     .{ .name = "ltrim", .proc = list.ltrimCommand, .arity = 4 },
+    .{ .name = "lrem", .proc = list.lremCommand, .arity = 4 },
 };
 
 pub const Command = struct {
