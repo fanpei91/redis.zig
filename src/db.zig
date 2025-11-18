@@ -63,6 +63,51 @@ pub fn randomkeyCommand(cli: *Client) void {
     cli.addReplyBulk(key);
 }
 
+/// MOVE key db
+pub fn moveCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const src = cli.db;
+
+    var dbid: i64 = undefined;
+    if (!argv[2].getLongLong(&dbid) or !select(cli, dbid)) {
+        cli.addReply(Server.shared.outofrangeerr);
+        return;
+    }
+    const dst = cli.db;
+
+    // Back to the source DB
+    _ = select(cli, @intCast(src.id));
+
+    // If the user is moving using as target the same
+    // DB as the source DB it is probably an error.
+    if (src == dst) {
+        cli.addReply(Server.shared.sameobjecterr);
+        return;
+    }
+
+    // Check if the element exists and get a reference
+    const key = argv[1];
+    const obj = src.lookupKeyWrite(key) orelse {
+        cli.addReply(Server.shared.czero);
+        return;
+    };
+    const expire = src.getExpire(key);
+
+    // Return zero if the key already exists in the target DB
+    if (dst.lookupKeyWrite(key) != null) {
+        cli.addReply(Server.shared.czero);
+        return;
+    }
+
+    dst.add(key, obj);
+    if (expire != -1) dst.setExpire(cli, key, expire);
+    obj.incrRefCount();
+
+    // OK! key moved, free the entry in the source DB
+    _ = src.delete(key);
+    cli.addReply(Server.shared.cone);
+}
+
 /// DEL/UNLINK key [key ...]
 fn del(cli: *Client, lazy: bool) void {
     const argv = cli.argv.?;
