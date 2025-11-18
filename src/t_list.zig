@@ -317,6 +317,66 @@ pub fn lremCommand(cli: *Client) void {
     cli.addReplyLongLong(removed);
 }
 
+/// RPOPLPUSH source destination
+pub fn rpoplpushCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+
+    const srckey = argv[1];
+    const srcobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        srckey,
+        Server.shared.nullbulk,
+    ) orelse return;
+    if (srcobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    const dstkey = argv[2];
+    const dstobj = cli.db.lookupKeyWrite(dstkey);
+    if (dstobj) |dst| if (dst.checkTypeOrReply(cli, .list)) {
+        return;
+    };
+
+    const value = List.pop(srcobj, .tail).?;
+    defer value.decrRefCount();
+
+    rpoplpush(cli, dstkey, dstobj, value);
+
+    if (List.length(srcobj) == 0) {
+        _ = cli.db.delete(srckey);
+    }
+}
+
+///  This is the semantic of this command:
+///  RPOPLPUSH srclist dstlist:
+///    IF LLEN(srclist) > 0
+///      element = RPOP srclist
+///      LPUSH dstlist element
+///      RETURN element
+///    ELSE
+///      RETURN nil
+///    END
+///  END
+///
+/// The idea is to be able to get an element from a list in a reliable way
+/// since the element is not just returned but pushed against another list
+/// as well.
+fn rpoplpush(
+    cli: *Client,
+    dstkey: *Object,
+    dstobj: ?*Object,
+    value: *Object,
+) void {
+    const destlist = dstobj orelse blk: {
+        const l = List.create();
+        cli.db.add(dstkey, l);
+        break :blk l;
+    };
+    List.push(destlist, value, .head);
+    // Always send the pushed value to the client.
+    cli.addReplyBulk(value);
+}
+
 /// LPUSH/RPUSH key element [element ...]
 fn push(cli: *Client, where: Where) void {
     const argv = cli.argv.?;
