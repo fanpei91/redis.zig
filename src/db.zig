@@ -53,6 +53,16 @@ pub fn dbsizeCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(cli.db.dict.size()));
 }
 
+/// RANDOMKEY
+pub fn randomkeyCommand(cli: *Client) void {
+    const key = cli.db.randomKey() orelse {
+        cli.addReply(Server.shared.nullbulk);
+        return;
+    };
+    defer key.decrRefCount();
+    cli.addReplyBulk(key);
+}
+
 /// DEL/UNLINK key [key ...]
 fn del(cli: *Client, lazy: bool) void {
     const argv = cli.argv.?;
@@ -425,6 +435,27 @@ pub const Database = struct {
         // The key expired if the current (virtual or real) time is greater
         // than the expire time of the key.
         return now > when;
+    }
+
+    /// Return a random key, in form of a Object.
+    /// If there are no keys, null is returned.
+    ///
+    /// The function makes sure to return keys not already expired.
+    fn randomKey(self: *Database) ?*Object {
+        while (true) {
+            const entry = self.dict.getRandom() orelse {
+                return null;
+            };
+            const key: sds.String = sds.cast(entry.key);
+            const keyobj = Object.createString(sds.asBytes(key));
+            if (self.expires.find(key) != null) {
+                if (self.expireIfNeeded(keyobj)) {
+                    keyobj.decrRefCount();
+                    continue;
+                }
+            }
+            return keyobj;
+        }
     }
 
     pub fn destroy(self: *Database) void {
