@@ -5,7 +5,7 @@ pub fn main() void {
     }
 
     random.seed(null);
-    Dict.hashSeed(null);
+    dict.hashSeed(null);
 
     const argv = try std.process.argsAlloc(allocator.child);
     defer std.process.argsFree(allocator.child, argv);
@@ -125,7 +125,7 @@ fn printUsage() void {
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
-const Dict = @import("Dict.zig");
+const dict = @import("dict.zig");
 const random = @import("random.zig");
 const util = @import("util.zig");
 const config = @import("config.zig");

@@ -253,10 +253,7 @@ pub fn createIntSet() *Object {
 }
 
 pub fn createSet() *Object {
-    const d = Dict.create(
-        Server.setDictVTable,
-        null,
-    );
+    const d = set.create();
     const obj = create(.set, d);
     obj.encoding = .ht;
     return obj;
@@ -552,7 +549,7 @@ fn freeSet(self: *Object) void {
             is.free();
         },
         .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.v.ptr));
+            const d: *set.Set.Dict = @ptrCast(@alignCast(self.v.ptr));
             d.destroy();
         },
         else => @panic("Unknown set encoding type"),
@@ -575,10 +572,7 @@ fn freeZset(self: *Object) void {
 
 fn freeHash(self: *Object) void {
     switch (self.encoding) {
-        .ht => {
-            const d: *Dict = @ptrCast(@alignCast(self.v.ptr));
-            d.destroy();
-        },
+        .ht => @panic("Unimplemented"),
         .ziplist => {
             const zl: *ZipList = ZipList.cast(self.v.ptr);
             zl.free();
@@ -630,9 +624,10 @@ const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
-const Dict = @import("Dict.zig");
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;
 const Client = @import("networking.zig").Client;
 const evict = @import("evict.zig");
 const server = &Server.instance;
+const dict = @import("dict.zig");
+const set = @import("t_set.zig");

@@ -24,17 +24,75 @@ const ERR_DENIED =
 
 pub const Client = struct {
     const BlockingState = struct {
+        const Keys = struct {
+            const HashMap = dict.Dict(*Object, *blocked.BlockInfo);
+
+            const vtable: *const HashMap.VTable = &.{
+                .hash = hash,
+                .eql = eql,
+                .freeKey = freeKey,
+                .freeVal = freeVal,
+            };
+
+            fn hash(key: *Object) dict.Hash {
+                var o = key;
+                if (o.sdsEncoded()) {
+                    return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+                }
+                if (o.encoding == .int) {
+                    var buf: [32]u8 = undefined;
+                    const s = util.ll2string(&buf, o.v.int);
+                    return dict.genHash(s);
+                }
+                o = o.getDecoded();
+                defer o.decrRefCount();
+                return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+            }
+
+            fn eql(k1: *Object, k2: *Object) bool {
+                var o1 = k1;
+                var o2 = k2;
+
+                if (o1.encoding == .int and o2.encoding == .int) {
+                    return o1.v.int == o2.v.int;
+                }
+
+                o1 = o1.getDecoded();
+                defer o1.decrRefCount();
+                o2 = o2.getDecoded();
+                defer o2.decrRefCount();
+
+                return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+            }
+
+            fn freeKey(key: *Object) void {
+                key.decrRefCount();
+            }
+
+            fn freeVal(val: *blocked.BlockInfo) void {
+                allocator.destroy(val);
+            }
+        };
+
         // Blocking operation timeout(ms). If UNIX current time
         // is > timeout then the operation timed out
         timeout: i64,
 
         // The keys we are waiting to terminate a blocking
         // operation such as BLPOP or XREAD. Or NULL.
-        keys: *Dict,
+        keys: *Keys.HashMap,
 
         // The key that should receive the element,
         // for BRPOPLPUSH.
         target: ?*Object,
+
+        fn create() BlockingState {
+            return .{
+                .timeout = 0,
+                .keys = Keys.HashMap.create(Keys.vtable),
+                .target = null,
+            };
+        }
     };
     const ReplyBlock = struct {
         size: usize,
@@ -150,12 +208,7 @@ pub const Client = struct {
         cli.buf = undefined;
         cli.bufpos = 0;
         cli.btype = Server.BLOCKED_NONE;
-        cli.bpop.timeout = 0;
-        cli.bpop.keys = Dict.create(
-            Server.objectKeyHeapPointerValueDictVTable,
-            null,
-        );
-        cli.bpop.target = null;
+        cli.bpop = BlockingState.create();
         if (fd != -1) cli.link();
         return cli;
     }
@@ -1064,5 +1117,5 @@ const util = @import("util.zig");
 const List = @import("adlist.zig").List;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
-const Dict = @import("Dict.zig");
 const blocked = @import("blocked.zig");
+const dict = @import("dict.zig");

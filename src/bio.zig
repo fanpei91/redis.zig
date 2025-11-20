@@ -116,7 +116,7 @@ pub const Job = struct {
     fn lazyFree(job: *Job) void {
         // What we free changes depending on what arguments are set:
         // arg1 -> free the object at pointer.
-        // arg2 & arg3 -> free two dictionaries (a Redis DB).
+        // arg2 & arg3 -> free two dictionaries (a Database).
         // only arg3 -> free the skiplist.
         if (job.arg1) |arg1| {
             lazyfree.freeObjectFromBioThread(

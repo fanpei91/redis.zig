@@ -32,15 +32,29 @@ pub const Range = struct {
 };
 
 pub const Zset = struct {
+    const Dict = struct {
+        const HashMap = dict.Dict(sds.String, sds.String);
+
+        const vtable: *const HashMap.VTable = &.{
+            .hash = hash,
+            .eql = eql,
+        };
+
+        fn hash(key: sds.String) dict.Hash {
+            return dict.genHash(sds.asBytes(key));
+        }
+
+        fn eql(k1: sds.String, k2: sds.String) bool {
+            return sds.cmp(k1, k2) == .eq;
+        }
+    };
+
     zsl: *SkipList,
-    dict: *Dict,
+    dict: *Dict.HashMap,
 
     pub fn create() *Zset {
         const z = allocator.create(Zset);
-        z.dict = Dict.create(
-            Server.zsetDictVTable,
-            null,
-        );
+        z.dict = Dict.HashMap.create(Dict.vtable);
         z.zsl = SkipList.create();
         return z;
     }
@@ -415,4 +429,4 @@ const writeInt = std.mem.writeInt;
 const readInt = std.mem.readInt;
 const sds = @import("sds.zig");
 const Server = @import("Server.zig");
-const Dict = @import("Dict.zig");
+const dict = @import("dict.zig");

@@ -175,31 +175,136 @@ pub fn select(cli: *Client, id: i64) bool {
 }
 
 pub const Database = struct {
+    pub const Dict = struct {
+        pub const HashMap = dict.Dict(sds.String, ?*Object);
+
+        const vtable: *const HashMap.VTable = &.{
+            .hash = hash,
+            .eql = eql,
+            .freeKey = freeKey,
+            .freeVal = freeVal,
+        };
+
+        fn hash(key: sds.String) dict.Hash {
+            return dict.genHash(sds.asBytes(key));
+        }
+
+        fn eql(k1: sds.String, k2: sds.String) bool {
+            return sds.cmp(k1, k2) == .eq;
+        }
+
+        fn freeKey(key: sds.String) void {
+            sds.free(key);
+        }
+
+        fn freeVal(val: ?*Object) void {
+            // Lazy freeing will set value to null.
+            if (val) |v| v.decrRefCount();
+        }
+    };
+
+    const Expires = struct {
+        const HashMap = dict.Dict(sds.String, i64);
+
+        const vtable: *const HashMap.VTable = &.{
+            .hash = hash,
+            .eql = eql,
+        };
+
+        fn hash(key: sds.String) dict.Hash {
+            return dict.genHash(sds.asBytes(key));
+        }
+
+        fn eql(k1: sds.String, k2: sds.String) bool {
+            return sds.cmp(k1, k2) == .eq;
+        }
+    };
+
+    const BlockingKeys = struct {
+        const HashMap = dict.Dict(*Object, *Server.ClientList);
+
+        const vtable: *const HashMap.VTable = &.{
+            .hash = hash,
+            .eql = eql,
+            .freeKey = freeKey,
+            .freeVal = freeVal,
+        };
+
+        fn hash(key: *Object) dict.Hash {
+            return dict.genHash(sds.asBytes(sds.cast(key.v.ptr)));
+        }
+
+        fn eql(k1: *Object, k2: *Object) bool {
+            return sds.cmp(sds.cast(k1.v.ptr), sds.cast(k2.v.ptr)) == .eq;
+        }
+
+        fn freeKey(key: *Object) void {
+            key.decrRefCount();
+        }
+
+        fn freeVal(val: *Server.ClientList) void {
+            val.release();
+        }
+    };
+
+    const ReadyKeys = struct {
+        const HashMap = dict.Dict(*Object, void);
+
+        const vtable: *const HashMap.VTable = &.{
+            .hash = hash,
+            .eql = eql,
+            .freeKey = freeKey,
+        };
+
+        fn hash(key: *Object) dict.Hash {
+            var o = key;
+            if (o.sdsEncoded()) {
+                return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+            }
+            if (o.encoding == .int) {
+                var buf: [32]u8 = undefined;
+                const s = util.ll2string(&buf, o.v.int);
+                return dict.genHash(s);
+            }
+            o = o.getDecoded();
+            defer o.decrRefCount();
+            return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+        }
+
+        fn eql(k1: *Object, k2: *Object) bool {
+            var o1 = k1;
+            var o2 = k2;
+
+            if (o1.encoding == .int and o2.encoding == .int) {
+                return o1.v.int == o2.v.int;
+            }
+
+            o1 = o1.getDecoded();
+            defer o1.decrRefCount();
+            o2 = o2.getDecoded();
+            defer o2.decrRefCount();
+
+            return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+        }
+
+        fn freeKey(key: *Object) void {
+            key.decrRefCount();
+        }
+    };
+
     id: usize, // Database ID
-    dict: *Dict, // The keyspace for this DB
-    expires: *Dict, // Timeout of keys with a timeout set
-    blocking_keys: *Dict, // Keys with clients waiting for data (BLPOP)
-    ready_keys: *Dict, // Blocked keys that received a PUSH
+    dict: *Dict.HashMap, // The keyspace for this DB
+    expires: *Expires.HashMap, // Timeout of keys with a timeout set
+    blocking_keys: *BlockingKeys.HashMap, // Keys with clients waiting for data (BLPOP)
+    ready_keys: *ReadyKeys.HashMap, // Blocked keys that received a PUSH
 
     pub fn create(id: usize) Database {
         return .{
             .id = id,
-            .dict = Dict.create(
-                Server.dbDictVTable,
-                null,
-            ),
-            .expires = Dict.create(
-                Server.expireDictVTable,
-                null,
-            ),
-            .blocking_keys = Dict.create(
-                Server.keylistDictVTable,
-                null,
-            ),
-            .ready_keys = Dict.create(
-                Server.objectKeyPointerValueDictVTable,
-                null,
-            ),
+            .dict = .create(Dict.vtable),
+            .expires = .create(Expires.vtable),
+            .blocking_keys = .create(BlockingKeys.vtable),
+            .ready_keys = .create(ReadyKeys.vtable),
         };
     }
 
@@ -248,10 +353,10 @@ pub const Database = struct {
     ///
     /// The program is aborted if the key was not already present.
     pub fn overwrite(self: *Database, key: *Object, val: *Object) void {
-        const entry = self.dict.find(key.v.ptr);
+        const entry = self.dict.find(sds.cast(key.v.ptr));
         var auxentry = entry.?.*;
         std.debug.assert(entry != null);
-        const old: *Object = @ptrCast(@alignCast(entry.?.v.val.?));
+        const old: *Object = entry.?.val.?;
         if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
             val.lru = old.lru;
         }
@@ -262,8 +367,9 @@ pub const Database = struct {
     pub fn removeExpire(self: *Database, key: *Object) bool {
         // An expire may only be removed if there is a corresponding entry in
         // the main dict. Otherwise, the key will never be freed.
-        std.debug.assert(self.dict.find(key.v.ptr) != null);
-        return self.expires.delete(key.v.ptr);
+        const skey = sds.cast(key.v.ptr);
+        std.debug.assert(self.dict.find(skey) != null);
+        return self.expires.delete(skey);
     }
 
     /// Set an expire to the specified key. The 'when' parameter is the absolute
@@ -276,13 +382,11 @@ pub const Database = struct {
         when: i64,
     ) void {
         _ = cli;
-        const de = self.dict.find(key.v.ptr);
+        const de = self.dict.find(sds.cast(key.v.ptr));
         std.debug.assert(de != null);
         // Reuse the sds from the main dict in the expire dict
-        const ee = self.expires.addOrFind(
-            de.?.key,
-        );
-        ee.v = .{ .s64 = when };
+        const ee = self.expires.addOrFind(de.?.key);
+        self.expires.setVal(ee, when);
     }
 
     /// Return the expire time(absolute unix time in ms) of the specified key,
@@ -291,15 +395,14 @@ pub const Database = struct {
         if (self.expires.size() == 0) {
             return -1;
         }
-        const entry = self.expires.find(
-            key.v.ptr,
-        ) orelse {
+        const skey = sds.cast(key.v.ptr);
+        const entry = self.expires.find(skey) orelse {
             return -1;
         };
         // The entry was found in the expire dict, this means it should also
         // be present in the main dict (safety check).
-        std.debug.assert(self.dict.find(key.v.ptr) != null);
-        return entry.v.s64;
+        std.debug.assert(self.dict.find(skey) != null);
+        return entry.val;
     }
 
     /// Prepare the string object stored at 'key' to be modified destructively
@@ -420,10 +523,10 @@ pub const Database = struct {
     /// implementations that should instead rely on lookupKeyRead(),
     /// lookupKeyWrite() and lookupKeyReadWithFlags().
     fn lookupKey(self: *Database, key: *Object, flags: u32) ?*Object {
-        const entry = self.dict.find(key.v.ptr) orelse {
+        const entry = self.dict.find(sds.cast(key.v.ptr)) orelse {
             return null;
         };
-        const val: *Object = @ptrCast(@alignCast(entry.v.val.?));
+        const val: *Object = entry.val.?;
         if (flags & Server.LOOKUP_NOTOUCH == 0) {
             if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
                 updateLFU(val);
@@ -458,10 +561,11 @@ pub const Database = struct {
     /// Delete a key, value, and associated expiration entry if any,
     /// from the DB.
     fn syncDelete(self: *Database, key: *Object) bool {
+        const skey = sds.cast(key.v.ptr);
         if (self.expires.size() > 0) {
-            _ = self.expires.delete(key.v.ptr);
+            _ = self.expires.delete(skey);
         }
-        if (self.dict.delete(key.v.ptr)) {
+        if (self.dict.delete(skey)) {
             return true;
         }
         return false;
@@ -504,7 +608,7 @@ pub const Database = struct {
             const entry = self.dict.getRandom() orelse {
                 return null;
             };
-            const key: sds.String = sds.cast(entry.key);
+            const key: sds.String = entry.key;
             const keyobj = Object.createString(sds.asBytes(key));
             if (self.expires.find(key) != null) {
                 if (self.expireIfNeeded(keyobj)) {
@@ -530,10 +634,11 @@ const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const allocator = @import("allocator.zig");
 const server = &Server.instance;
-const Dict = @import("Dict.zig");
 const Object = @import("Object.zig");
 const evict = @import("evict.zig");
 const sds = @import("sds.zig");
 const log = std.log.scoped(.db);
 const lazyfree = @import("lazyfree.zig");
 const blocked = @import("blocked.zig");
+const dict = @import("dict.zig");
+const util = @import("util.zig");

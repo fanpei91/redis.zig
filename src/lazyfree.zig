@@ -5,18 +5,19 @@ const LAZYFREE_THRESHOLD = 64;
 /// a lazy free list instead of being freed synchronously. The lazy free list
 /// will be reclaimed in a different bio.zig thread.
 pub fn asyncDelete(db: *Database, key: *Object) bool {
+    const skey = sds.cast(key.v.ptr);
     // Deleting an entry from the expires dict will not free the sds of
     // the key, because it is shared with the main dictionary.
     if (db.expires.size() > 0) {
-        _ = db.expires.delete(key.v.ptr);
+        _ = db.expires.delete(skey);
     }
 
     // If the value is composed of a few allocations, to free in a lazy way
     // is actually just slower... So under a certain limit we just free
     // the object synchronously.
-    const entry = db.dict.unlink(key.v.ptr);
+    const entry = db.dict.unlink(skey);
     if (entry) |ent| {
-        const val: *Object = @ptrCast(@alignCast(ent.v.val.?));
+        const val = ent.val.?;
         const free_effort = getFreeEffort(val);
 
         // If releasing the object is too much work, do it in the background
@@ -64,7 +65,7 @@ fn getFreeEffort(obj: *Object) u64 {
     }
 
     if (obj.type == .set and obj.encoding == .ht) {
-        const dict: *Dict = @ptrCast(@alignCast(ptr));
+        const dict: *Set.Dict = @ptrCast(@alignCast(ptr));
         return dict.size();
     }
 
@@ -73,10 +74,7 @@ fn getFreeEffort(obj: *Object) u64 {
         return sz.zsl.length;
     }
 
-    if (obj.type == .hash and obj.encoding == .ht) {
-        const dict: *Dict = @ptrCast(@alignCast(ptr));
-        return dict.size();
-    }
+    // TODO: Hash  = Object.createHash()
 
     // TODO: STREAM
 
@@ -88,14 +86,18 @@ pub fn freeObjectFromBioThread(obj: *Object) void {
     obj.decrRefCount();
 }
 
-pub fn freeDatabaseFromBioThread(h1: *Dict, h2: *Dict) void {
-    h1.destroy();
-    h2.destroy();
+pub fn freeDatabaseFromBioThread(
+    db1: *Database.Dict.HashMap,
+    db2: *Database.Dict.HashMap,
+) void {
+    db1.destroy();
+    db2.destroy();
 }
 
 const Database = @import("db.zig").Database;
 const Object = @import("Object.zig");
 const Quicklist = @import("QuickList.zig");
-const Dict = @import("Dict.zig");
 const Zset = @import("t_zset.zig").Zset;
 const bio = @import("bio.zig");
+const Set = @import("t_set.zig").Set;
+const sds = @import("sds.zig");

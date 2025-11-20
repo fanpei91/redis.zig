@@ -30,7 +30,7 @@ pub fn blockForKeys(
         var clients: *ClientList = undefined;
         const entry = cli.db.blocking_keys.find(key);
         if (entry) |e| {
-            clients = @ptrCast(@alignCast(e.v.val.?));
+            clients = e.val;
         } else {
             clients = ClientList.create(&.{});
             const ok = cli.db.blocking_keys.add(key, clients);
@@ -73,7 +73,7 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
     // We also add the key in the db->ready_keys dictionary in order
     // to avoid adding it multiple times into a list with a simple O(1)
     // check.
-    _ = db.ready_keys.add(key, null);
+    _ = db.ready_keys.add(key, {});
     key.incrRefCount();
 }
 
@@ -128,7 +128,7 @@ pub fn handleClientsBlockedOnKeys() void {
         };
         if (o.type == .list) {
             if (rl.db.blocking_keys.find(rl.key)) |de| {
-                const clients: *ClientList = @ptrCast(@alignCast(de.v.val));
+                const clients: *ClientList = de.val;
                 var numclients = clients.len;
                 while (numclients > 0) : (numclients -= 1) {
                     const clientnode = clients.first.?;
@@ -200,9 +200,9 @@ fn unblockClientWaitingData(cli: *Client) void {
 
     var di = cli.bpop.keys.iterator(false);
     while (di.next()) |de| {
-        const key: *Object = @ptrCast(@alignCast(de.key));
-        const bki: *BlockInfo = @ptrCast(@alignCast(de.v.val.?));
-        const l: *ClientList = @ptrCast(@alignCast(cli.db.blocking_keys.fetchValue(key).?));
+        const key: *Object = de.key;
+        const bki: *BlockInfo = de.val;
+        const l: *ClientList = cli.db.blocking_keys.fetchValue(key).?;
         l.removeNode(bki.listNode);
         if (l.len == 0) {
             _ = cli.db.blocking_keys.delete(key);

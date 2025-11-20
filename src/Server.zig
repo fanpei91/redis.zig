@@ -98,6 +98,28 @@ pub var shared: SharedObjects = undefined;
 
 pub var instance: Server = undefined;
 
+const Commands = struct {
+    const HashMap = dict.Dict(sds.String, *Command);
+
+    const vtable: *const HashMap.VTable = &.{
+        .hash = hash,
+        .eql = eql,
+        .freeKey = freeKey,
+    };
+
+    fn hash(key: sds.String) dict.Hash {
+        return dict.genCaseHash(sds.asBytes(key), 1024);
+    }
+
+    fn eql(k1: sds.String, k2: sds.String) bool {
+        return sds.caseCmp(sds.cast(k1), sds.cast(k2)) == .eq;
+    }
+
+    fn freeKey(key: sds.String) void {
+        sds.free(key);
+    }
+};
+
 const Server = @This();
 // General
 configfile: ?sds.String, // Absolute config file path.
@@ -110,7 +132,7 @@ hz: u32, // serverCron() calls frequency in hertz
 arch_bits: i32, // 32 or 64 depending on @bitSizeOf(usize)
 requirepass: ?[]u8, // Pass for AUTH command, or null
 db: []Database,
-commands: *Dict, // Command table
+commands: *Commands.HashMap, // Command table
 // Networking
 clients: *ClientList, // List of active clients
 clients_index: Rax, // Active clients dictionary by client ID.
@@ -161,7 +183,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.arch_bits = @bitSizeOf(usize);
     server.requirepass = null;
     errdefer if (server.requirepass) |passwd| allocator.free(passwd);
-    server.commands = Dict.create(commandsDictVTable, null);
+    server.commands = Commands.HashMap.create(Commands.vtable);
     errdefer server.commands.destroy();
     server.populateCommandTable();
     server.shutdown_asap = false;
@@ -751,11 +773,10 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
 }
 
 pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
-    const command = self.commands.fetchValue(cmd);
-    if (command) |ptr| {
-        return @ptrCast(@alignCast(ptr));
-    }
-    return null;
+    const command = self.commands.fetchValue(cmd) orelse {
+        return null;
+    };
+    return command;
 }
 
 fn populateCommandTable(self: *Server) void {
@@ -824,176 +845,6 @@ pub fn destroy() void {
     instance = undefined;
 }
 
-const commandsDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsCaseHash,
-    .eql = dictSdsCaseEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = null,
-};
-
-/// Database.dict, keys are sds strings, vals are Redis objects.
-pub const dbDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = dictObjectFree,
-};
-
-/// Database.expires
-pub const expireDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = null,
-    .freeVal = null,
-};
-
-/// Keylist hash table type has unencoded redis objects as keys and
-/// lists as values. It's used for blocking operations (BLPOP) and to
-/// map swapped keys to a list of clients waiting for this keys to be loaded.
-pub const keylistDictVTable: *const Dict.VTable = &.{
-    .hash = dictObjectHash,
-    .eql = dictObjectEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictObjectFree,
-    .freeVal = dictClientListFree,
-};
-
-/// Like objectKeyPointerValueDictVTable, but values can be destroyed, if
-/// not null.
-pub const objectKeyHeapPointerValueDictVTable: *const Dict.VTable = &.{
-    .hash = dictEncObjectHash,
-    .eql = dictEncObjectEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictObjectFree,
-    .freeVal = dictBlockedInfoFree,
-};
-
-/// Generic hash table type where keys are Redis Objects, Values
-/// dummy pointers.
-pub const objectKeyPointerValueDictVTable: *const Dict.VTable = &.{
-    .hash = dictEncObjectHash,
-    .eql = dictEncObjectEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictObjectFree,
-    .freeVal = null,
-};
-
-/// Set dictionary type. Keys are SDS strings, values are ot used.
-pub const setDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = null,
-};
-
-/// Sorted sets hash (note: a skiplist is used in addition to the hash table)
-pub const zsetDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = null, //  sds.String shared & freed by skiplist
-    .freeVal = null,
-};
-
-fn dictSdsHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
-    return Dict.genHash(sds.asBytes(sds.cast(key)));
-}
-
-fn dictObjectHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
-    const o: *Object = @ptrCast(@alignCast(key));
-    return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-}
-
-fn dictEncObjectHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
-    var o: *Object = @ptrCast(@alignCast(key));
-    if (o.sdsEncoded()) {
-        return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-    }
-    if (o.encoding == .int) {
-        var buf: [32]u8 = undefined;
-        const s = util.ll2string(&buf, o.v.int);
-        return Dict.genHash(s);
-    }
-    o = o.getDecoded();
-    defer o.decrRefCount();
-    return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-}
-
-fn dictSdsCaseHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
-    var stack_impl = std.heap.stackFallback(
-        1024,
-        allocator.child,
-    );
-    const stack_allocator = stack_impl.get();
-    const dupkey = sds.dupeAlloc(stack_allocator, sds.cast(key));
-    defer sds.freeAlloc(stack_allocator, dupkey);
-    sds.toLower(dupkey);
-    return Dict.genHash(sds.asBytes(dupkey));
-}
-
-fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
-    return sds.cmp(sds.cast(key1), sds.cast(key2)) == .eq;
-}
-
-fn dictObjectEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
-    const o1: *Object = @ptrCast(@alignCast(key1));
-    const o2: *Object = @ptrCast(@alignCast(key2));
-    return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
-}
-
-fn dictEncObjectEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
-    var o1: *Object = @ptrCast(@alignCast(key1));
-    var o2: *Object = @ptrCast(@alignCast(key2));
-    if (o1.encoding == .int and o2.encoding == .int) {
-        return o1.v.int == o2.v.int;
-    }
-
-    o1 = o1.getDecoded();
-    defer o1.decrRefCount();
-    o2 = o2.getDecoded();
-    defer o2.decrRefCount();
-
-    return sds.caseCmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
-}
-
-fn dictSdsCaseEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
-    return sds.caseCmp(sds.cast(key1), sds.cast(key2)) == .eq;
-}
-
-fn dictSdsFree(_: Dict.PrivData, key: Dict.Key) void {
-    sds.free(sds.cast(key));
-}
-
-fn dictObjectFree(_: Dict.PrivData, val: Dict.Value) void {
-    // Lazy freeing will set value to null.
-    if (val) |ptr| {
-        const obj: *Object = @ptrCast(@alignCast(ptr));
-        obj.decrRefCount();
-    }
-}
-
-fn dictBlockedInfoFree(_: Dict.PrivData, val: Dict.Value) void {
-    const bki: *blocked.BlockInfo = @ptrCast(@alignCast(val));
-    allocator.destroy(bki);
-}
-
-fn dictClientListFree(_: Dict.PrivData, val: Dict.Value) void {
-    const l: *ClientList = @ptrCast(@alignCast(val));
-    l.release();
-}
-
 // AUTH password
 pub fn authCommand(cli: *Client) void {
     if (server.requirepass == null) {
@@ -1055,7 +906,6 @@ const Object = @import("Object.zig");
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
-const Dict = @import("Dict.zig");
 const random = @import("random.zig");
 const config = @import("config.zig");
 const ae = @import("ae.zig");
@@ -1084,3 +934,4 @@ pub const Command = commandtable.Command;
 pub const ClientList = List(*Client, *Client);
 pub const ReadyKeyList = List(*blocked.ReadyList, *blocked.ReadyList);
 pub const blocked = @import("blocked.zig");
+const dict = @import("dict.zig");
