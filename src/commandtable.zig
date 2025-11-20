@@ -51,6 +51,9 @@ pub const table = [_]Command{
     .{ .name = "rpushx", .proc = list.rpushxCommand, .arity = -3 },
     .{ .name = "lpop", .proc = list.lpopCommand, .arity = 2 },
     .{ .name = "rpop", .proc = list.rpopCommand, .arity = 2 },
+    .{ .name = "rpoplpush", .proc = list.rpoplpushCommand, .arity = 3 },
+    .{ .name = "blpop", .proc = list.blpopCommand, .arity = -3 },
+    .{ .name = "brpop", .proc = list.brpopCommand, .arity = -3 },
     .{ .name = "linsert", .proc = list.linsertCommand, .arity = 5 },
     .{ .name = "lindex", .proc = list.lindexCommand, .arity = 3 },
     .{ .name = "lset", .proc = list.lsetCommand, .arity = 4 },
@@ -58,7 +61,6 @@ pub const table = [_]Command{
     .{ .name = "lrange", .proc = list.lrangeCommand, .arity = 4 },
     .{ .name = "ltrim", .proc = list.ltrimCommand, .arity = 4 },
     .{ .name = "lrem", .proc = list.lremCommand, .arity = 4 },
-    .{ .name = "rpoplpush", .proc = list.rpoplpushCommand, .arity = 3 },
 };
 
 pub const Command = struct {

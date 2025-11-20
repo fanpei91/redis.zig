@@ -347,6 +347,54 @@ pub fn rpoplpushCommand(cli: *Client) void {
     }
 }
 
+/// BLPOP key [key ...] timeout
+pub fn blpopCommand(cli: *Client) void {
+    bpop(cli, .head);
+}
+
+/// BRPOP key [key ...] timeout
+pub fn brpopCommand(cli: *Client) void {
+    bpop(cli, .tail);
+}
+
+/// BLPOP/BRPOP key [key ...] timeout
+fn bpop(cli: *Client, where: Where) void {
+    const argv = cli.argv.?;
+
+    var timeout: i64 = undefined;
+    if (!blocked.getTimeoutFromObjectOrReply(
+        cli,
+        argv[cli.argc - 1],
+        &timeout,
+        Server.UNIT_SECONDS,
+    )) {
+        return;
+    }
+
+    const keys = argv[1 .. cli.argc - 1];
+    for (keys) |key| {
+        const lobj = cli.db.lookupKeyWrite(key) orelse continue;
+        if (lobj.type != .list) {
+            cli.addReply(Server.shared.wrongtypeerr);
+            return;
+        }
+        const value = List.pop(lobj, where).?;
+        defer value.decrRefCount();
+
+        cli.addReplyMultiBulkLen(2);
+        cli.addReplyBulk(key);
+        cli.addReplyBulk(value);
+
+        if (List.length(lobj) == 0) {
+            _ = cli.db.delete(key);
+        }
+        return;
+    }
+
+    // If the keys does not exists we must block
+    blocked.blockForKeys(cli, Server.BLOCKED_LIST, keys, timeout, null);
+}
+
 ///  This is the semantic of this command:
 ///  RPOPLPUSH srclist dstlist:
 ///    IF LLEN(srclist) > 0
@@ -438,6 +486,53 @@ fn pop(cli: *Client, where: Where) void {
     if (List.length(lobj) == 0) {
         _ = cli.db.delete(key);
     }
+}
+
+/// This is a helper function for blocked.handleClientsBlockedOnLists().
+/// It's work is to serve a specific client (receiver) that is blocked on 'key'
+/// in the context of the specified 'db', doing the following:
+///
+/// 1) Provide the client with the 'value' element.
+/// 2) If the dstkey is not null (we are serving a BRPOPLPUSH) also push the
+///    'value' element on the destination list (the LPUSH side of the command).
+/// 3) Propagate the resulting BRPOP, BLPOP and additional LPUSH if any into
+///    the AOF and replication channel.
+///
+/// The argument 'where' is .tail or .head, and indicates if the
+/// 'value' element was popped from the head (BLPOP) or tail (BRPOP) so that
+/// we can propagate the command properly.
+///
+/// The function returns true if we are able to serve the client, otherwise
+/// false is returned to signal the caller that the list POP operation
+/// should be undone as the client was not served: This only happens for
+/// BRPOPLPUSH that fails to push the value to the destination key as it is
+/// of the wrong type.
+pub fn serveClientBlockedOnList(
+    receiver: *Client,
+    key: *Object,
+    dstkey: ?*Object,
+    db: *Database,
+    value: *Object,
+    where: Where,
+) bool {
+    _ = db;
+    _ = where;
+
+    // BRPOPLPUSH
+    if (dstkey) |dst| {
+        const dstobj = receiver.db.lookupKeyWrite(dst);
+        if (dstobj) |obj| if (obj.checkTypeOrReply(receiver, .list)) {
+            return false;
+        };
+        rpoplpush(receiver, dst, dstobj, value);
+        return true;
+    }
+
+    // BLPOP/BRPOP
+    receiver.addReplyMultiBulkLen(2);
+    receiver.addReplyBulk(key);
+    receiver.addReplyBulk(value);
+    return true;
 }
 
 pub const Where = enum {
@@ -590,3 +685,5 @@ const sds = @import("sds.zig");
 const QuickList = @import("QuickList.zig");
 const allocator = @import("allocator.zig");
 const assert = std.debug.assert;
+const blocked = @import("blocked.zig");
+const Database = @import("db.zig").Database;

@@ -441,6 +441,39 @@ pub fn sdsEncoded(self: *const Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
 
+pub fn getLongLongFromObjectOrReply(
+    self: *const Object,
+    cli: *Client,
+    target: *i64,
+    msg: ?[]const u8,
+) bool {
+    if (self.getLongLongFromObject(target)) {
+        return true;
+    }
+    if (msg) |err| {
+        cli.addReplyErr(err);
+    } else {
+        cli.addReplyErr("value is not an integer or out of range");
+    }
+    return false;
+}
+
+pub fn getLongLongFromObject(self: *const Object, target: *i64) bool {
+    assert(self.type == .string);
+    if (self.sdsEncoded()) {
+        target.* = std.fmt.parseInt(
+            i64,
+            sds.asBytes(sds.cast(self.v.ptr)),
+            10,
+        ) catch return false;
+    } else if (self.encoding == .int) {
+        target.* = self.v.int;
+    } else {
+        @panic("Unknown string encoding");
+    }
+    return true;
+}
+
 pub fn getLongDoubleFromObjectOrReply(
     self: *const Object,
     cli: *Client,

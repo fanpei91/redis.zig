@@ -178,6 +178,8 @@ pub const Database = struct {
     id: usize, // Database ID
     dict: *Dict, // The keyspace for this DB
     expires: *Dict, // Timeout of keys with a timeout set
+    blocking_keys: *Dict, // Keys with clients waiting for data (BLPOP)
+    ready_keys: *Dict, // Blocked keys that received a PUSH
 
     pub fn create(id: usize) Database {
         return .{
@@ -188,6 +190,14 @@ pub const Database = struct {
             ),
             .expires = Dict.create(
                 Server.expireDictVTable,
+                null,
+            ),
+            .blocking_keys = Dict.create(
+                Server.keylistDictVTable,
+                null,
+            ),
+            .ready_keys = Dict.create(
+                Server.objectKeyPointerValueDictVTable,
                 null,
             ),
         };
@@ -218,6 +228,9 @@ pub const Database = struct {
         const copy = sds.dupe(sds.cast(key.v.ptr));
         const ok = self.dict.add(copy, val);
         std.debug.assert(ok);
+        if (val.type == .list) {
+            blocked.signalKeyAsReady(self, key);
+        }
     }
 
     /// This is a wrapper whose behavior depends on the Redis lazy free
@@ -506,6 +519,8 @@ pub const Database = struct {
     pub fn destroy(self: *Database) void {
         self.dict.destroy();
         self.expires.destroy();
+        self.blocking_keys.destroy();
+        self.ready_keys.destroy();
         self.* = undefined;
     }
 };
@@ -521,3 +536,4 @@ const evict = @import("evict.zig");
 const sds = @import("sds.zig");
 const log = std.log.scoped(.db);
 const lazyfree = @import("lazyfree.zig");
+const blocked = @import("blocked.zig");

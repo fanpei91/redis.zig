@@ -38,10 +38,18 @@ pub const PROTO_REQ_INLINE = 1;
 pub const PROTO_REQ_MULTIBULK = 2;
 
 // Client flags
+pub const CLIENT_BLOCKED = (1 << 4); // The client is waiting in a blocking operation
 pub const CLIENT_CLOSE_AFTER_REPLY = (1 << 6); // Close after writing entire reply.
+pub const CLIENT_UNBLOCKED = (1 << 7); // This client was unblocked and is stored in server.unblocked_clients
 pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
 pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
+
+// Client block type (btype field in Client structure)
+// if CLIENT_BLOCKED flag is set.
+pub const BLOCKED_NONE = 0; // Not blocked, no CLIENT_BLOCKED flag set.
+pub const BLOCKED_LIST = 1; // BLPOP & co.
+pub const BLOCKED_MODULE = 3; // Blocked by a loadable module.
 
 // Units
 pub const UNIT_SECONDS = 0;
@@ -87,55 +95,6 @@ pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
 pub const OBJ_LIST_COMPRESS_DEPTH = 0;
 
 pub var shared: SharedObjects = undefined;
-
-const commandTableDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsCaseHash,
-    .eql = dictSdsCaseEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = null,
-};
-
-// Database.dict, keys are sds strings, vals are Redis objects.
-pub const dbDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = dictObjectFree,
-};
-
-// Database.expires
-pub const expireDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = null,
-    .freeVal = null,
-};
-
-/// Set dictionary type. Keys are SDS strings, values are ot used.
-pub const setDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = dictSdsFree,
-    .freeVal = null,
-};
-
-/// Sorted sets hash (note: a skiplist is used in addition to the hash table)
-pub const zsetDictVTable: *const Dict.VTable = &.{
-    .hash = dictSdsHash,
-    .eql = dictSdsEql,
-    .dupeKey = null,
-    .dupeVal = null,
-    .freeKey = null, //  sds.String shared & freed by skiplist
-    .freeVal = null,
-};
 
 pub var instance: Server = undefined;
 
@@ -192,6 +151,9 @@ lazyfree_lazy_expire: bool,
 // List parameters
 list_max_ziplist_size: i32,
 list_compress_depth: i32,
+// Blocked clients
+ready_keys: *ReadyKeyList, // List of ReadyList structures for BLPOP & co
+unblocked_clients: *ClientList, // list of clients to unblock before next loop
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
@@ -199,7 +161,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.arch_bits = @bitSizeOf(usize);
     server.requirepass = null;
     errdefer if (server.requirepass) |passwd| allocator.free(passwd);
-    server.commands = Dict.create(commandTableDictVTable, null);
+    server.commands = Dict.create(commandsDictVTable, null);
     errdefer server.commands.destroy();
     server.populateCommandTable();
     server.shutdown_asap = false;
@@ -240,6 +202,10 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
     server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
     server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
+    server.ready_keys = ReadyKeyList.create(&.{});
+    errdefer server.ready_keys.release();
+    server.unblocked_clients = ClientList.create(&.{});
+    errdefer server.unblocked_clients.release();
 
     try config.load(server, configfile, options);
     server.hz = server.config_hz;
@@ -393,7 +359,7 @@ fn adjustOpenFilesLimit(self: *Server) !void {
 /// virtual memory and aging there is to store the current time in objects at
 /// every object access, and accuracy is not needed. To access a global var is
 /// a lot faster than calling std.time.microTimestamp().
-fn updateCachedTime(self: *Server) void {
+pub fn updateCachedTime(self: *Server) void {
     self.ustime = std.time.microTimestamp();
     self.mstime = @divFloor(self.ustime, std.time.us_per_ms);
     const unixtime = @divFloor(self.mstime, std.time.ms_per_s);
@@ -506,6 +472,12 @@ pub fn up(self: *Server) !void {
 /// for ready file descriptors.
 fn beforeSleep(el: *ae.EventLoop) !void {
     _ = el;
+
+    // Try to process pending commands for clients that were just unblocked.
+    if (server.unblocked_clients.len != 0) {
+        blocked.processUnblockedClients();
+    }
+
     // Handle write with pending output buffers.
     _ = try networking.handleClientsWithPendingWrites();
 }
@@ -652,11 +624,21 @@ fn clientsCron() void {
 fn clientsCronHandleTimeout(cli: *Client, now_ms: i64) bool {
     const now_sec: i64 = @divFloor(now_ms, std.time.ms_per_s);
     if (server.maxidletime > 0 and
+        cli.flags & CLIENT_BLOCKED == 0 and // no timeout for BLPOP
         (now_sec - cli.lastinteraction > server.maxidletime))
     {
         log.debug("Closing idle client", .{});
         cli.free();
         return true;
+    } else if (cli.flags & CLIENT_BLOCKED != 0) {
+        // Blocked OPS timeout is handled with milliseconds resolution.
+        // However note that the actual resolution is limited by
+        // server.hz.
+        if (cli.bpop.timeout != 0 and cli.bpop.timeout < now_ms) {
+            // Handle blocking operation specific timeout.
+            blocked.replyToBlockedClientTimedOut(cli);
+            blocked.unblockClient(cli);
+        }
     }
     return false;
 }
@@ -761,6 +743,10 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
 
     self.call(cli, 0);
 
+    if (server.ready_keys.len > 0) {
+        blocked.handleClientsBlockedOnKeys();
+    }
+
     return true;
 }
 
@@ -818,6 +804,8 @@ pub fn destroy() void {
     server.clients_index.free();
     server.clients_pending_write.release();
     server.clients_to_close.release();
+    server.ready_keys.release();
+    server.unblocked_clients.release();
 
     for (server.ipfd[0..server.ipfd_count]) |fd| {
         posix.close(fd);
@@ -836,8 +824,111 @@ pub fn destroy() void {
     instance = undefined;
 }
 
+const commandsDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsCaseHash,
+    .eql = dictSdsCaseEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictSdsFree,
+    .freeVal = null,
+};
+
+/// Database.dict, keys are sds strings, vals are Redis objects.
+pub const dbDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictSdsFree,
+    .freeVal = dictObjectFree,
+};
+
+/// Database.expires
+pub const expireDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = null,
+    .freeVal = null,
+};
+
+/// Keylist hash table type has unencoded redis objects as keys and
+/// lists as values. It's used for blocking operations (BLPOP) and to
+/// map swapped keys to a list of clients waiting for this keys to be loaded.
+pub const keylistDictVTable: *const Dict.VTable = &.{
+    .hash = dictObjectHash,
+    .eql = dictObjectEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictObjectFree,
+    .freeVal = dictClientListFree,
+};
+
+/// Like objectKeyPointerValueDictVTable, but values can be destroyed, if
+/// not null.
+pub const objectKeyHeapPointerValueDictVTable: *const Dict.VTable = &.{
+    .hash = dictEncObjectHash,
+    .eql = dictEncObjectEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictObjectFree,
+    .freeVal = dictBlockedInfoFree,
+};
+
+/// Generic hash table type where keys are Redis Objects, Values
+/// dummy pointers.
+pub const objectKeyPointerValueDictVTable: *const Dict.VTable = &.{
+    .hash = dictEncObjectHash,
+    .eql = dictEncObjectEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictObjectFree,
+    .freeVal = null,
+};
+
+/// Set dictionary type. Keys are SDS strings, values are ot used.
+pub const setDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = dictSdsFree,
+    .freeVal = null,
+};
+
+/// Sorted sets hash (note: a skiplist is used in addition to the hash table)
+pub const zsetDictVTable: *const Dict.VTable = &.{
+    .hash = dictSdsHash,
+    .eql = dictSdsEql,
+    .dupeKey = null,
+    .dupeVal = null,
+    .freeKey = null, //  sds.String shared & freed by skiplist
+    .freeVal = null,
+};
+
 fn dictSdsHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
     return Dict.genHash(sds.asBytes(sds.cast(key)));
+}
+
+fn dictObjectHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
+    const o: *Object = @ptrCast(@alignCast(key));
+    return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+}
+
+fn dictEncObjectHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
+    var o: *Object = @ptrCast(@alignCast(key));
+    if (o.sdsEncoded()) {
+        return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+    }
+    if (o.encoding == .int) {
+        var buf: [32]u8 = undefined;
+        const s = util.ll2string(&buf, o.v.int);
+        return Dict.genHash(s);
+    }
+    o = o.getDecoded();
+    defer o.decrRefCount();
+    return Dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
 }
 
 fn dictSdsCaseHash(_: Dict.PrivData, key: Dict.Key) Dict.Hash {
@@ -856,6 +947,27 @@ fn dictSdsEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
     return sds.cmp(sds.cast(key1), sds.cast(key2)) == .eq;
 }
 
+fn dictObjectEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
+    const o1: *Object = @ptrCast(@alignCast(key1));
+    const o2: *Object = @ptrCast(@alignCast(key2));
+    return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+}
+
+fn dictEncObjectEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
+    var o1: *Object = @ptrCast(@alignCast(key1));
+    var o2: *Object = @ptrCast(@alignCast(key2));
+    if (o1.encoding == .int and o2.encoding == .int) {
+        return o1.v.int == o2.v.int;
+    }
+
+    o1 = o1.getDecoded();
+    defer o1.decrRefCount();
+    o2 = o2.getDecoded();
+    defer o2.decrRefCount();
+
+    return sds.caseCmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+}
+
 fn dictSdsCaseEql(_: Dict.PrivData, key1: Dict.Key, key2: Dict.Key) bool {
     return sds.caseCmp(sds.cast(key1), sds.cast(key2)) == .eq;
 }
@@ -870,6 +982,16 @@ fn dictObjectFree(_: Dict.PrivData, val: Dict.Value) void {
         const obj: *Object = @ptrCast(@alignCast(ptr));
         obj.decrRefCount();
     }
+}
+
+fn dictBlockedInfoFree(_: Dict.PrivData, val: Dict.Value) void {
+    const bki: *blocked.BlockInfo = @ptrCast(@alignCast(val));
+    allocator.destroy(bki);
+}
+
+fn dictClientListFree(_: Dict.PrivData, val: Dict.Value) void {
+    const l: *ClientList = @ptrCast(@alignCast(val));
+    l.release();
 }
 
 // AUTH password
@@ -960,3 +1082,5 @@ const SharedObjects = @import("SharedObjects.zig");
 const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
 pub const ClientList = List(*Client, *Client);
+pub const ReadyKeyList = List(*blocked.ReadyList, *blocked.ReadyList);
+pub const blocked = @import("blocked.zig");

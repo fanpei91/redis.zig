@@ -23,6 +23,19 @@ const ERR_DENIED =
     "the server to start accepting connections from the outside.\r\n";
 
 pub const Client = struct {
+    const BlockingState = struct {
+        // Blocking operation timeout(ms). If UNIX current time
+        // is > timeout then the operation timed out
+        timeout: i64,
+
+        // The keys we are waiting to terminate a blocking
+        // operation such as BLPOP or XREAD. Or NULL.
+        keys: *Dict,
+
+        // The key that should receive the element,
+        // for BRPOPLPUSH.
+        target: ?*Object,
+    };
     const ReplyBlock = struct {
         size: usize,
         used: usize,
@@ -85,6 +98,9 @@ pub const Client = struct {
     sentlen: usize, // Amount of bytes already sent in the current buffer or object being sent.
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
     bufpos: usize,
+    // Blocking
+    btype: i32, // Type of blocking op if Server.CLIENT_BLOCKED.
+    bpop: BlockingState, // blocking state
 
     pub fn create(fd: i32, flags: i32) !*Client {
         const cli = allocator.create(Client);
@@ -133,6 +149,13 @@ pub const Client = struct {
         cli.sentlen = 0;
         cli.buf = undefined;
         cli.bufpos = 0;
+        cli.btype = Server.BLOCKED_NONE;
+        cli.bpop.timeout = 0;
+        cli.bpop.keys = Dict.create(
+            Server.objectKeyHeapPointerValueDictVTable,
+            null,
+        );
+        cli.bpop.target = null;
         if (fd != -1) cli.link();
         return cli;
     }
@@ -174,12 +197,25 @@ pub const Client = struct {
         }
     }
 
+    /// This is a wrapper for processInputBuffer that also cares about handling
+    /// the replication forwarding to the sub-slaves, in case the client 'cli'
+    /// is flagged as master. Usually you want to call this instead of the
+    /// raw processInputBuffer().
+    pub fn processInputBufferAndReplicate(self: *Client) void {
+        self.processInputBuffer();
+    }
+
     /// This function is called every time, in the client structure 'c', there is
     /// more query buffer to process, because we read more data from the socket
     /// or because a client was blocked and later reactivated, so there could be
     /// pending query buffer, already representing a full command, to process.
     pub fn processInputBuffer(self: *Client) void {
         while (self.qb_pos < sds.getLen(self.querybuf)) {
+            // Immediately abort if the client is in the middle of something.
+            if (self.flags & Server.CLIENT_BLOCKED != 0) {
+                break;
+            }
+
             // CLIENT_CLOSE_AFTER_REPLY closes the connection once the reply is
             // written to the client. Make sure to not let the reply grow after
             // this flag has been set (i.e. don't process more commands).
@@ -212,7 +248,14 @@ pub const Client = struct {
                 self.reset();
             } else {
                 if (server.processCommand(self)) {
-                    self.reset();
+                    // Don't reset the client structure for clients blocked in a
+                    // module blocking command, so that the reply callback will
+                    // still be able to access the client argv and argc field.
+                    if (self.flags & Server.CLIENT_BLOCKED == 0 or
+                        self.btype != Server.BLOCKED_MODULE)
+                    {
+                        self.reset();
+                    }
                 }
             }
         }
@@ -631,14 +674,14 @@ pub const Client = struct {
         var pos: usize = 0;
         const tail = if (self.reply.last) |last| last.value else null;
 
-        if (tail) |block| {
+        if (tail) |rb| {
             // Copy the part we can fit into the tail, and leave the rest for a
             // new node
-            const avail = block.size - block.used;
+            const avail = rb.size - rb.used;
             const copy = if (avail >= len) len else avail;
-            const buf = block.buf();
-            memcpy(buf[block.used..], s, copy);
-            block.used += copy;
+            const buf = rb.buf();
+            memcpy(buf[rb.used..], s, copy);
+            rb.used += copy;
             len -= copy;
             pos += copy;
         }
@@ -649,12 +692,12 @@ pub const Client = struct {
                 Server.PROTO_REPLY_CHUNK_BYTES
             else
                 len;
-            const block = ReplyBlock.create(size);
-            const buf = block.buf();
+            const rb = ReplyBlock.create(size);
+            const buf = rb.buf();
             memcpy(buf, s[pos..], len);
-            block.used = len;
-            self.reply.append(block);
-            self.reply_bytes += block.size;
+            rb.used = len;
+            self.reply.append(rb);
+            self.reply_bytes += rb.size;
         }
     }
 
@@ -778,6 +821,11 @@ pub const Client = struct {
     pub fn free(self: *Client) void {
         sds.free(self.querybuf);
         self.querybuf = undefined;
+
+        if (self.flags & Server.CLIENT_BLOCKED != 0) {
+            blocked.unblockClient(self);
+        }
+        self.bpop.keys.destroy();
 
         self.reply.release();
         self.freeArgv();
@@ -1016,3 +1064,5 @@ const util = @import("util.zig");
 const List = @import("adlist.zig").List;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
+const Dict = @import("Dict.zig");
+const blocked = @import("blocked.zig");
