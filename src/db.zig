@@ -101,7 +101,6 @@ pub fn moveCommand(cli: *Client) void {
 
     dst.add(key, obj);
     if (expire != -1) dst.setExpire(cli, key, expire);
-    obj.incrRefCount();
 
     // OK! key moved, free the entry in the source DB
     _ = src.delete(key);
@@ -156,7 +155,6 @@ fn rename(cli: *Client, nx: bool) void {
     }
 
     cli.db.add(newkey, obj);
-    obj.incrRefCount();
     const expire = cli.db.getExpire(key);
     if (expire != -1) {
         cli.db.setExpire(cli, newkey, expire);
@@ -181,6 +179,8 @@ pub const Database = struct {
         const vtable: *const HashMap.VTable = &.{
             .hash = hash,
             .eql = eql,
+            .dupeKey = dupeKey,
+            .dupeVal = dupeVal,
             .freeKey = freeKey,
             .freeVal = freeVal,
         };
@@ -191,6 +191,18 @@ pub const Database = struct {
 
         fn eql(k1: sds.String, k2: sds.String) bool {
             return sds.cmp(k1, k2) == .eq;
+        }
+
+        fn dupeKey(key: sds.String) sds.String {
+            return sds.dupe(key);
+        }
+
+        fn dupeVal(val: ?*Object) ?*Object {
+            // Lazy freeing will set value to null.
+            if (val) |v| {
+                v.incrRefCount();
+            }
+            return val;
         }
 
         fn freeKey(key: sds.String) void {
@@ -226,6 +238,7 @@ pub const Database = struct {
         const vtable: *const HashMap.VTable = &.{
             .hash = hash,
             .eql = eql,
+            .dupeKey = dupeKey,
             .freeKey = freeKey,
             .freeVal = freeVal,
         };
@@ -236,6 +249,11 @@ pub const Database = struct {
 
         fn eql(k1: *Object, k2: *Object) bool {
             return sds.cmp(sds.cast(k1.v.ptr), sds.cast(k2.v.ptr)) == .eq;
+        }
+
+        fn dupeKey(key: *Object) *Object {
+            key.incrRefCount();
+            return key;
         }
 
         fn freeKey(key: *Object) void {
@@ -253,6 +271,7 @@ pub const Database = struct {
         const vtable: *const HashMap.VTable = &.{
             .hash = hash,
             .eql = eql,
+            .dupeKey = dupeKey,
             .freeKey = freeKey,
         };
 
@@ -285,6 +304,11 @@ pub const Database = struct {
             defer o2.decrRefCount();
 
             return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+        }
+
+        fn dupeKey(key: *Object) *Object {
+            key.incrRefCount();
+            return key;
         }
 
         fn freeKey(key: *Object) void {
@@ -321,18 +345,12 @@ pub const Database = struct {
         } else {
             self.overwrite(key, val);
         }
-        val.incrRefCount();
         _ = self.removeExpire(key);
     }
 
-    /// Add the key to the DB. It's up to the caller to increment the reference
-    /// counter of the value if needed.
-    ///
-    /// The program is aborted if the key already exists.
+    /// Add the key to the DB. The program is aborted if the key already exists.
     pub fn add(self: *Database, key: *Object, val: *Object) void {
-        const copy = sds.dupe(sds.cast(key.v.ptr));
-        const ok = self.dict.add(copy, val);
-        std.debug.assert(ok);
+        _ = self.dict.add(sds.cast(key.v.ptr), val) or unreachable;
         if (val.type == .list) {
             blocked.signalKeyAsReady(self, key);
         }
@@ -353,14 +371,15 @@ pub const Database = struct {
     ///
     /// The program is aborted if the key was not already present.
     pub fn overwrite(self: *Database, key: *Object, val: *Object) void {
-        const entry = self.dict.find(sds.cast(key.v.ptr));
-        var auxentry = entry.?.*;
-        std.debug.assert(entry != null);
-        const old: *Object = entry.?.val.?;
+        const entry = self.dict.find(sds.cast(key.v.ptr)) orelse {
+            unreachable;
+        };
+        var auxentry = entry.*;
+        const old: *Object = entry.val.?;
         if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
             val.lru = old.lru;
         }
-        self.dict.setVal(entry.?, val);
+        self.dict.setVal(entry, val);
         self.dict.freeVal(&auxentry);
     }
 
@@ -382,10 +401,9 @@ pub const Database = struct {
         when: i64,
     ) void {
         _ = cli;
-        const de = self.dict.find(sds.cast(key.v.ptr));
-        std.debug.assert(de != null);
+        const de = self.dict.find(sds.cast(key.v.ptr)) orelse unreachable;
         // Reuse the sds from the main dict in the expire dict
-        const ee = self.expires.addOrFind(de.?.key);
+        const ee = self.expires.addOrFind(de.key);
         self.expires.setVal(ee, when);
     }
 

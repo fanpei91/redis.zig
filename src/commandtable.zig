@@ -10,6 +10,7 @@ pub const table = [_]Command{
     .{ .name = "echo", .proc = Server.echoCommand, .arity = 2 },
     .{ .name = "auth", .proc = Server.authCommand, .arity = 2 },
     .{ .name = "time", .proc = Server.timeCommand, .arity = 1 },
+    .{ .name = "object", .proc = Object.objectCommand, .arity = -2 },
     .{ .name = "select", .proc = db.selectCommand, .arity = 2 },
     .{ .name = "exists", .proc = db.existsCommand, .arity = -2 },
     .{ .name = "del", .proc = db.delCommand, .arity = -2 },
@@ -78,3 +79,4 @@ const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");
 const sds = @import("sds.zig");
+const Object = @import("Object.zig");

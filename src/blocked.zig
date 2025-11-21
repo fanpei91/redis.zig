@@ -24,7 +24,6 @@ pub fn blockForKeys(
             allocator.destroy(bki);
             continue;
         }
-        key.incrRefCount();
 
         // And in the other "side", to map keys -> clients
         var clients: *ClientList = undefined;
@@ -33,12 +32,10 @@ pub fn blockForKeys(
             clients = e.val;
         } else {
             clients = ClientList.create(&.{});
-            const ok = cli.db.blocking_keys.add(key, clients);
-            std.debug.assert(ok);
-            key.incrRefCount();
+            _ = cli.db.blocking_keys.add(key, clients) or unreachable;
         }
         clients.append(cli);
-        bki.listNode = clients.last.?;
+        bki.listNode = clients.last orelse unreachable;
     }
 
     blockClient(cli, btype);
@@ -67,14 +64,12 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
     const rl = allocator.create(ReadyList);
     rl.db = db;
     rl.key = key;
-    key.incrRefCount();
     server.ready_keys.append(rl);
 
     // We also add the key in the db->ready_keys dictionary in order
     // to avoid adding it multiple times into a list with a simple O(1)
     // check.
-    _ = db.ready_keys.add(key, {});
-    key.incrRefCount();
+    _ = db.ready_keys.add(key, {}) or unreachable;
 }
 
 /// This function should be called by Redis every time a single command,
@@ -99,16 +94,12 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
 /// be used only for a single type, like virtually any Redis application will
 /// do, the function is already fair.
 pub fn handleClientsBlockedOnKeys() void {
-    const readykeys = server.ready_keys;
-    while (readykeys.len != 0) {
-        const ln = readykeys.first.?;
+    while (server.ready_keys.len != 0) {
+        const ln = server.ready_keys.first orelse unreachable;
         const rl = ln.value;
+        defer server.ready_keys.removeNode(ln);
 
-        defer readykeys.removeNode(ln);
-        defer allocator.destroy(rl);
-        defer rl.key.decrRefCount();
-
-        // First of all remove this key from db->ready_keys so that
+        // First of all remove this key from db.ready_keys so that
         // we can safely call signalKeyAsReady() against this key.
         _ = rl.db.ready_keys.delete(rl.key);
 
@@ -131,7 +122,7 @@ pub fn handleClientsBlockedOnKeys() void {
                 const clients: *ClientList = de.val;
                 var numclients = clients.len;
                 while (numclients > 0) : (numclients -= 1) {
-                    const clientnode = clients.first.?;
+                    const clientnode = clients.first orelse unreachable;
                     const receiver = clientnode.value;
                     if (receiver.btype != Server.BLOCKED_LIST) {
                         // Put at the tail, so that at the next call
@@ -141,7 +132,7 @@ pub fn handleClientsBlockedOnKeys() void {
                     }
                     const dstkey = receiver.bpop.target;
                     const where = blk: {
-                        if (receiver.cmd) |cmd| {
+                        if (receiver.lastcmd) |cmd| {
                             if (cmd.proc == list.blpopCommand) {
                                 break :blk list.Where.head;
                             }
@@ -151,11 +142,6 @@ pub fn handleClientsBlockedOnKeys() void {
                     const value = List.pop(o, where).?;
                     defer value.decrRefCount();
 
-                    // Protect receiver->bpop.target, that will be
-                    // freed by the next unblockClient()
-                    // call.
-                    if (dstkey) |dst| dst.incrRefCount();
-                    defer if (dstkey) |dst| dst.decrRefCount();
                     unblockClient(receiver);
 
                     if (!list.serveClientBlockedOnList(
@@ -173,7 +159,7 @@ pub fn handleClientsBlockedOnKeys() void {
                 }
             }
             if (List.length(o) == 0) {
-                _ = rl.db.delete(rl.key);
+                _ = rl.db.delete(rl.key) or unreachable;
             }
         }
     }
@@ -202,15 +188,17 @@ fn unblockClientWaitingData(cli: *Client) void {
     while (di.next()) |de| {
         const key: *Object = de.key;
         const bki: *BlockInfo = de.val;
-        const l: *ClientList = cli.db.blocking_keys.fetchValue(key).?;
-        l.removeNode(bki.listNode);
-        if (l.len == 0) {
-            _ = cli.db.blocking_keys.delete(key);
+        const clients = cli.db.blocking_keys.fetchValue(key) orelse {
+            unreachable;
+        };
+        clients.removeNode(bki.listNode);
+        if (clients.len == 0) {
+            _ = cli.db.blocking_keys.delete(key) or unreachable;
         }
     }
     di.release();
-
     cli.bpop.keys.empty(null);
+
     if (cli.bpop.target) |target| {
         target.decrRefCount();
         cli.bpop.target = null;
@@ -256,7 +244,7 @@ pub fn replyToBlockedClientTimedOut(cli: *Client) void {
 pub fn processUnblockedClients() void {
     const clients = server.unblocked_clients;
     while (clients.len > 0) {
-        const ln = clients.first.?;
+        const ln = clients.first orelse unreachable;
         const cli = ln.value;
         clients.removeNode(ln);
         cli.flags &= ~@as(i32, Server.CLIENT_UNBLOCKED);
@@ -330,3 +318,4 @@ const server = &Server.instance;
 const list = @import("t_list.zig");
 const List = list.List;
 const sds = @import("sds.zig");
+const log = std.log.scoped(.blocked);

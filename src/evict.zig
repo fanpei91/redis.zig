@@ -111,6 +111,16 @@ fn LFUTimeElapsed(ldt: u64) u64 {
     return 65535 - ldt + now;
 }
 
+/// Given an object returns the min number of milliseconds the object was never
+/// requested, using an approximated LRU algorithm.
+pub fn estimateObjectIdleTime(o: *Object) u64 {
+    const lrulock = LRUClock();
+    if (lrulock >= o.lru) {
+        return (lrulock - o.lru) * Server.LRU_CLOCK_RESOLUTION;
+    }
+    return (lrulock + (Server.LRU_CLOCK_MAX - o.lru)) * Server.LRU_CLOCK_RESOLUTION;
+}
+
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const Server = @import("Server.zig");

@@ -30,6 +30,7 @@ pub const Client = struct {
             const vtable: *const HashMap.VTable = &.{
                 .hash = hash,
                 .eql = eql,
+                .dupeKey = dupeKey,
                 .freeKey = freeKey,
                 .freeVal = freeVal,
             };
@@ -63,6 +64,11 @@ pub const Client = struct {
                 defer o2.decrRefCount();
 
                 return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+            }
+
+            fn dupeKey(key: *Object) *Object {
+                key.incrRefCount();
+                return key;
             }
 
             fn freeKey(key: *Object) void {
@@ -146,12 +152,13 @@ pub const Client = struct {
     argv: ?[]*Object, // Arguments of current command.
     argc: usize, // Num of arguments of current command.
     cmd: ?*const Server.Command,
+    lastcmd: ?*const Server.Command,
     multibulklen: i32, // Number of multi bulk arguments left to read.
     bulklen: i64, // Length of bulk argument in multi bulk request.
     authenticated: bool, // When Server.requirepass is non-NULL.
     lastinteraction: i64, // Time of the last interaction, used for timeout
     // Response
-    reply: *List(void, *ReplyBlock), // List of reply objects to send to the client.
+    reply: *LinkedList(void, *ReplyBlock), // List of reply objects to send to the client.
     reply_bytes: usize, // Total bytes of objects in reply list.
     sentlen: usize, // Amount of bytes already sent in the current buffer or object being sent.
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
@@ -195,13 +202,14 @@ pub const Client = struct {
         cli.argv = null;
         cli.argc = 0;
         cli.cmd = null;
+        cli.lastcmd = null;
         cli.multibulklen = 0;
         cli.bulklen = -1;
         cli.authenticated = false;
         cli.lastinteraction = server.unixtime.get();
         cli.reply = .create(&.{
-            .free = ReplyBlock.free,
-            .dupe = ReplyBlock.dupe,
+            .freeVal = ReplyBlock.free,
+            .dupVal = ReplyBlock.dupe,
         });
         cli.reply_bytes = 0;
         cli.sentlen = 0;
@@ -243,10 +251,30 @@ pub const Client = struct {
 
         // Remove from the list of pending writes if needed.
         if (self.flags & Server.CLIENT_PENDING_WRITE != 0) {
-            const ln = server.clients_pending_write.search(self);
-            std.debug.assert(ln != null);
-            server.clients_pending_write.removeNode(ln.?);
+            const ln = server.clients_pending_write.search(self) orelse {
+                unreachable;
+            };
+            server.clients_pending_write.removeNode(ln);
             self.flags &= ~@as(i32, Server.CLIENT_PENDING_WRITE);
+        }
+
+        // When client was just unblocked because of a blocking operation,
+        // remove it from the list of unblocked clients.
+        if (self.flags & Server.CLIENT_UNBLOCKED != 0) {
+            const ln = server.unblocked_clients.search(self) orelse {
+                unreachable;
+            };
+            server.unblocked_clients.removeNode(ln);
+            self.flags &= ~@as(i32, Server.CLIENT_UNBLOCKED);
+        }
+
+        // If this client was scheduled for async freeing we need to remove it
+        // from the queue.
+        if (self.flags & Server.CLIENT_CLOSE_ASAP != 0) {
+            const ln = server.clients_to_close.search(self) orelse {
+                unreachable;
+            };
+            server.clients.removeNode(ln);
         }
     }
 
@@ -578,6 +606,57 @@ pub const Client = struct {
         self.argv = null;
         self.argc = 0;
         self.cmd = null;
+    }
+
+    pub fn addReplyHelp(self: *Client, help: []const []const u8) void {
+        const argv = self.argv orelse unreachable;
+        self.addReplyMultiBulkLen(1 + help.len + 2);
+
+        const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
+        defer sds.free(cmd);
+        sds.toUpper(cmd);
+        self.addReplyStatusFormat(
+            "{s} <subcommand> arg arg ... arg. Subcommands are:",
+            .{sds.asBytes(cmd)},
+        );
+
+        for (help) |h| {
+            self.addReplyStatus(h);
+        }
+
+        self.addReplyStatus("HELP");
+        self.addReplyStatus("    Print this help.");
+    }
+
+    pub fn addReplyStatusFormat(
+        self: *Client,
+        comptime fmt: []const u8,
+        args: anytype,
+    ) void {
+        var status = sds.empty();
+        defer sds.free(status);
+        status = sds.catPrintf(status, fmt, args);
+        self.addReplyStatus(sds.asBytes(status));
+    }
+
+    pub fn addReplyStatus(self: *Client, status: []const u8) void {
+        self.addReplyString("+");
+        self.addReplyString(status);
+        self.addReplyString("\r\n");
+    }
+
+    /// Add a suggestive error reply.
+    /// This function is typically invoked by from commands that support
+    /// subcommands in response to an unknown subcommand or argument error.
+    pub fn addReplySubcommandSyntaxError(self: *Client) void {
+        const argv = self.argv orelse unreachable;
+        const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
+        defer sds.free(cmd);
+        sds.toUpper(cmd);
+        self.addReplyErrFormat(
+            "Unknown subcommand or wrong number of arguments for '%s'. Try {s} HELP.",
+            .{sds.asBytes(cmd)},
+        );
     }
 
     pub fn addReplyLongLong(self: *Client, ll: i64) void {
@@ -1114,7 +1193,7 @@ const sds = @import("sds.zig");
 const Object = @import("Object.zig");
 const server = &Server.instance;
 const util = @import("util.zig");
-const List = @import("adlist.zig").List;
+const LinkedList = @import("adlist.zig").List;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const blocked = @import("blocked.zig");

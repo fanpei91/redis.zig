@@ -17,7 +17,7 @@ pub fn asyncDelete(db: *Database, key: *Object) bool {
     // the object synchronously.
     const entry = db.dict.unlink(skey);
     if (entry) |ent| {
-        const val = ent.val.?;
+        const val = ent.val orelse unreachable;
         const free_effort = getFreeEffort(val);
 
         // If releasing the object is too much work, do it in the background

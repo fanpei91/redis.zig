@@ -1,3 +1,85 @@
+const help: []const []const u8 = &.{
+    "ENCODING <key>",
+    "    Return the kind of internal representation used in order to store the value",
+    "    associated with a <key>.",
+    "FREQ <key>",
+    "    Return the access frequency index of the <key>. The returned integer is",
+    "    proportional to the logarithm of the recent access frequency of the key.",
+    "IDLETIME <key>",
+    "    Return the idle time of the <key>, that is the approximated number of",
+    "    seconds elapsed since the last access to the key.",
+    "REFCOUNT <key>",
+    "    Return the number of references of the value associated with the specified",
+    "    <key>.",
+};
+
+/// Object command allows to inspect the internals of an Redis Object.
+/// OBJECT <refcount|encoding|idletime|freq> key
+pub fn objectCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const subcmd = sds.asBytes(sds.cast(argv[1].v.ptr));
+    const eql = std.ascii.eqlIgnoreCase;
+
+    if (cli.argc == 2 and eql(subcmd, "help")) {
+        cli.addReplyHelp(help);
+        return;
+    }
+
+    if (cli.argc == 3) {
+        const key = argv[2];
+        const obj = key.commandLookupOrReply(
+            cli,
+            Server.shared.nullbulk,
+        ) orelse {
+            return;
+        };
+
+        if (eql(subcmd, "refcount")) {
+            cli.addReplyLongLong(obj.refcount);
+            return;
+        }
+        if (eql(subcmd, "encoding")) {
+            cli.addReplyBulkString(obj.encoding.toString());
+            return;
+        }
+        if (eql(subcmd, "idletime")) {
+            if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
+                // zig fmt: off
+                cli.addReplyErr(
+                    "An LFU maxmemory policy is selected, " ++
+                    "idle time not tracked. " ++
+                    "Please note that when switching between policies at " ++
+                    "runtime LRU and LFU data will take some time to adjust.",
+                );
+                // zig fmt: on
+                return;
+            }
+            const idle = evict.estimateObjectIdleTime(obj) / std.time.ms_per_s;
+            cli.addReplyLongLong(@intCast(idle));
+            return;
+        }
+        if (eql(subcmd, "freq")) {
+            if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU == 0) {
+                // zig fmt: off
+                cli.addReplyErr("An LFU maxmemory policy is not selected, " ++
+                    "access frequency not tracked. " ++
+                    "Please note that when switching between policies at " ++
+                    "runtime LRU and LFU data will take some time to adjust.",
+                );
+                // zig fmt: on
+                return;
+            }
+            // LFUDecrAndReturn should be called
+            // in case of the key has not been accessed for a long time,
+            // because we update the access time only
+            // when the key is read or overwritten.
+            cli.addReplyLongLong(@intCast(evict.LFUDecrAndReturn(obj)));
+            return;
+        }
+    }
+    cli.addReplySubcommandSyntaxError();
+}
+
 pub const Type = enum(u4) {
     string = 0,
     list = 1,
@@ -436,6 +518,23 @@ pub fn getLongLong(self: *const Object, llval: *i64) bool {
 
 pub fn sdsEncoded(self: *const Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
+}
+
+pub fn commandLookupOrReply(self: *Object, cli: *Client, reply: *Object) ?*Object {
+    const o = self.commandLookup(cli) orelse {
+        cli.addReply(reply);
+        return null;
+    };
+    return o;
+}
+
+/// This is a helper function for the OBJECT command. We need to lookup keys
+/// without any modification of LRU or other parameters.
+fn commandLookup(key: *Object, cli: *Client) ?*Object {
+    const de = cli.db.dict.find(sds.cast(key.v.ptr)) orelse {
+        return null;
+    };
+    return de.val;
 }
 
 pub fn getLongLongFromObjectOrReply(

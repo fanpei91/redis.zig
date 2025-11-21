@@ -23,7 +23,7 @@ pub fn init() std.Thread.SpawnError!void {
     newjob_cond = .{ .{}, .{}, .{} };
     cancel = .{ .init(false), .init(false), .init(false) };
     for (0..NUM_OPS) |i| {
-        jobs[i] = JobList.create(&.{ .free = Job.free });
+        jobs[i] = JobList.create(&.{ .freeVal = Job.free });
         threads[i] = try std.Thread.spawn(
             .{
                 .allocator = allocator.child,
@@ -51,7 +51,7 @@ fn processBackgroundJobs(job_type: Job.Type) void {
             cond.wait(mtx);
             continue;
         }
-        const ln = jbs.first.?;
+        const ln = jbs.first orelse unreachable;
         defer jbs.removeNode(ln);
         const job = ln.value;
         job.do(job_type);

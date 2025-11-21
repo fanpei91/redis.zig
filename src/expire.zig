@@ -10,7 +10,8 @@ pub fn pttlCommand(cli: *Client) void {
 
 /// PERSIST key
 pub fn persistCommand(cli: *Client) void {
-    const key = cli.argv.?[1];
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
     if (cli.db.lookupKeyWrite(key) != null) {
         if (cli.db.removeExpire(key)) {
             cli.addReply(Server.shared.cone);
@@ -24,7 +25,7 @@ pub fn persistCommand(cli: *Client) void {
 
 /// TOUCH key [key ...]
 pub fn touchCommand(cli: *Client) void {
-    const argv = cli.argv.?;
+    const argv = cli.argv orelse unreachable;
     var touched: i64 = 0;
     for (argv[1..]) |key| {
         if (cli.db.lookupKeyRead(key) != null) {
@@ -62,7 +63,7 @@ pub fn pexpireatCommand(cli: *Client) void {
 /// unit is either UNIT_SECONDS or UNIT_MILLISECONDS, and is only used for
 /// the argv[2] parameter. The basetime is always specified in milliseconds.
 fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
-    const argv = cli.argv.?;
+    const argv = cli.argv orelse unreachable;
 
     // unix time in milliseconds when the key will expire.
     var when: i64 = undefined;
@@ -83,8 +84,7 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     }
 
     if (checkAlreadyExpired(when)) {
-        const deleted = cli.db.delete(key);
-        std.debug.assert(deleted);
+        _ = cli.db.delete(key) or unreachable;
         cli.addReply(Server.shared.cone);
         return;
     }
@@ -98,7 +98,8 @@ fn checkAlreadyExpired(when: i64) bool {
 
 /// Implements TTL and PTTL
 fn ttl(cli: *Client, output_ms: bool) void {
-    const key = cli.argv.?[1];
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
 
     // If the key does not exist at all, return -2
     _ = cli.db.lookupKeyReadWithFlags(key, Server.LOOKUP_NOTOUCH) orelse {

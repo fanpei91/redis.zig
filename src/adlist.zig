@@ -5,8 +5,9 @@ pub fn List(
     return struct {
         pub const Vtable = struct {
             eql: ?*const fn (key: SearchKey, val: Value) bool = null,
-            dupe: ?*const fn (val: Value) Value = null,
-            free: ?*const fn (val: Value) void = null,
+            dupVal: ?*const fn (val: Value) Value = null,
+            setVal: ?*const fn (val: Value) Value = null,
+            freeVal: ?*const fn (val: Value) void = null,
         };
 
         pub const Node = struct {
@@ -82,15 +83,22 @@ pub fn List(
                 return std.meta.eql(key, val);
             }
 
-            fn dupe(self: *Context, val: Value) Value {
-                if (self.vtable.dupe) |d| {
+            fn dupVal(self: *Context, val: Value) Value {
+                if (self.vtable.dupVal) |d| {
                     return d(val);
                 }
                 return val;
             }
 
-            fn free(self: *Context, val: Value) void {
-                if (self.vtable.free) |f| {
+            fn setVal(self: *Context, val: Value) Value {
+                if (self.vtable.setVal) |set| {
+                    return set(val);
+                }
+                return val;
+            }
+
+            fn freeVal(self: *Context, val: Value) void {
+                if (self.vtable.freeVal) |f| {
                     f(val);
                 }
             }
@@ -112,10 +120,10 @@ pub fn List(
 
         pub fn prepend(self: *LinkedList, value: Value) void {
             if (self.first) |first| {
-                self.insertBefore(value, first);
+                self.insertBefore(self.ctx.setVal(value), first);
                 return;
             }
-            const node = Node.create(value);
+            const node = Node.create(self.ctx.setVal(value));
             self.first = node;
             self.last = node;
             self.len += 1;
@@ -123,10 +131,10 @@ pub fn List(
 
         pub fn append(self: *LinkedList, value: Value) void {
             if (self.last) |last| {
-                self.insertAfter(value, last);
+                self.insertAfter(self.ctx.setVal(value), last);
                 return;
             }
-            const node = Node.create(value);
+            const node = Node.create(self.ctx.setVal(value));
             self.first = node;
             self.last = node;
             self.len += 1;
@@ -137,7 +145,7 @@ pub fn List(
             value: Value,
             existing_node: *Node,
         ) void {
-            const node = Node.create(value);
+            const node = Node.create(self.ctx.setVal(value));
             node.next = existing_node;
             if (existing_node.prev) |prev| {
                 prev.next = node;
@@ -154,7 +162,7 @@ pub fn List(
             value: Value,
             existing_node: *Node,
         ) void {
-            const node = Node.create(value);
+            const node = Node.create(self.ctx.setVal(value));
             node.prev = existing_node;
             if (existing_node.next) |next| {
                 node.next = next;
@@ -171,7 +179,7 @@ pub fn List(
             existing_node: *Node,
         ) void {
             defer existing_node.destroy();
-            defer self.ctx.free(existing_node.value);
+            defer self.ctx.freeVal(existing_node.value);
 
             const prev = existing_node.prev;
             const next = existing_node.next;
@@ -247,7 +255,7 @@ pub fn List(
 
             var it = self.iterator(.forward);
             while (it.next()) |node| {
-                const dup_value = self.ctx.dupe(node.value);
+                const dup_value = self.ctx.dupVal(node.value);
                 dup_list.append(dup_value);
             }
             return dup_list;
@@ -285,7 +293,7 @@ pub fn List(
             var curr = self.first;
             while (curr) |node| {
                 curr = node.next;
-                self.ctx.free(node.value);
+                self.ctx.freeVal(node.value);
                 node.destroy();
             }
             self.len = 0;
@@ -519,8 +527,8 @@ const TestList = List(
 const TestVtable = struct {
     const vtable: *const TestList.Vtable = &.{
         .eql = eql,
-        .dupe = dupe,
-        .free = free,
+        .dupVal = dupe,
+        .freeVal = free,
     };
 
     fn eql(key: u32, value: u32) bool {

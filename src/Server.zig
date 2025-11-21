@@ -120,6 +120,25 @@ const Commands = struct {
     }
 };
 
+const ReadyKeys = struct {
+    pub const List = LinkedList(*blocked.ReadyList, *blocked.ReadyList);
+
+    const vtable: *const List.Vtable = &.{
+        .setVal = setVal,
+        .freeVal = freeVal,
+    };
+
+    fn setVal(val: *blocked.ReadyList) *blocked.ReadyList {
+        val.key.incrRefCount();
+        return val;
+    }
+
+    fn freeVal(val: *blocked.ReadyList) void {
+        val.key.decrRefCount();
+        allocator.destroy(val);
+    }
+};
+
 const Server = @This();
 // General
 configfile: ?sds.String, // Absolute config file path.
@@ -174,7 +193,7 @@ lazyfree_lazy_expire: bool,
 list_max_ziplist_size: i32,
 list_compress_depth: i32,
 // Blocked clients
-ready_keys: *ReadyKeyList, // List of ReadyList structures for BLPOP & co
+ready_keys: *ReadyKeys.List, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
@@ -224,7 +243,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
     server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
     server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
-    server.ready_keys = ReadyKeyList.create(&.{});
+    server.ready_keys = ReadyKeys.List.create(ReadyKeys.vtable);
     errdefer server.ready_keys.release();
     server.unblocked_clients = ClientList.create(&.{});
     errdefer server.unblocked_clients.release();
@@ -721,6 +740,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     // Now lookup the command and check ASAP about trivial error conditions
     // such as wrong arity, bad command name and so forth.
     cli.cmd = self.lookupCommand(cmd);
+    cli.lastcmd = cli.cmd;
     if (cli.cmd == null) {
         var args = sds.empty();
         defer sds.free(args);
@@ -782,11 +802,10 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
 fn populateCommandTable(self: *Server) void {
     for (0..commandtable.table.len) |i| {
         const command = &commandtable.table[i];
-        const ok = self.commands.add(
+        _ = self.commands.add(
             sds.new(command.name),
             @constCast(command),
-        );
-        std.debug.assert(ok);
+        ) or unreachable;
     }
 }
 
@@ -910,7 +929,7 @@ const random = @import("random.zig");
 const config = @import("config.zig");
 const ae = @import("ae.zig");
 const util = @import("util.zig");
-const List = @import("adlist.zig").List;
+const LinkedList = @import("adlist.zig").List;
 const networking = @import("networking.zig");
 const anet = @import("anet.zig");
 const log = std.log.scoped(.server);
@@ -920,18 +939,13 @@ const atomic = @import("atomic.zig");
 const Client = networking.Client;
 const Database = @import("db.zig").Database;
 const Rax = @import("rax/Rax.zig");
-const c = @cImport({
-    @cInclude("sys/signal.h");
-});
-const stringx = @import("t_string.zig");
-const listx = @import("t_list.zig");
-const dbx = @import("db.zig");
 const bio = @import("bio.zig");
-const expire = @import("expire.zig");
 const SharedObjects = @import("SharedObjects.zig");
 const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
-pub const ClientList = List(*Client, *Client);
-pub const ReadyKeyList = List(*blocked.ReadyList, *blocked.ReadyList);
+pub const ClientList = LinkedList(*Client, *Client);
 pub const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
+const c = @cImport({
+    @cInclude("sys/signal.h");
+});
