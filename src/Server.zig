@@ -802,10 +802,11 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
 fn populateCommandTable(self: *Server) void {
     for (0..commandtable.table.len) |i| {
         const command = &commandtable.table[i];
-        _ = self.commands.add(
+        const added = self.commands.add(
             sds.new(command.name),
             @constCast(command),
-        ) or unreachable;
+        );
+        assert(added);
     }
 }
 
@@ -949,3 +950,4 @@ const dict = @import("dict.zig");
 const c = @cImport({
     @cInclude("sys/signal.h");
 });
+const assert = std.debug.assert;

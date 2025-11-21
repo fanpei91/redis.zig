@@ -112,7 +112,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
                     if (self.safe) {
                         self.dict.iterators -= 1;
                     } else {
-                        std.debug.assert(self.fingerprint == self.dict.fingerprint());
+                        assert(self.fingerprint == self.dict.fingerprint());
                     }
                 }
             }
@@ -1037,3 +1037,4 @@ const expectEqual = testing.expectEqual;
 const expectEqualStrings = testing.expectEqualStrings;
 const expect = testing.expect;
 const sds = @import("sds.zig");
+const assert = std.debug.assert;

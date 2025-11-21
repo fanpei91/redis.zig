@@ -176,7 +176,7 @@ fn search(s: *IntSet, value: Value) struct { pos: u32, found: bool } {
 fn upgradeAdd(s: *IntSet, value: Value) *IntSet {
     const curr_enc = s.encoding.get();
     const new_enc = valueEncoding(value);
-    std.debug.assert(new_enc > curr_enc);
+    assert(new_enc > curr_enc);
 
     const old_length = s.length.get();
     const new_length = old_length + 1;
@@ -350,3 +350,4 @@ const expect = testing.expect;
 const rand = @import("random.zig");
 const memzig = @import("mem.zig");
 const memmove = memzig.memmove;
+const assert = std.debug.assert;

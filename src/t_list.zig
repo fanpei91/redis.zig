@@ -358,6 +358,42 @@ pub fn brpopCommand(cli: *Client) void {
     bpop(cli, .tail);
 }
 
+/// BRPOPLPUSH source destination timeout
+pub fn brpoplpushCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+
+    var timeout: i64 = undefined;
+    if (!blocked.getTimeoutFromObjectOrReply(
+        cli,
+        argv[3],
+        &timeout,
+        Server.UNIT_SECONDS,
+    )) {
+        return;
+    }
+
+    const srcobj = cli.db.lookupKeyWrite(argv[1]) orelse {
+        const keys = argv[1..2];
+        const target = argv[2];
+        blocked.blockForKeys(
+            cli,
+            Server.BLOCKED_LIST,
+            keys,
+            timeout,
+            target,
+        );
+        return;
+    };
+    if (srcobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    // The list exists and has elements, so
+    // the regular rpoplpushCommand is executed.
+    assert(List.length(srcobj) > 0);
+    rpoplpushCommand(cli);
+}
+
 /// BLPOP/BRPOP key [key ...] timeout
 fn bpop(cli: *Client, where: Where) void {
     const argv = cli.argv orelse unreachable;
@@ -526,6 +562,7 @@ pub fn serveClientBlockedOnList(
     if (dstkey) |dst| {
         const dstobj = receiver.db.lookupKeyWrite(dst);
         if (dstobj) |obj| if (obj.checkTypeOrReply(receiver, .list)) {
+            @branchHint(.unlikely);
             return false;
         };
         rpoplpush(receiver, dst, dstobj, value);

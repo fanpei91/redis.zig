@@ -84,7 +84,8 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     }
 
     if (checkAlreadyExpired(when)) {
-        _ = cli.db.delete(key) or unreachable;
+        const deleted = cli.db.delete(key);
+        assert(deleted);
         cli.addReply(Server.shared.cone);
         return;
     }
@@ -132,3 +133,4 @@ const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
 const server = &Server.instance;
+const assert = std.debug.assert;

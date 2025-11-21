@@ -350,7 +350,8 @@ pub const Database = struct {
 
     /// Add the key to the DB. The program is aborted if the key already exists.
     pub fn add(self: *Database, key: *Object, val: *Object) void {
-        _ = self.dict.add(sds.cast(key.v.ptr), val) or unreachable;
+        const added = self.dict.add(sds.cast(key.v.ptr), val);
+        assert(added);
         if (val.type == .list) {
             blocked.signalKeyAsReady(self, key);
         }
@@ -387,7 +388,7 @@ pub const Database = struct {
         // An expire may only be removed if there is a corresponding entry in
         // the main dict. Otherwise, the key will never be freed.
         const skey = sds.cast(key.v.ptr);
-        std.debug.assert(self.dict.find(skey) != null);
+        assert(self.dict.find(skey) != null);
         return self.expires.delete(skey);
     }
 
@@ -419,7 +420,7 @@ pub const Database = struct {
         };
         // The entry was found in the expire dict, this means it should also
         // be present in the main dict (safety check).
-        std.debug.assert(self.dict.find(skey) != null);
+        assert(self.dict.find(skey) != null);
         return entry.val;
     }
 
@@ -454,7 +455,7 @@ pub const Database = struct {
         key: *Object,
         o: *Object,
     ) *Object {
-        std.debug.assert(o.type == .string);
+        assert(o.type == .string);
         if (o.refcount != 1 or o.encoding != .raw) {
             const decoded = o.getDecoded();
             const new = Object.createRawString(
@@ -583,10 +584,7 @@ pub const Database = struct {
         if (self.expires.size() > 0) {
             _ = self.expires.delete(skey);
         }
-        if (self.dict.delete(skey)) {
-            return true;
-        }
-        return false;
+        return self.dict.delete(skey);
     }
 
     /// Check if the key is expired.
@@ -660,3 +658,4 @@ const lazyfree = @import("lazyfree.zig");
 const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const util = @import("util.zig");
+const assert = std.debug.assert;

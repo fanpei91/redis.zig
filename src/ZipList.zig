@@ -295,7 +295,7 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
         return null;
     }
     const prevlen = loadPrevEntryLength(p);
-    std.debug.assert(prevlen.len > 0);
+    assert(prevlen.len > 0);
     return p - prevlen.len;
 }
 

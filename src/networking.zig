@@ -411,7 +411,7 @@ pub const Client = struct {
     fn processMultibulkBuffer(self: *Client) bool {
         var querybuf = sds.asBytes(self.querybuf);
         if (self.multibulklen == 0) {
-            std.debug.assert(self.argc == 0);
+            assert(self.argc == 0);
             // Multi bulk length cannot be read without a \r\n
             const newline = std.mem.indexOfScalar(
                 u8,
@@ -431,7 +431,7 @@ pub const Client = struct {
                 return false;
             }
 
-            std.debug.assert(querybuf[self.qb_pos] == '*');
+            assert(querybuf[self.qb_pos] == '*');
             var multibulklen: i64 = undefined;
             const ok = util.string2ll(
                 querybuf[self.qb_pos + 1 .. self.qb_pos + newline],
@@ -466,7 +466,7 @@ pub const Client = struct {
 
         const argv = self.argv.?;
 
-        std.debug.assert(self.multibulklen > 0);
+        assert(self.multibulklen > 0);
         while (self.multibulklen > 0) {
             // Read bulk length if unknown
             if (self.bulklen == -1) {
@@ -653,10 +653,16 @@ pub const Client = struct {
         const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
         defer sds.free(cmd);
         sds.toUpper(cmd);
+        // zig fmt: off
         self.addReplyErrFormat(
-            "Unknown subcommand or wrong number of arguments for '%s'. Try {s} HELP.",
-            .{sds.asBytes(cmd)},
+            "Unknown subcommand or wrong number of arguments for '{s}'. " ++
+            "Try {s} HELP.",
+            .{
+                sds.asBytes(sds.cast(argv[1].v.ptr)),
+                sds.asBytes(cmd),
+            },
         );
+        // zig fmt: on
     }
 
     pub fn addReplyLongLong(self: *Client, ll: i64) void {
@@ -729,7 +735,7 @@ pub const Client = struct {
     }
 
     /// Add the object 'obj' string representation to the client output buffer.
-    pub fn addReply(self: *Client, obj: *Object) void {
+    pub fn addReply(self: *Client, obj: *const Object) void {
         var buf: [32]u8 = undefined;
         var s: []u8 = undefined;
 
@@ -913,7 +919,7 @@ pub const Client = struct {
                     // If there are no longer objects in the list, we expect
                     // the count of reply bytes to be exactly zero.
                     if (self.reply.len == 0) {
-                        std.debug.assert(self.reply_bytes == 0);
+                        assert(self.reply_bytes == 0);
                     }
                 }
             }
@@ -1198,3 +1204,4 @@ const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
+const assert = std.debug.assert;

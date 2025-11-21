@@ -520,18 +520,15 @@ pub fn sdsEncoded(self: *const Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
 
-pub fn commandLookupOrReply(self: *Object, cli: *Client, reply: *Object) ?*Object {
-    const o = self.commandLookup(cli) orelse {
-        cli.addReply(reply);
-        return null;
-    };
-    return o;
-}
-
-/// This is a helper function for the OBJECT command. We need to lookup keys
-/// without any modification of LRU or other parameters.
-fn commandLookup(key: *Object, cli: *Client) ?*Object {
+/// This is a function for the OBJECT command.
+pub fn commandLookupOrReply(
+    key: *const Object,
+    cli: *Client,
+    reply: *const Object,
+) ?*Object {
+    // We need to lookup keys without any modification of LRU or other parameters.
     const de = cli.db.dict.find(sds.cast(key.v.ptr)) orelse {
+        cli.addReply(reply);
         return null;
     };
     return de.val;

@@ -86,7 +86,7 @@ pub const EventLoop = struct {
     afterSleep: ?BeforeSleepProc,
 
     pub fn create(setsize: i32) !*EventLoop {
-        std.debug.assert(setsize > 0);
+        assert(setsize > 0);
 
         const el = allocator.create(EventLoop);
         errdefer allocator.destroy(el);
@@ -565,3 +565,4 @@ const api = switch (builtin.os.tag) {
     .macos, .netbsd, .freebsd, .dragonfly, .openbsd => @import("ae_kqueue.zig"),
     else => @import("ae_select.zig"),
 };
+const assert = std.debug.assert;

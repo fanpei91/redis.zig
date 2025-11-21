@@ -55,6 +55,7 @@ pub const table = [_]Command{
     .{ .name = "rpoplpush", .proc = list.rpoplpushCommand, .arity = 3 },
     .{ .name = "blpop", .proc = list.blpopCommand, .arity = -3 },
     .{ .name = "brpop", .proc = list.brpopCommand, .arity = -3 },
+    .{ .name = "brpoplpush", .proc = list.brpoplpushCommand, .arity = 4 },
     .{ .name = "linsert", .proc = list.linsertCommand, .arity = 5 },
     .{ .name = "lindex", .proc = list.lindexCommand, .arity = 3 },
     .{ .name = "lset", .proc = list.lsetCommand, .arity = 4 },

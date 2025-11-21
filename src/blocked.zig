@@ -32,7 +32,8 @@ pub fn blockForKeys(
             clients = e.val;
         } else {
             clients = ClientList.create(&.{});
-            _ = cli.db.blocking_keys.add(key, clients) or unreachable;
+            const added = cli.db.blocking_keys.add(key, clients);
+            assert(added);
         }
         clients.append(cli);
         bki.listNode = clients.last orelse unreachable;
@@ -69,7 +70,8 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
     // We also add the key in the db->ready_keys dictionary in order
     // to avoid adding it multiple times into a list with a simple O(1)
     // check.
-    _ = db.ready_keys.add(key, {}) or unreachable;
+    const added = db.ready_keys.add(key, {});
+    assert(added);
 }
 
 /// This function should be called by Redis every time a single command,
@@ -113,11 +115,11 @@ pub fn handleClientsBlockedOnKeys() void {
         server.updateCachedTime();
         defer server.fixed_time_expire -%= 1;
 
-        const o = rl.db.lookupKeyWrite(rl.key) orelse {
+        const coll = rl.db.lookupKeyWrite(rl.key) orelse {
             @branchHint(.unlikely);
             continue;
         };
-        if (o.type == .list) {
+        if (coll.type == .list) {
             if (rl.db.blocking_keys.find(rl.key)) |de| {
                 const clients: *ClientList = de.val;
                 var numclients = clients.len;
@@ -139,8 +141,14 @@ pub fn handleClientsBlockedOnKeys() void {
                         }
                         break :blk list.Where.tail;
                     };
-                    const value = List.pop(o, where).?;
+                    const value = List.pop(coll, where) orelse unreachable;
                     defer value.decrRefCount();
+
+                    // Protect receiver.bpop.target, that will be
+                    // freed by the next unblockClient()
+                    // call.
+                    if (dstkey) |dst| dst.incrRefCount();
+                    defer if (dstkey) |dst| dst.decrRefCount();
 
                     unblockClient(receiver);
 
@@ -154,12 +162,14 @@ pub fn handleClientsBlockedOnKeys() void {
                     )) {
                         // If we failed serving the client we need
                         // to also undo the POP operation.
-                        List.push(o, value, where);
+                        @branchHint(.unlikely);
+                        List.push(coll, value, where);
                     }
                 }
             }
-            if (List.length(o) == 0) {
-                _ = rl.db.delete(rl.key) or unreachable;
+            if (List.length(coll) == 0) {
+                const deleted = rl.db.delete(rl.key);
+                assert(deleted);
             }
         }
     }
@@ -182,7 +192,7 @@ pub fn unblockClient(cli: *Client) void {
 /// Unblock a client that's waiting in a blocking operation such as BLPOP.
 /// You should never call this function directly, but unblockClient() instead.
 fn unblockClientWaitingData(cli: *Client) void {
-    std.debug.assert(cli.bpop.keys.size() != 0);
+    assert(cli.bpop.keys.size() != 0);
 
     var di = cli.bpop.keys.iterator(false);
     while (di.next()) |de| {
@@ -193,7 +203,8 @@ fn unblockClientWaitingData(cli: *Client) void {
         };
         clients.removeNode(bki.listNode);
         if (clients.len == 0) {
-            _ = cli.db.blocking_keys.delete(key) or unreachable;
+            const deleted = cli.db.blocking_keys.delete(key);
+            assert(deleted);
         }
     }
     di.release();
@@ -319,3 +330,4 @@ const list = @import("t_list.zig");
 const List = list.List;
 const sds = @import("sds.zig");
 const log = std.log.scoped(.blocked);
+const assert = std.debug.assert;
