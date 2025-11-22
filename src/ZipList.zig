@@ -253,6 +253,9 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
+pub const HEAD = 0;
+pub const TAIL = -1;
+
 /// Returns an offset to use for iterating with ZipList.next(). When the given
 /// index is negative, the list is traversed back to front. When the list
 /// doesn't contain an element at the provided index, null is returned.

@@ -34,6 +34,25 @@ pub fn hsetCommand(cli: *Client) void {
     }
 }
 
+/// HGET key field
+pub fn hgetCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    const field = argv[2];
+    Hash.fieldToReply(hobj, sds.cast(field.v.ptr), cli);
+}
+
 pub const Hash = struct {
     fn lookupCreateOrReply(key: *Object, cli: *Client) ?*Object {
         const o = cli.db.lookupKeyWrite(key) orelse {
@@ -182,7 +201,7 @@ pub const Hash = struct {
 
                 if (field == null) {
                     assert(value == null);
-                    field = zl.index(0);
+                    field = zl.index(ZipList.HEAD);
                 } else {
                     assert(value != null);
                     field = zl.next(value.?);
@@ -281,7 +300,7 @@ pub const Hash = struct {
             };
 
             var zl: *ZipList = ZipList.cast(hobj.v.ptr);
-            if (zl.index(0)) |head| {
+            if (zl.index(ZipList.HEAD)) |head| {
                 if (ZipList.find(head, sds.asBytes(key), 1)) |f| {
                     var v = zl.next(f) orelse unreachable;
 
@@ -332,6 +351,56 @@ pub const Hash = struct {
         }
 
         @panic("Unknown hash encoding");
+    }
+
+    fn fieldToReply(hobj: *Object, field: sds.String, cli: *Client) void {
+        if (hobj.encoding == .ziplist) {
+            const value = Hash.getFromZipList(hobj, field) orelse {
+                cli.addReply(Server.shared.nullbulk);
+                return;
+            };
+            switch (value) {
+                .str => |v| cli.addReplyBulkString(v),
+                .num => |v| cli.addReplyLongLong(v),
+            }
+            return;
+        }
+        if (hobj.encoding == .ht) {
+            const value = getFromHashMap(hobj, field) orelse {
+                cli.addReply(Server.shared.nullbulk);
+                return;
+            };
+            cli.addReplyBulkString(sds.asBytes(value));
+            return;
+        }
+        @panic("Unknown hash encoding");
+    }
+
+    /// Get the value from a ziplist encoded hash, identified by field.
+    fn getFromZipList(hobj: *Object, field: sds.String) ?ZipList.Value {
+        assert(hobj.encoding == .ziplist);
+
+        const zl = ZipList.cast(hobj.v.ptr);
+        if (zl.index(ZipList.HEAD)) |head| {
+            if (ZipList.find(head, sds.asBytes(field), 1)) |f| {
+                const value = zl.next(f) orelse unreachable;
+                return ZipList.get(value);
+            }
+        }
+        return null;
+    }
+
+    /// Get the value from a hash table encoded hash, identified by field.
+    /// Returns null when the field cannot be found, otherwise the SDS value
+    /// is returned.
+    fn getFromHashMap(hobj: *Object, field: sds.String) ?sds.String {
+        assert(hobj.encoding == .ht);
+
+        const map: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+        const de = map.find(field) orelse {
+            return null;
+        };
+        return de.val;
     }
 
     pub const Map = dict.Dict(sds.String, sds.String);
