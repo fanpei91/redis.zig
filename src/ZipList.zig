@@ -253,6 +253,9 @@ pub fn numOfEntries(self: *ZipList) u32 {
     return cnt;
 }
 
+/// Returns an offset to use for iterating with ZipList.next(). When the given
+/// index is negative, the list is traversed back to front. When the list
+/// doesn't contain an element at the provided index, null is returned.
 pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
     var i = idx;
     var p: [*]u8 = undefined;
@@ -275,6 +278,9 @@ pub fn index(self: *const ZipList, idx: i32) ?[*]u8 {
     return if (p[0] == END or i > 0) null else p;
 }
 
+/// Return pointer to next entry in ziplist. p is the pointer to the current
+/// element. The element after 'p' is returned, otherwise null if we are at
+/// the end.
 pub fn next(self: *const ZipList, p: [*]u8) ?[*]u8 {
     if (p[0] == END) return null;
     if (p == self.entryTail()) {
@@ -299,7 +305,11 @@ pub fn prev(self: *const ZipList, p: [*]u8) ?[*]u8 {
     return p - prevlen.len;
 }
 
-pub fn get(entry: [*]u8) ?union(enum) { num: i64, str: []u8 } {
+pub const Value = union(enum) {
+    num: i64,
+    str: []u8,
+};
+pub fn get(entry: [*]u8) ?Value {
     if (entry[0] == END) return null;
     const ent = Entry.decode(entry);
     if (isStr(ent.encoding)) {
@@ -336,7 +346,7 @@ pub fn eql(entry: [*]u8, str: []const u8) bool {
 }
 
 /// Find pointer to the entry equal to the specified `str`.
-/// Skip `skip` entries between every comparison.
+/// Skip 'skip' entries between every comparison.
 ///
 /// The `skip` parameter is typically set to 1 when the ziplist stores
 /// structured data as alternating key/value pairs:
@@ -496,9 +506,12 @@ pub fn deleteRange(self: *ZipList, idx: i32, num: u32) *ZipList {
 /// zlbytes.
 const MAX_SAFETY_SIZE = 1 << 30; // 1GB
 pub fn safeToAdd(self: ?*ZipList, add: usize) bool {
-    const length: usize = if (self) |zl| {
-        zl.blobLen();
-    } else 0;
+    const length: usize = blk: {
+        if (self) |zl| {
+            break :blk zl.blobLen();
+        }
+        break :blk 0;
+    };
     return (length + add) <= MAX_SAFETY_SIZE;
 }
 

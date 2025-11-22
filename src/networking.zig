@@ -464,7 +464,7 @@ pub const Client = struct {
             );
         }
 
-        const argv = self.argv.?;
+        const argv = self.argv orelse unreachable;
 
         assert(self.multibulklen > 0);
         while (self.multibulklen > 0) {

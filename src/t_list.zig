@@ -28,6 +28,36 @@ pub fn rpopCommand(cli: *Client) void {
     pop(cli, .tail);
 }
 
+/// RPOPLPUSH source destination
+pub fn rpoplpushCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+
+    const srckey = argv[1];
+    const srcobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        srckey,
+        Server.shared.nullbulk,
+    ) orelse return;
+    if (srcobj.checkTypeOrReply(cli, .list)) {
+        return;
+    }
+
+    const dstkey = argv[2];
+    const dstobj = cli.db.lookupKeyWrite(dstkey);
+    if (dstobj) |dst| if (dst.checkTypeOrReply(cli, .list)) {
+        return;
+    };
+
+    const value = List.pop(srcobj, .tail) orelse unreachable;
+    defer value.decrRefCount();
+
+    rpoplpush(cli, dstkey, dstobj, value);
+
+    if (List.length(srcobj) == 0) {
+        _ = cli.db.delete(srckey);
+    }
+}
+
 /// LINSERT key <BEFORE | AFTER> pivot element
 pub fn linsertCommand(cli: *Client) void {
     const argv = cli.argv orelse unreachable;
@@ -318,36 +348,6 @@ pub fn lremCommand(cli: *Client) void {
     cli.addReplyLongLong(removed);
 }
 
-/// RPOPLPUSH source destination
-pub fn rpoplpushCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
-
-    const srckey = argv[1];
-    const srcobj = cli.db.lookupKeyWriteOrReply(
-        cli,
-        srckey,
-        Server.shared.nullbulk,
-    ) orelse return;
-    if (srcobj.checkTypeOrReply(cli, .list)) {
-        return;
-    }
-
-    const dstkey = argv[2];
-    const dstobj = cli.db.lookupKeyWrite(dstkey);
-    if (dstobj) |dst| if (dst.checkTypeOrReply(cli, .list)) {
-        return;
-    };
-
-    const value = List.pop(srcobj, .tail) orelse unreachable;
-    defer value.decrRefCount();
-
-    rpoplpush(cli, dstkey, dstobj, value);
-
-    if (List.length(srcobj) == 0) {
-        _ = cli.db.delete(srckey);
-    }
-}
-
 /// BLPOP key [key ...] timeout
 pub fn blpopCommand(cli: *Client) void {
     bpop(cli, .head);
@@ -411,8 +411,7 @@ fn bpop(cli: *Client, where: Where) void {
     const keys = argv[1 .. cli.argc - 1];
     for (keys) |key| {
         const lobj = cli.db.lookupKeyWrite(key) orelse continue;
-        if (lobj.type != .list) {
-            cli.addReply(Server.shared.wrongtypeerr);
+        if (lobj.checkTypeOrReply(cli, .list)) {
             return;
         }
         const value = List.pop(lobj, where) orelse unreachable;

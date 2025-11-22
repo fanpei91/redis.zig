@@ -668,7 +668,10 @@ fn freeZset(self: *Object) void {
 
 fn freeHash(self: *Object) void {
     switch (self.encoding) {
-        .ht => @panic("Unimplemented"),
+        .ht => {
+            const ht: *hash.Hash.Map = @ptrCast(@alignCast(self.v.ptr));
+            ht.destroy();
+        },
         .ziplist => {
             const zl: *ZipList = ZipList.cast(self.v.ptr);
             zl.free();
@@ -727,3 +730,4 @@ const evict = @import("evict.zig");
 const server = &Server.instance;
 const dict = @import("dict.zig");
 const set = @import("t_set.zig");
+const hash = @import("t_hash.zig");

@@ -94,6 +94,10 @@ pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
 pub const OBJ_LIST_COMPRESS_DEPTH = 0;
 
+// Zipped structures related defaults
+pub const OBJ_HASH_MAX_ZIPLIST_ENTRIES = 512;
+pub const OBJ_HASH_MAX_ZIPLIST_VALUE = 64;
+
 pub var shared: SharedObjects = undefined;
 
 pub var instance: Server = undefined;
@@ -192,6 +196,9 @@ lazyfree_lazy_expire: bool,
 // List parameters
 list_max_ziplist_size: i32,
 list_compress_depth: i32,
+// Zip structure config, see redis.conf for more information
+hash_max_ziplist_value: usize,
+hash_max_ziplist_entries: usize,
 // Blocked clients
 ready_keys: *ReadyKeys.List, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
@@ -243,6 +250,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
     server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
     server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
+    server.hash_max_ziplist_value = OBJ_HASH_MAX_ZIPLIST_VALUE;
+    server.hash_max_ziplist_entries = OBJ_HASH_MAX_ZIPLIST_ENTRIES;
     server.ready_keys = ReadyKeys.List.create(ReadyKeys.vtable);
     errdefer server.ready_keys.release();
     server.unblocked_clients = ClientList.create(&.{});

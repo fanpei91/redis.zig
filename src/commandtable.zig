@@ -63,6 +63,8 @@ pub const table = [_]Command{
     .{ .name = "lrange", .proc = list.lrangeCommand, .arity = 4 },
     .{ .name = "ltrim", .proc = list.ltrimCommand, .arity = 4 },
     .{ .name = "lrem", .proc = list.lremCommand, .arity = 4 },
+    .{ .name = "hset", .proc = hash.hsetCommand, .arity = -4 },
+    .{ .name = "hmset", .proc = hash.hsetCommand, .arity = -4 },
 };
 
 pub const Command = struct {
@@ -76,6 +78,7 @@ pub const Command = struct {
 const Client = @import("networking.zig").Client;
 const string = @import("t_string.zig");
 const list = @import("t_list.zig");
+const hash = @import("t_hash.zig");
 const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");

@@ -365,6 +365,19 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "hash-max-ziplist-value") and argc == 2) {
+                server.hash_max_ziplist_value = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+            if (eql(option, "hash-max-ziplist-entries") and argc == 2) {
+                server.hash_max_ziplist_entries = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }
