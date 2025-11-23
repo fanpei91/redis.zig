@@ -82,6 +82,48 @@ pub fn hdelCommand(cli: *Client) void {
     cli.addReplyLongLong(deleted);
 }
 
+/// HLEN key
+pub fn hlenCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    const len = Hash.length(hobj);
+    cli.addReplyLongLong(@intCast(len));
+}
+
+/// HEXISTS key field
+pub fn hexistsCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    const field = argv[2];
+    const reply = if (Hash.exists(hobj, sds.cast(field.v.ptr)))
+        Server.shared.cone
+    else
+        Server.shared.czero;
+    cli.addReply(reply);
+}
+
 pub const Hash = struct {
     fn lookupCreateOrReply(key: *Object, cli: *Client) ?*Object {
         const o = cli.db.lookupKeyWrite(key) orelse {
@@ -298,6 +340,18 @@ pub const Hash = struct {
                 _ = m.shrinkToFit();
             };
             return m.delete(field);
+        }
+        @panic("Unknown hash encoding");
+    }
+
+    /// Test if the specified field exists in the given hash. Returns TRUE if
+    /// the field exists, and FALSE when it doesn't.
+    pub fn exists(hobj: *Object, field: sds.String) bool {
+        if (hobj.encoding == .ziplist) {
+            return getFromZipList(hobj, field) != null;
+        }
+        if (hobj.encoding == .ht) {
+            return getFromHashMap(hobj, field) != null;
         }
         @panic("Unknown hash encoding");
     }
