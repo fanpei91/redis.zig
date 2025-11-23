@@ -49,8 +49,8 @@ pub fn hgetCommand(cli: *Client) void {
         return;
     }
 
-    const field = argv[2];
-    Hash.fieldToReply(hobj, sds.cast(field.v.ptr), cli);
+    const field = sds.cast(argv[2].v.ptr);
+    Hash.fieldToReply(hobj, field, cli);
 }
 
 /// HMGET key field [field ...]
@@ -120,6 +120,26 @@ pub fn hlenCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(len));
 }
 
+/// HSTRLEN key field
+pub fn hstrlenCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    const field = sds.cast(argv[2].v.ptr);
+    const len = Hash.getValueLength(hobj, field);
+    cli.addReplyLongLong(@intCast(len));
+}
+
 /// HEXISTS key field
 pub fn hexistsCommand(cli: *Client) void {
     const argv = cli.argv orelse unreachable;
@@ -135,8 +155,8 @@ pub fn hexistsCommand(cli: *Client) void {
         return;
     }
 
-    const field = argv[2];
-    const reply = if (Hash.exists(hobj, sds.cast(field.v.ptr)))
+    const field = sds.cast(argv[2].v.ptr);
+    const reply = if (Hash.exists(hobj, field))
         Server.shared.cone
     else
         Server.shared.czero;
@@ -388,6 +408,28 @@ pub const Hash = struct {
         @panic("Unknown hash encoding");
     }
 
+    /// Return the length of the object associated with the requested field,
+    /// or 0 if the field does not exist.
+    fn getValueLength(hobj: *Object, field: sds.String) u64 {
+        if (hobj.encoding == .ziplist) {
+            const value = getFromZipList(hobj, field) orelse {
+                return 0;
+            };
+            return switch (value) {
+                .str => |v| @intCast(v.len),
+                .num => |v| util.sdigits10(v),
+            };
+        }
+        if (hobj.encoding == .ht) {
+            const m: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            const value = m.find(field) orelse {
+                return 0;
+            };
+            return sds.getLen(value.val);
+        }
+        @panic("Unknown hash encoding");
+    }
+
     pub const SET_TAKE_FIELD = (1 << 0);
     pub const SET_TAKE_VALUE = (1 << 1);
     pub const SET_COPY = 0;
@@ -572,3 +614,4 @@ const sds = @import("sds.zig");
 const server = &Server.instance;
 const ZipList = @import("ZipList.zig");
 const dict = @import("dict.zig");
+const util = @import("util.zig");
