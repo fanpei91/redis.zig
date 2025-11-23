@@ -53,6 +53,35 @@ pub fn hgetCommand(cli: *Client) void {
     Hash.fieldToReply(hobj, sds.cast(field.v.ptr), cli);
 }
 
+/// HDEL key field [field ...]
+pub fn hdelCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    var deleted: i64 = 0;
+    for (argv[2..]) |field| {
+        if (Hash.delete(hobj, sds.cast(field.v.ptr))) {
+            deleted += 1;
+            if (Hash.length(hobj) == 0) {
+                const ok = cli.db.delete(key);
+                assert(ok);
+                break;
+            }
+        }
+    }
+    cli.addReplyLongLong(deleted);
+}
+
 pub const Hash = struct {
     fn lookupCreateOrReply(key: *Object, cli: *Client) ?*Object {
         const o = cli.db.lookupKeyWrite(key) orelse {
@@ -244,6 +273,33 @@ pub const Hash = struct {
             it.di = m.iterator(false);
         }
         return it;
+    }
+
+    /// Delete an element from a hash.
+    /// Return TRUE on deleted and FALSE on not found.
+    pub fn delete(hobj: *Object, field: sds.String) bool {
+        if (hobj.encoding == .ziplist) {
+            var zl = ZipList.cast(hobj.v.ptr);
+            if (zl.index(ZipList.HEAD)) |head| {
+                if (ZipList.find(head, sds.asBytes(field), 1)) |e| {
+                    var entry = e;
+                    zl = zl.delete(&entry); // Delete the key
+                    zl = zl.delete(&entry); // Delete the value
+                    hobj.v = .{ .ptr = zl };
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (hobj.encoding == .ht) {
+            const m: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            // Always check if the dictionary needs a shrink after a delete.
+            defer if (Server.needShrinkDictToFit(m.size(), m.slots())) {
+                _ = m.shrinkToFit();
+            };
+            return m.delete(field);
+        }
+        @panic("Unknown hash encoding");
     }
 
     /// Return the number of elements in a hash.

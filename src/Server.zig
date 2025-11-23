@@ -94,9 +94,17 @@ pub const CONFIG_FDSET_INCR = CONFIG_MIN_RESERVED_FDS + 96;
 pub const OBJ_LIST_MAX_ZIPLIST_SIZE = -2;
 pub const OBJ_LIST_COMPRESS_DEPTH = 0;
 
+// Hash table parameters
+pub const HASHTABLE_MIN_FILL = 10; // Minimal hash table fill 10%
+
 // Zipped structures related defaults
 pub const OBJ_HASH_MAX_ZIPLIST_ENTRIES = 512;
 pub const OBJ_HASH_MAX_ZIPLIST_VALUE = 64;
+
+pub fn needShrinkDictToFit(used: u64, size: u64) bool {
+    return (size > dict.HT_INITIAL_SIZE) and
+        @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;
+}
 
 pub var shared: SharedObjects = undefined;
 
@@ -939,7 +947,7 @@ const random = @import("random.zig");
 const config = @import("config.zig");
 const ae = @import("ae.zig");
 const util = @import("util.zig");
-const LinkedList = @import("adlist.zig").List;
+const LinkedList = @import("list.zig").List;
 const networking = @import("networking.zig");
 const anet = @import("anet.zig");
 const log = std.log.scoped(.server);

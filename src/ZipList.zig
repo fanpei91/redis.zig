@@ -41,7 +41,7 @@ const END_SIZE = @sizeOf(u8);
 ///
 /// <zlend> is a single byte special value, equal to 255, which indicates the
 /// end of the list.
-pub const ZipList = @This();
+const ZipList = @This();
 bytes: LittleEndian(u32, 1), // zlbytes
 tail: LittleEndian(u32, 1), // zltail
 len: LittleEndian(u16, 1), // zllen

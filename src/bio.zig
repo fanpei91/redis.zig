@@ -145,6 +145,6 @@ pub const Job = struct {
 
 const std = @import("std");
 const allocator = @import("allocator.zig");
-const JobList = @import("adlist.zig").List(void, *Job);
+const JobList = @import("list.zig").List(void, *Job);
 const lazyfree = @import("lazyfree.zig");
 const log = std.log.scoped(.bio);

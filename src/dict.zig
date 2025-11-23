@@ -510,6 +510,19 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             return deleted != null;
         }
 
+        /// Shrink the table to the minimal size that contains all the elements,
+        /// but with the invariant of a USED/BUCKETS ratio near to <= 1
+        pub fn shrinkToFit(self: *HashMap) bool {
+            if (!dict_can_resize or self.isRehashing()) {
+                return false;
+            }
+            var minimal = self.ht[0].used;
+            if (minimal < HT_INITIAL_SIZE) {
+                minimal = HT_INITIAL_SIZE;
+            }
+            return self.expand(minimal);
+        }
+
         pub fn unlink(self: *HashMap, key: Key) ?*Entry {
             return self.genericDelete(key, false);
         }
