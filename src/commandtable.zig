@@ -72,6 +72,9 @@ pub const table = [_]Command{
     .{ .name = "hlen", .proc = hash.hlenCommand, .arity = 2 },
     .{ .name = "hstrlen", .proc = hash.hstrlenCommand, .arity = 3 },
     .{ .name = "hexists", .proc = hash.hexistsCommand, .arity = 3 },
+    .{ .name = "hkeys", .proc = hash.hkeysCommand, .arity = 2 },
+    .{ .name = "hvals", .proc = hash.hvalsCommand, .arity = 2 },
+    .{ .name = "hgetall", .proc = hash.hgetallCommand, .arity = 2 },
 };
 
 pub const Command = struct {

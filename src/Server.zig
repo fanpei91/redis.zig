@@ -101,6 +101,14 @@ pub const HASHTABLE_MIN_FILL = 10; // Minimal hash table fill 10%
 pub const OBJ_HASH_MAX_ZIPLIST_ENTRIES = 512;
 pub const OBJ_HASH_MAX_ZIPLIST_VALUE = 64;
 
+// Hash data type
+pub const HASH_SET_TAKE_FIELD = (1 << 0);
+pub const HASH_SET_TAKE_VALUE = (1 << 1);
+pub const HASH_SET_COPY = 0;
+
+pub const OBJ_HASH_KEY = 1;
+pub const OBJ_HASH_VALUE = 2;
+
 pub fn needShrinkDictToFit(used: u64, size: u64) bool {
     return (size > dict.HT_INITIAL_SIZE) and
         @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;

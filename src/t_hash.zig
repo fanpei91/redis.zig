@@ -17,7 +17,7 @@ pub fn hsetCommand(cli: *Client) void {
     while (i < cli.argc) : (i += 2) {
         const key = sds.cast(argv[i].v.ptr);
         const val = sds.cast(argv[i + 1].v.ptr);
-        const ret = Hash.set(hobj, key, val, Hash.SET_COPY);
+        const ret = Hash.set(hobj, key, val, Server.HASH_SET_COPY);
         if (ret == .insert) {
             created += 1;
         }
@@ -49,7 +49,7 @@ pub fn hsetnxCommand(cli: *Client) void {
     }
 
     const value = sds.cast(argv[3].v.ptr);
-    const ret = Hash.set(hobj, field, value, Hash.SET_COPY);
+    const ret = Hash.set(hobj, field, value, Server.HASH_SET_COPY);
     assert(ret == .insert);
     cli.addReply(Server.shared.cone);
 }
@@ -181,6 +181,67 @@ pub fn hexistsCommand(cli: *Client) void {
     else
         Server.shared.czero;
     cli.addReply(reply);
+}
+
+/// HKEYS key
+pub fn hkeysCommand(cli: *Client) void {
+    hgetX(cli, Server.OBJ_HASH_KEY);
+}
+
+/// HVALS key
+pub fn hvalsCommand(cli: *Client) void {
+    hgetX(cli, Server.OBJ_HASH_VALUE);
+}
+
+/// HGETALL key
+pub fn hgetallCommand(cli: *Client) void {
+    hgetX(cli, Server.OBJ_HASH_KEY | Server.OBJ_HASH_VALUE);
+}
+
+/// HVALS/HKEYS/HGETALL key
+fn hgetX(cli: *Client, flags: i32) void {
+    const argv = cli.argv orelse unreachable;
+
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+
+    const multiplier = blk: {
+        var v: u64 = 0;
+        if (flags & Server.OBJ_HASH_KEY != 0) {
+            v += 1;
+        }
+        if (flags & Server.OBJ_HASH_VALUE != 0) {
+            v += 1;
+        }
+        break :blk v;
+    };
+
+    const length = Hash.length(hobj) * multiplier;
+    cli.addReplyMultiBulkLen(length);
+
+    var count: u64 = 0;
+    var it = Hash.iterator(hobj);
+    while (it.next()) {
+        if (flags & Server.OBJ_HASH_KEY != 0) {
+            it.currentKeyToReply(cli);
+            count += 1;
+        }
+        if (flags & Server.OBJ_HASH_VALUE != 0) {
+            it.currentValToReply(cli);
+            count += 1;
+        }
+    }
+    it.release();
+    assert(count == length);
 }
 
 pub const Hash = struct {
@@ -323,6 +384,38 @@ pub const Hash = struct {
             return self.de.?.val;
         }
 
+        fn currentKeyToReply(self: *const Iterator, cli: *Client) void {
+            if (self.encoding == .ziplist) {
+                switch (self.currentKeyFromZipList()) {
+                    .num => |v| cli.addReplyLongLong(v),
+                    .str => |v| cli.addReplyBulkString(v),
+                }
+                return;
+            }
+            if (self.encoding == .ht) {
+                const key = self.currentKeyFromHashMap();
+                cli.addReplyBulkString(sds.asBytes(key));
+                return;
+            }
+            @panic("Unknown hash encoding");
+        }
+
+        fn currentValToReply(self: *const Iterator, cli: *Client) void {
+            if (self.encoding == .ziplist) {
+                switch (self.currentValFromZipList()) {
+                    .num => |v| cli.addReplyLongLong(v),
+                    .str => |v| cli.addReplyBulkString(v),
+                }
+                return;
+            }
+            if (self.encoding == .ht) {
+                const val = self.currentValFromHashMap();
+                cli.addReplyBulkString(sds.asBytes(val));
+                return;
+            }
+            @panic("Unknown hash encoding");
+        }
+
         pub fn next(self: *Iterator) bool {
             if (self.encoding == .ziplist) {
                 const zl: *ZipList = ZipList.cast(self.subject.v.ptr);
@@ -450,9 +543,6 @@ pub const Hash = struct {
         @panic("Unknown hash encoding");
     }
 
-    pub const SET_TAKE_FIELD = (1 << 0);
-    pub const SET_TAKE_VALUE = (1 << 1);
-    pub const SET_COPY = 0;
     /// Add a new field, overwrite the old with the new value if it already exists.
     /// Return .insert on insert and .update on update.
     ///
@@ -460,14 +550,14 @@ pub const Hash = struct {
     /// caller retains ownership of the strings passed. However this behavior
     /// can be effected by passing appropriate flags (possibly bitwise OR-ed):
     ///
-    /// SET_TAKE_FIELD -- The SDS field ownership passes to the function.
-    /// SET_TAKE_VALUE -- The SDS value ownership passes to the function.
+    /// HASH_SET_TAKE_FIELD -- The SDS field ownership passes to the function.
+    /// HASH_SET_TAKE_VALUE -- The SDS value ownership passes to the function.
     ///
     /// When the flags are used the caller does not need to release the passed
     /// SDS string(s). It's up to the function to use the string to create a new
     /// entry or to free the SDS string before returning to the caller.
     ///
-    /// SET_COPY corresponds to no flags passed, and means the default
+    /// HASH_SET_COPY corresponds to no flags passed, and means the default
     /// semantics of copying the values if needed.
     pub fn set(hobj: *Object, key: sds.String, val: sds.String, flags: i32) enum {
         insert,
@@ -477,10 +567,10 @@ pub const Hash = struct {
         var value: ?sds.String = val;
         // Free SDS strings we did not referenced elsewhere if the flags
         // want this function to be responsible.
-        defer if (field) |f| if (flags & SET_TAKE_FIELD != 0) {
+        defer if (field) |f| if (flags & Server.HASH_SET_TAKE_FIELD != 0) {
             sds.free(f);
         };
-        defer if (value) |v| if (flags & SET_TAKE_VALUE != 0) {
+        defer if (value) |v| if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
             sds.free(v);
         };
 
@@ -513,7 +603,7 @@ pub const Hash = struct {
             const map: *Map = @ptrCast(@alignCast(hobj.v.ptr));
             if (map.find(key)) |de| {
                 sds.free(de.val);
-                if (flags & SET_TAKE_VALUE != 0) {
+                if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                     de.val = val;
                     value = null;
                 } else {
@@ -524,13 +614,13 @@ pub const Hash = struct {
 
             var f: sds.String = undefined;
             var v: sds.String = undefined;
-            if (flags & SET_TAKE_FIELD != 0) {
+            if (flags & Server.HASH_SET_TAKE_FIELD != 0) {
                 f = key;
                 field = null;
             } else {
                 f = sds.dupe(key);
             }
-            if (flags & SET_TAKE_VALUE != 0) {
+            if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                 v = val;
                 value = null;
             } else {
