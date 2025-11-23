@@ -476,7 +476,7 @@ fn push(cli: *Client, where: Where) void {
         return;
     }
 
-    for (argv[2..]) |element| {
+    for (argv[2..cli.argc]) |element| {
         List.push(list, element, where);
     }
     cli.addReplyLongLong(List.length(list));
@@ -497,7 +497,7 @@ fn pushx(cli: *Client, where: Where) void {
         return;
     }
 
-    for (argv[2..]) |element| {
+    for (argv[2..cli.argc]) |element| {
         List.push(list, element, where);
     }
     cli.addReplyLongLong(List.length(list));

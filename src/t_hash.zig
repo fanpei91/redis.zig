@@ -10,7 +10,7 @@ pub fn hsetCommand(cli: *Client) void {
     const hobj = Hash.lookupCreateOrReply(argv[1], cli) orelse {
         return;
     };
-    Hash.tryConversion(hobj, argv[2..]);
+    Hash.tryConversion(hobj, argv[2..cli.argc]);
 
     var created: i64 = 0;
     var i: usize = 2;
@@ -53,6 +53,25 @@ pub fn hgetCommand(cli: *Client) void {
     Hash.fieldToReply(hobj, sds.cast(field.v.ptr), cli);
 }
 
+/// HMGET key field [field ...]
+pub fn hmgetCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const key = argv[1];
+
+    // Don't abort when the key cannot be found. Non-existing keys are empty
+    // hashes, where HMGET should respond with a series of null bulks.
+    const hobj = cli.db.lookupKeyRead(key);
+    if (hobj) |h| if (h.checkTypeOrReply(cli, .hash)) {
+        return;
+    };
+
+    const fields = argv[2..cli.argc];
+    cli.addReplyMultiBulkLen(@intCast(fields.len));
+    for (fields) |field| {
+        Hash.fieldToReply(hobj, sds.cast(field.v.ptr), cli);
+    }
+}
+
 /// HDEL key field [field ...]
 pub fn hdelCommand(cli: *Client) void {
     const argv = cli.argv orelse unreachable;
@@ -69,7 +88,7 @@ pub fn hdelCommand(cli: *Client) void {
     }
 
     var deleted: i64 = 0;
-    for (argv[2..]) |field| {
+    for (argv[2..cli.argc]) |field| {
         if (Hash.delete(hobj, sds.cast(field.v.ptr))) {
             deleted += 1;
             if (Hash.length(hobj) == 0) {
@@ -463,9 +482,14 @@ pub const Hash = struct {
         @panic("Unknown hash encoding");
     }
 
-    fn fieldToReply(hobj: *Object, field: sds.String, cli: *Client) void {
-        if (hobj.encoding == .ziplist) {
-            const value = Hash.getFromZipList(hobj, field) orelse {
+    fn fieldToReply(hobj: ?*Object, field: sds.String, cli: *Client) void {
+        if (hobj == null) {
+            cli.addReply(Server.shared.nullbulk);
+            return;
+        }
+        const h = hobj orelse unreachable;
+        if (h.encoding == .ziplist) {
+            const value = Hash.getFromZipList(h, field) orelse {
                 cli.addReply(Server.shared.nullbulk);
                 return;
             };
@@ -475,8 +499,8 @@ pub const Hash = struct {
             }
             return;
         }
-        if (hobj.encoding == .ht) {
-            const value = getFromHashMap(hobj, field) orelse {
+        if (h.encoding == .ht) {
+            const value = getFromHashMap(h, field) orelse {
                 cli.addReply(Server.shared.nullbulk);
                 return;
             };

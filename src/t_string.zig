@@ -120,7 +120,7 @@ pub fn getCommand(cli: *Client) void {
 pub fn mgetCommand(cli: *Client) void {
     cli.addReplyMultiBulkLen(cli.argc - 1);
     const argv = cli.argv orelse unreachable;
-    for (argv[1..]) |key| {
+    for (argv[1..cli.argc]) |key| {
         const val = cli.db.lookupKeyRead(key) orelse {
             cli.addReply(Server.shared.nullbulk);
             continue;
