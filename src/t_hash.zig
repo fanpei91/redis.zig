@@ -34,6 +34,26 @@ pub fn hsetCommand(cli: *Client) void {
     }
 }
 
+/// HSETNX key field value
+pub fn hsetnxCommand(cli: *Client) void {
+    const argv = cli.argv orelse unreachable;
+    const hobj = Hash.lookupCreateOrReply(argv[1], cli) orelse {
+        return;
+    };
+    Hash.tryConversion(hobj, argv[2..cli.argc]);
+
+    const field = sds.cast(argv[2].v.ptr);
+    if (Hash.exists(hobj, field)) {
+        cli.addReply(Server.shared.czero);
+        return;
+    }
+
+    const value = sds.cast(argv[3].v.ptr);
+    const ret = Hash.set(hobj, field, value, Hash.SET_COPY);
+    assert(ret == .insert);
+    cli.addReply(Server.shared.cone);
+}
+
 /// HGET key field
 pub fn hgetCommand(cli: *Client) void {
     const argv = cli.argv orelse unreachable;

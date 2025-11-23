@@ -47,6 +47,7 @@ pub fn string2ll(str: []const u8, llval: *i64) bool {
     return string2l(str, llval);
 }
 
+/// Like digits10() but for signed values.
 pub fn sdigits10(v: i64) u32 {
     if (v < 0) {
         const uv: u64 = @abs(v);
