@@ -16,7 +16,7 @@ const help: []const []const u8 = &.{
 /// Object command allows to inspect the internals of an Redis Object.
 /// OBJECT <refcount|encoding|idletime|freq> key
 pub fn objectCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const subcmd = sds.asBytes(sds.cast(argv[1].v.ptr));
     const eql = std.ascii.eqlIgnoreCase;
 
@@ -183,7 +183,7 @@ pub fn createRawString(str: []const u8) *Object {
 }
 
 fn createEmbeddedString(str: []const u8) *Object {
-    const mem_size = @sizeOf(Object) + @sizeOf(sds.Hdr8) + str.len;
+    const mem_size = @sizeOf(Object) + @sizeOf(sds.Hdr8) + str.len + 1;
     const mem = allocator.alignedAlloc(u8, .of(Object), mem_size);
 
     const sh: *sds.Hdr8 = @ptrFromInt(@intFromPtr(mem.ptr) + @sizeOf(Object));
@@ -192,6 +192,7 @@ fn createEmbeddedString(str: []const u8) *Object {
     sh.flags = sds.TYPE_8;
     const s: sds.String = @ptrFromInt(@intFromPtr(sh) + @sizeOf(sds.Hdr8));
     memcpy(s, str, str.len);
+    s[str.len] = 0;
 
     const obj: *Object = @ptrCast(@alignCast(mem));
     obj.type = .string;

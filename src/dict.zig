@@ -444,6 +444,8 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             scanBucketFn: ?scanBucketFunc,
             privdata: ?*anyopaque,
         ) u64 {
+            if (self.size() == 0) return 0;
+
             var v = cursor;
             var t0: *HashTable = &self.ht[0];
             var m0 = t0.sizemask;

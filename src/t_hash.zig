@@ -1,6 +1,6 @@
 /// HSET/HMSET key field value [field value ...]
 pub fn hsetCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     if (cli.argc % 2 == 1) {
         cli.addReplyErr("wrong number of arguments for HMSET");
@@ -36,7 +36,7 @@ pub fn hsetCommand(cli: *Client) void {
 
 /// HSETNX key field value
 pub fn hsetnxCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const hobj = Hash.lookupCreateOrReply(argv[1], cli) orelse {
         return;
     };
@@ -56,7 +56,7 @@ pub fn hsetnxCommand(cli: *Client) void {
 
 /// HGET key field
 pub fn hgetCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const hobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -75,7 +75,7 @@ pub fn hgetCommand(cli: *Client) void {
 
 /// HMGET key field [field ...]
 pub fn hmgetCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
 
     // Don't abort when the key cannot be found. Non-existing keys are empty
@@ -94,7 +94,7 @@ pub fn hmgetCommand(cli: *Client) void {
 
 /// HDEL key field [field ...]
 pub fn hdelCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const hobj = cli.db.lookupKeyWriteOrReply(
         cli,
@@ -123,7 +123,7 @@ pub fn hdelCommand(cli: *Client) void {
 
 /// HLEN key
 pub fn hlenCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const hobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -142,7 +142,7 @@ pub fn hlenCommand(cli: *Client) void {
 
 /// HSTRLEN key field
 pub fn hstrlenCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const hobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -162,7 +162,7 @@ pub fn hstrlenCommand(cli: *Client) void {
 
 /// HEXISTS key field
 pub fn hexistsCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const hobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -183,6 +183,33 @@ pub fn hexistsCommand(cli: *Client) void {
     cli.addReply(reply);
 }
 
+/// HSCAN key cursor [MATCH pattern] [COUNT count]
+pub fn hscanCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const cursor = db.Scan.parseCursorOrReply(argv[2], cli) orelse {
+        return;
+    };
+
+    const key = argv[1];
+    const hobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptyscan,
+    ) orelse {
+        return;
+    };
+    if (hobj.checkTypeOrReply(cli, .hash)) {
+        return;
+    }
+    db.Scan.scan(cli, hobj, cursor, Hash.Map, hscanCallback);
+}
+
+fn hscanCallback(privdata: ?*anyopaque, entry: *const Hash.Map.Entry) void {
+    const keys: *db.Scan.Keys = @ptrCast(@alignCast(privdata.?));
+    keys.append(Object.createString(sds.asBytes(entry.key)));
+    keys.append(Object.createString(sds.asBytes(entry.val)));
+}
+
 /// HKEYS key
 pub fn hkeysCommand(cli: *Client) void {
     hgetX(cli, Server.OBJ_HASH_KEY);
@@ -200,7 +227,7 @@ pub fn hgetallCommand(cli: *Client) void {
 
 /// HVALS/HKEYS/HGETALL key
 fn hgetX(cli: *Client, flags: i32) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     const key = argv[1];
     const hobj = cli.db.lookupKeyReadOrReply(
@@ -350,7 +377,7 @@ pub const Hash = struct {
         pub fn currentKeyFromZipList(self: *const Iterator) ZipList.Value {
             assert(self.encoding == .ziplist);
             assert(self.field != null);
-            return ZipList.get(self.field.?) orelse unreachable;
+            return ZipList.get(self.field.?).?;
         }
 
         pub fn currentKeyFromHashMap(self: *const Iterator) sds.String {
@@ -375,7 +402,7 @@ pub const Hash = struct {
         pub fn currentValFromZipList(self: *const Iterator) ZipList.Value {
             assert(self.encoding == .ziplist);
             assert(self.value != null);
-            return ZipList.get(self.value.?) orelse unreachable;
+            return ZipList.get(self.value.?).?;
         }
 
         pub fn currentValFromHashMap(self: *const Iterator) sds.String {
@@ -583,7 +610,7 @@ pub const Hash = struct {
             var zl: *ZipList = ZipList.cast(hobj.v.ptr);
             if (zl.index(ZipList.HEAD)) |head| {
                 if (ZipList.find(head, sds.asBytes(key), 1)) |f| {
-                    var v = zl.next(f) orelse unreachable;
+                    var v = zl.next(f).?;
 
                     zl = zl.delete(&v);
                     zl = zl.insert(v, sds.asBytes(val));
@@ -639,7 +666,7 @@ pub const Hash = struct {
             cli.addReply(Server.shared.nullbulk);
             return;
         }
-        const h = hobj orelse unreachable;
+        const h = hobj.?;
         if (h.encoding == .ziplist) {
             const value = Hash.getFromZipList(h, field) orelse {
                 cli.addReply(Server.shared.nullbulk);
@@ -669,7 +696,7 @@ pub const Hash = struct {
         const zl = ZipList.cast(hobj.v.ptr);
         if (zl.index(ZipList.HEAD)) |head| {
             if (ZipList.find(head, sds.asBytes(field), 1)) |f| {
-                const value = zl.next(f) orelse unreachable;
+                const value = zl.next(f).?;
                 return ZipList.get(value);
             }
         }
@@ -694,8 +721,8 @@ pub const Hash = struct {
     const vtable: *const Map.VTable = &.{
         .hash = hash,
         .eql = eql,
-        .freeKey = freeKey,
-        .freeVal = freeVal,
+        .freeKey = sds.free,
+        .freeVal = sds.free,
     };
 
     fn hash(key: sds.String) dict.Hash {
@@ -704,14 +731,6 @@ pub const Hash = struct {
 
     fn eql(k1: sds.String, k2: sds.String) bool {
         return sds.cmp(k1, k2) == .eq;
-    }
-
-    fn freeKey(key: sds.String) void {
-        sds.free(key);
-    }
-
-    fn freeVal(val: sds.String) void {
-        sds.free(val);
     }
 };
 
@@ -725,3 +744,4 @@ const server = &Server.instance;
 const ZipList = @import("ZipList.zig");
 const dict = @import("dict.zig");
 const util = @import("util.zig");
+const db = @import("db.zig");

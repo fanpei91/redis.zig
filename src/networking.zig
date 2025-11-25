@@ -251,9 +251,7 @@ pub const Client = struct {
 
         // Remove from the list of pending writes if needed.
         if (self.flags & Server.CLIENT_PENDING_WRITE != 0) {
-            const ln = server.clients_pending_write.search(self) orelse {
-                unreachable;
-            };
+            const ln = server.clients_pending_write.search(self).?;
             server.clients_pending_write.removeNode(ln);
             self.flags &= ~@as(i32, Server.CLIENT_PENDING_WRITE);
         }
@@ -261,9 +259,7 @@ pub const Client = struct {
         // When client was just unblocked because of a blocking operation,
         // remove it from the list of unblocked clients.
         if (self.flags & Server.CLIENT_UNBLOCKED != 0) {
-            const ln = server.unblocked_clients.search(self) orelse {
-                unreachable;
-            };
+            const ln = server.unblocked_clients.search(self).?;
             server.unblocked_clients.removeNode(ln);
             self.flags &= ~@as(i32, Server.CLIENT_UNBLOCKED);
         }
@@ -271,9 +267,7 @@ pub const Client = struct {
         // If this client was scheduled for async freeing we need to remove it
         // from the queue.
         if (self.flags & Server.CLIENT_CLOSE_ASAP != 0) {
-            const ln = server.clients_to_close.search(self) orelse {
-                unreachable;
-            };
+            const ln = server.clients_to_close.search(self).?;
             server.clients.removeNode(ln);
         }
     }
@@ -373,7 +367,9 @@ pub const Client = struct {
             linefeed += 1;
         }
         const query = querybuf[self.qb_pos .. self.qb_pos + newline];
-        const args = sds.splitArgs(query) orelse {
+        const aux = sds.new(query);
+        defer sds.free(aux);
+        const args = sds.splitArgs(sds.asSentinelBytes(aux)) orelse {
             self.addReplyErr(
                 "Protocol error: unbalanced quotes in request",
             );
@@ -464,7 +460,7 @@ pub const Client = struct {
             );
         }
 
-        const argv = self.argv orelse unreachable;
+        const argv = self.argv.?;
 
         assert(self.multibulklen > 0);
         while (self.multibulklen > 0) {
@@ -609,7 +605,7 @@ pub const Client = struct {
     }
 
     pub fn addReplyHelp(self: *Client, help: []const []const u8) void {
-        const argv = self.argv orelse unreachable;
+        const argv = self.argv.?;
         self.addReplyMultiBulkLen(1 + help.len + 2);
 
         const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
@@ -649,7 +645,7 @@ pub const Client = struct {
     /// This function is typically invoked by from commands that support
     /// subcommands in response to an unknown subcommand or argument error.
     pub fn addReplySubcommandSyntaxError(self: *Client) void {
-        const argv = self.argv orelse unreachable;
+        const argv = self.argv.?;
         const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
         defer sds.free(cmd);
         sds.toUpper(cmd);

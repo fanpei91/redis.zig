@@ -107,6 +107,23 @@ pub fn moveCommand(cli: *Client) void {
     cli.addReply(Server.shared.cone);
 }
 
+/// SCAN cursor [MATCH pattern] [COUNT count]
+pub fn scanCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const cursor = Scan.parseCursorOrReply(argv[1], cli) orelse {
+        return;
+    };
+    Scan.scan(cli, null, cursor, Database.Hash.Map, scanCallback);
+}
+
+fn scanCallback(
+    privdata: ?*anyopaque,
+    entry: *const Database.Hash.Map.Entry,
+) void {
+    const keys: *Scan.Keys = @ptrCast(@alignCast(privdata.?));
+    keys.append(Object.createString(sds.asBytes(entry.key)));
+}
+
 /// DEL/UNLINK key [key ...]
 fn del(cli: *Client, lazy: bool) void {
     const argv = cli.argv.?;
@@ -173,15 +190,15 @@ pub fn select(cli: *Client, id: i64) bool {
 }
 
 pub const Database = struct {
-    pub const Dict = struct {
-        pub const HashMap = dict.Dict(sds.String, ?*Object);
+    pub const Hash = struct {
+        pub const Map = dict.Dict(sds.String, ?*Object);
 
-        const vtable: *const HashMap.VTable = &.{
+        const vtable: *const Map.VTable = &.{
             .hash = hash,
             .eql = eql,
-            .dupeKey = dupeKey,
+            .dupeKey = sds.dupe,
             .dupeVal = dupeVal,
-            .freeKey = freeKey,
+            .freeKey = sds.free,
             .freeVal = freeVal,
         };
 
@@ -193,20 +210,12 @@ pub const Database = struct {
             return sds.cmp(k1, k2) == .eq;
         }
 
-        fn dupeKey(key: sds.String) sds.String {
-            return sds.dupe(key);
-        }
-
         fn dupeVal(val: ?*Object) ?*Object {
             // Lazy freeing will set value to null.
             if (val) |v| {
                 v.incrRefCount();
             }
             return val;
-        }
-
-        fn freeKey(key: sds.String) void {
-            sds.free(key);
         }
 
         fn freeVal(val: ?*Object) void {
@@ -239,8 +248,8 @@ pub const Database = struct {
             .hash = hash,
             .eql = eql,
             .dupeKey = dupeKey,
-            .freeKey = freeKey,
-            .freeVal = freeVal,
+            .freeKey = Object.decrRefCount,
+            .freeVal = Server.ClientList.release,
         };
 
         fn hash(key: *Object) dict.Hash {
@@ -255,14 +264,6 @@ pub const Database = struct {
             key.incrRefCount();
             return key;
         }
-
-        fn freeKey(key: *Object) void {
-            key.decrRefCount();
-        }
-
-        fn freeVal(val: *Server.ClientList) void {
-            val.release();
-        }
     };
 
     const ReadyKeys = struct {
@@ -272,7 +273,7 @@ pub const Database = struct {
             .hash = hash,
             .eql = eql,
             .dupeKey = dupeKey,
-            .freeKey = freeKey,
+            .freeKey = Object.decrRefCount,
         };
 
         fn hash(key: *Object) dict.Hash {
@@ -310,14 +311,10 @@ pub const Database = struct {
             key.incrRefCount();
             return key;
         }
-
-        fn freeKey(key: *Object) void {
-            key.decrRefCount();
-        }
     };
 
     id: usize, // Database ID
-    dict: *Dict.HashMap, // The keyspace for this DB
+    dict: *Hash.Map, // The keyspace for this DB
     expires: *Expires.HashMap, // Timeout of keys with a timeout set
     blocking_keys: *BlockingKeys.HashMap, // Keys with clients waiting for data (BLPOP)
     ready_keys: *ReadyKeys.HashMap, // Blocked keys that received a PUSH
@@ -325,7 +322,7 @@ pub const Database = struct {
     pub fn create(id: usize) Database {
         return .{
             .id = id,
-            .dict = .create(Dict.vtable),
+            .dict = .create(Hash.vtable),
             .expires = .create(Expires.vtable),
             .blocking_keys = .create(BlockingKeys.vtable),
             .ready_keys = .create(ReadyKeys.vtable),
@@ -372,9 +369,7 @@ pub const Database = struct {
     ///
     /// The program is aborted if the key was not already present.
     pub fn overwrite(self: *Database, key: *Object, val: *Object) void {
-        const entry = self.dict.find(sds.cast(key.v.ptr)) orelse {
-            unreachable;
-        };
+        const entry = self.dict.find(sds.cast(key.v.ptr)).?;
         var auxentry = entry.*;
         const old: *Object = entry.val.?;
         if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
@@ -402,7 +397,7 @@ pub const Database = struct {
         when: i64,
     ) void {
         _ = cli;
-        const de = self.dict.find(sds.cast(key.v.ptr)) orelse unreachable;
+        const de = self.dict.find(sds.cast(key.v.ptr)).?;
         // Reuse the sds from the main dict in the expire dict
         const ee = self.expires.addOrFind(de.key);
         self.expires.setVal(ee, when);
@@ -645,6 +640,212 @@ pub const Database = struct {
     }
 };
 
+pub const Scan = struct {
+    pub const Keys = list.List(void, *Object);
+
+    const vtable: *const Keys.VTable = &.{
+        .freeVal = Object.decrRefCount,
+    };
+
+    /// This function implements SCAN, HSCAN and SSCAN commands.
+    /// If object 'o' is passed, then it must be a Hash or Set object, otherwise
+    /// if 'o' is NULL the command will operate on the dictionary associated with
+    /// the current database.
+    ///
+    /// When 'o' is not NULL the function assumes that the first argument in
+    /// the client arguments vector is a key so it skips it before iterating
+    /// in order to parse options.
+    ///
+    /// In the case of a Hash object the function returns both the field and value
+    /// of every element on the Hash.
+    pub fn scan(
+        cli: *Client,
+        o: ?*Object,
+        cursor: u64,
+        comptime HashMap: type,
+        callback: *const fn (
+            privtata: ?*anyopaque, // Keys
+            entry: *const HashMap.Entry,
+        ) void,
+    ) void {
+        // zig fmt: off
+        assert(
+            o == null or
+            o.?.type == .hash or
+            o.?.type == .set or
+            o.?.type == .zset,
+        );
+        // zig fmt: on
+
+        const argv = cli.argv.?;
+        var keys: *Keys = Keys.create(vtable);
+        defer keys.release();
+        var count: i64 = 10;
+        var pat: ?sds.String = null;
+        var use_pattern = false;
+
+        // Set i to the first option argument. The previous one is the cursor.
+        // Skip the key argument if needed.
+        var i: usize = if (o == null) 2 else 3;
+
+        // Step 1: Parse options.
+        while (i < cli.argc) {
+            const j = cli.argc - i;
+            const option = sds.asBytes(sds.cast(argv[i].v.ptr));
+            if (caseEql(option, "count") and j >= 2) {
+                const value = argv[i + 1];
+                if (!value.getLongLongFromObjectOrReply(cli, &count, null)) {
+                    return;
+                }
+                if (count < 1) {
+                    cli.addReply(Server.shared.syntaxerr);
+                    return;
+                }
+                i += 2;
+            } else if (caseEql(option, "match") and j >= 2) {
+                const value = argv[i + 1];
+                pat = sds.cast(value.v.ptr);
+                const patlen = sds.getLen(pat.?);
+                use_pattern = !(patlen == 1 and pat.?[0] == '*');
+                i += 2;
+            } else {
+                cli.addReply(Server.shared.syntaxerr);
+                return;
+            }
+        }
+
+        // Step 2: Iterate the collection.
+        //
+        // Note that if the object is encoded with a ziplist, intset, or any other
+        // representation that is not a hash table, we are sure that it is also
+        // composed of a small number of elements. So to avoid taking state we
+        // just return everything inside the object in a single call, setting the
+        // cursor to zero to signal the end of the iteration.
+
+        // Handle the case of a hash table.
+        var map: ?*HashMap = null;
+        if (o == null) {
+            map = @ptrCast(@alignCast(cli.db.dict));
+        } else if (o.?.type == .hash and o.?.encoding == .ht) {
+            map = @ptrCast(@alignCast(o.?.v.ptr));
+            count *= 2; // We return key / value for this type.
+        }
+        // TODO: SET, ZSET
+
+        var cur = cursor;
+        if (map) |ht| {
+            // We set the max number of iterations to ten times the specified
+            // COUNT, so if the hash table is in a pathological state (very
+            // sparsely populated) we avoid to block too much time at the cost
+            // of returning no or very few elements.
+            var maxiterations = count * 10;
+
+            while (true) {
+                cur = ht.scan(cur, callback, null, keys);
+                if (cur > 0 and maxiterations > 0 and keys.len < count) {
+                    maxiterations -= 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        // TODO: SET
+        else if (o.?.type == .hash or o.?.type == .zset) {
+            const zl = ZipList.cast(o.?.v.ptr);
+            var p = zl.index(ZipList.HEAD);
+            while (p) |entry| {
+                const value = ZipList.get(entry).?;
+                const obj = switch (value) {
+                    .num => |v| Object.createStringFromLonglong(v),
+                    .str => |v| Object.createString(v),
+                };
+                keys.append(obj);
+                p = zl.next(entry);
+            }
+            cur = 0;
+        } else {
+            @panic("Not handled encoding in SCAN.");
+        }
+
+        // Step 3: Filter elements.
+        var node: ?*Keys.Node = keys.first;
+        var nextnode: ?*Keys.Node = null;
+        while (node) |n| {
+            const kboj = n.value;
+            nextnode = n.next;
+            var filter: bool = false;
+
+            // Filter element if it does not match the pattern.
+            if (!filter and use_pattern) {
+                const pattern = sds.asSentinelBytes(pat.?);
+                if (kboj.sdsEncoded()) {
+                    filter = !util.stringmatch(
+                        pattern,
+                        sds.asSentinelBytes(sds.cast(kboj.v.ptr)),
+                        false,
+                    );
+                } else {
+                    var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
+                    assert(kboj.encoding == .int);
+                    const string = util.ll2string(&buf, kboj.v.int);
+                    buf[string.len] = 0;
+                    filter = !util.stringmatch(
+                        pattern,
+                        buf[0..string.len :0],
+                        false,
+                    );
+                }
+            }
+
+            // Filter element if it is an expired key.
+            if (!filter and o == null and cli.db.expireIfNeeded(kboj)) {
+                filter = true;
+            }
+
+            // Remove the element and its associted value if needed.
+            if (filter) {
+                keys.removeNode(n);
+            }
+
+            // If this is a hash or a sorted set, we have a flat list of
+            // key-value elements, so if this element was filtered, remove the
+            // value, or skip it if it was not filtered: we only match keys.
+            if (o != null and (o.?.type == .zset or o.?.type == .hash)) {
+                node = nextnode;
+                nextnode = node.?.next;
+                if (filter) {
+                    keys.removeNode(node.?);
+                }
+            }
+            node = nextnode;
+        }
+
+        // Step 4: Reply to the client.
+        cli.addReplyMultiBulkLen(2);
+        cli.addReplyLongLong(@intCast(cur));
+
+        cli.addReplyMultiBulkLen(@intCast(keys.len));
+        while (keys.first) |n| {
+            cli.addReplyBulk(n.value);
+            keys.removeNode(n);
+        }
+    }
+
+    /// Try to parse a SCAN cursor stored at object 'o'. If the cursor is valid,
+    /// return it, otherwise return null and send an error to the client.
+    pub fn parseCursorOrReply(o: *const Object, cli: *Client) ?u64 {
+        const cursor = std.fmt.parseInt(
+            u64,
+            sds.asBytes(sds.cast(o.v.ptr)),
+            10,
+        ) catch {
+            cli.addReplyErr("invalid cursor");
+            return null;
+        };
+        return cursor;
+    }
+};
+
 const std = @import("std");
 const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
@@ -659,3 +860,6 @@ const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const util = @import("util.zig");
 const assert = std.debug.assert;
+const list = @import("list.zig");
+const caseEql = std.ascii.eqlIgnoreCase;
+const ZipList = @import("ZipList.zig");

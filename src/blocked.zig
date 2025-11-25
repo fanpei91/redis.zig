@@ -36,7 +36,7 @@ pub fn blockForKeys(
             assert(added);
         }
         clients.append(cli);
-        bki.listNode = clients.last orelse unreachable;
+        bki.listNode = clients.last.?;
     }
 
     blockClient(cli, btype);
@@ -97,7 +97,7 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
 /// do, the function is already fair.
 pub fn handleClientsBlockedOnKeys() void {
     while (server.ready_keys.len != 0) {
-        const ln = server.ready_keys.first orelse unreachable;
+        const ln = server.ready_keys.first.?;
         const rl = ln.value;
         defer server.ready_keys.removeNode(ln);
 
@@ -124,7 +124,7 @@ pub fn handleClientsBlockedOnKeys() void {
                 const clients: *ClientList = de.val;
                 var numclients = clients.len;
                 while (numclients > 0) : (numclients -= 1) {
-                    const clientnode = clients.first orelse unreachable;
+                    const clientnode = clients.first.?;
                     const receiver = clientnode.value;
                     if (receiver.btype != Server.BLOCKED_LIST) {
                         // Put at the tail, so that at the next call
@@ -141,7 +141,7 @@ pub fn handleClientsBlockedOnKeys() void {
                         }
                         break :blk list.Where.tail;
                     };
-                    const value = List.pop(coll, where) orelse unreachable;
+                    const value = List.pop(coll, where).?;
                     defer value.decrRefCount();
 
                     // Protect receiver.bpop.target, that will be
@@ -198,9 +198,7 @@ fn unblockClientWaitingData(cli: *Client) void {
     while (di.next()) |de| {
         const key: *Object = de.key;
         const bki: *BlockInfo = de.val;
-        const clients = cli.db.blocking_keys.fetchValue(key) orelse {
-            unreachable;
-        };
+        const clients = cli.db.blocking_keys.fetchValue(key).?;
         clients.removeNode(bki.listNode);
         if (clients.len == 0) {
             const deleted = cli.db.blocking_keys.delete(key);
@@ -255,7 +253,7 @@ pub fn replyToBlockedClientTimedOut(cli: *Client) void {
 pub fn processUnblockedClients() void {
     const clients = server.unblocked_clients;
     while (clients.len > 0) {
-        const ln = clients.first orelse unreachable;
+        const ln = clients.first.?;
         const cli = ln.value;
         clients.removeNode(ln);
         cli.flags &= ~@as(i32, Server.CLIENT_UNBLOCKED);

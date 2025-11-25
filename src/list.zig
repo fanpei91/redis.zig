@@ -3,7 +3,7 @@ pub fn List(
     comptime Value: type,
 ) type {
     return struct {
-        pub const Vtable = struct {
+        pub const VTable = struct {
             eql: ?*const fn (key: SearchKey, val: Value) bool = null,
             dupVal: ?*const fn (val: Value) Value = null,
             setVal: ?*const fn (val: Value) Value = null,
@@ -74,7 +74,7 @@ pub fn List(
         };
 
         const Context = struct {
-            vtable: *const Vtable,
+            vtable: *const VTable,
 
             fn eql(self: *Context, key: SearchKey, val: Value) bool {
                 if (self.vtable.eql) |cmp| {
@@ -110,7 +110,7 @@ pub fn List(
         len: usize = 0,
         ctx: Context,
 
-        pub fn create(vtable: *const Vtable) *LinkedList {
+        pub fn create(vtable: *const VTable) *LinkedList {
             const list = allocator.create(LinkedList);
             list.* = .{
                 .ctx = .{ .vtable = vtable },
@@ -525,7 +525,7 @@ const TestList = List(
 );
 
 const TestVtable = struct {
-    const vtable: *const TestList.Vtable = &.{
+    const vtable: *const TestList.VTable = &.{
         .eql = eql,
         .dupVal = dupe,
         .freeVal = free,

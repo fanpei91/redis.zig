@@ -24,7 +24,7 @@ pub const Hdr5 = struct {
 
 pub const Hdr8 = struct {
     len: u8 align(1),
-    alloc: u8 align(1), // excluding the header
+    alloc: u8 align(1), // excluding the header and null terminator
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 
@@ -35,7 +35,7 @@ pub const Hdr8 = struct {
 
 pub const Hdr16 = struct {
     len: u16 align(1),
-    alloc: u16 align(1), // excluding the header
+    alloc: u16 align(1), // excluding the header and null terminator
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 
@@ -46,7 +46,7 @@ pub const Hdr16 = struct {
 
 pub const Hdr32 = struct {
     len: u32 align(1),
-    alloc: u32 align(1), // excluding the header
+    alloc: u32 align(1), // excluding the header and null terminator
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 
@@ -57,7 +57,7 @@ pub const Hdr32 = struct {
 
 pub const Hdr64 = struct {
     len: u64 align(1),
-    alloc: u64 align(1), // excluding the header
+    alloc: u64 align(1), // excluding the header and null terminator
     flags: u8 align(1), // 3 lsb of type, 5 unused bits
     buf: [0]u8,
 
@@ -82,10 +82,13 @@ pub fn cast(ptr: *anyopaque) String {
     return @ptrCast(ptr);
 }
 
+/// Create a new sds string starting from a string.
 pub fn new(init: []const u8) String {
     return newLen(init.ptr, init.len);
 }
 
+/// Create an empty (zero length) sds string. Even in this case the string
+/// always has an implicit null term.
 pub fn empty() String {
     return new("");
 }
@@ -102,6 +105,10 @@ pub fn newLen(init: ?[*]const u8, initlen: usize) String {
     );
 }
 
+/// Create a new sds string with the content specified by the 'init' pointer
+/// and 'initlen' and Allocator.
+///
+/// If init is null, the buffer is left uninitialized;
 pub fn newLenAlloc(
     alloc: Allocator,
     init: ?[*]const u8,
@@ -115,7 +122,7 @@ pub fn newLenAlloc(
     }
 
     const hdr_len = hdrSize(typ);
-    const mem_size = hdr_len + initlen;
+    const mem_size = hdr_len + initlen + 1;
     const mem = alloc.alloc(u8, mem_size) catch allocator.oom();
     if (init == null) @memset(mem, 0);
 
@@ -126,20 +133,25 @@ pub fn newLenAlloc(
     if (init) |data| {
         @branchHint(.likely);
         setBuf(s, data[0..initlen]);
+        s[initlen] = 0;
     }
     return s;
 }
 
+/// Create an sds string from a long long value. It is much faster than:
+/// sds.catPrintf(sds.empty(),"{}\n", .{value});
 pub fn fromLonglong(num: i64) String {
     var buf: [20]u8 = undefined;
     const digits = util.ll2string(&buf, num);
     return new(digits);
 }
 
+/// Duplicate an sds string.
 pub fn dupe(s: String) String {
     return new(s[0..getLen(s)]);
 }
 
+/// Duplicate an sds string with the specified Allocator to alloc memory.
 pub fn dupeAlloc(alloc: Allocator, s: String) String {
     const bytes = asBytes(s);
     return newLenAlloc(alloc, bytes.ptr, bytes.len);
@@ -151,6 +163,7 @@ pub fn dupeAlloc(alloc: Allocator, s: String) String {
 /// number of bytes previously available.
 pub fn clear(s: String) void {
     setLength(s, 0);
+    s[0] = 0;
 }
 
 /// Enlarge the free space at the end of the sds string so that the caller
@@ -177,9 +190,9 @@ pub fn makeRoomFor(s: String, add_len: usize) String {
         new_type = TYPE_8;
     }
     const new_hdr_len = hdrSize(new_type);
-    const new_mem_size = new_hdr_len + new_alloc;
+    const new_mem_size = new_hdr_len + new_alloc + 1;
 
-    const old_mem = memSlice(s);
+    const old_mem = allocMemSlice(s);
     const old_type = getType(s);
     if (old_type == new_type) {
         const new_mem = allocator.realloc(
@@ -199,33 +212,51 @@ pub fn makeRoomFor(s: String, add_len: usize) String {
     setLength(ns, old_len);
     setAlloc(ns, new_alloc);
     setBuf(ns, s[0..old_len]);
+    ns[old_len] = 0;
     allocator.free(old_mem);
     return ns;
 }
 
+/// Append the specified string to the sds string 's'.
 pub fn cat(s: String, src: []const u8) String {
     const cur_len = getLen(s);
     const ns = makeRoomFor(s, src.len);
     memcpy(ns + cur_len, src, src.len);
     setLength(ns, cur_len + src.len);
+    ns[cur_len + src.len] = 0;
     return ns;
 }
 
+/// Append to the sds string 's' a string obtained using std.fmt-alike format
+/// specifier.
+///
+/// Example:
+///
+/// s = sds.new("Sum is: ");
+/// s = sds.catPrintf(s,"{}+{} = {}", .{a, b, a+b}).
+///
+/// Often you need to create a string from scratch with the stf.fmt-alike
+/// format. When this is the need, just use sds.empty() as the target string:
+///
+/// s = sds.catPrintf(sds.empty(), "... your format ...", args)
 pub fn catPrintf(s: String, comptime fmt: []const u8, args: anytype) String {
-    var static_buf: [1024]u8 = undefined;
-    const buf = std.fmt.bufPrint(&static_buf, fmt, args) catch {
-        @branchHint(.unlikely);
-        const alloc_buf = std.fmt.allocPrint(
-            allocator.child,
-            fmt,
-            args,
-        ) catch allocator.oom();
-        defer allocator.free(alloc_buf);
-        return cat(s, alloc_buf);
-    };
+    var stack_impl = std.heap.stackFallback(
+        fmt.len * 10,
+        allocator.child,
+    );
+    const stack_allocator = stack_impl.get();
+    const buf = std.fmt.allocPrint(
+        stack_allocator,
+        fmt,
+        args,
+    ) catch allocator.oom();
+    defer stack_allocator.free(buf);
     return cat(s, buf);
 }
 
+/// Append to the sds string "s" an escaped string representation where
+/// all the non-printable characters are turned into escapes in the form
+/// "\n\r\a...." or "\x<hex-number>".
 pub fn catRepr(s: String, raw: []const u8) String {
     var ns = cat(s, "\"");
 
@@ -252,12 +283,15 @@ pub fn catRepr(s: String, raw: []const u8) String {
     return ns;
 }
 
+/// Reallocate the sds string so that it has no free space at the end. The
+/// contained string remains not altered, but next concatenation operations
+/// will require a reallocation.
 pub fn removeAvailSpace(s: String) String {
     if (getAvail(s) == 0) return s;
 
     const len = getLen(s);
     const new_type = reqType(len);
-    const old_mem = memSlice(s);
+    const old_mem = allocMemSlice(s);
 
     // If the type is the same, or at least a large enough type is still
     // required, we just realloc(), letting the allocator to do the copy
@@ -268,7 +302,7 @@ pub fn removeAvailSpace(s: String) String {
         const old_hdr_len = hdrSize(old_type);
         const new_mem = allocator.realloc(
             old_mem,
-            old_hdr_len + len,
+            old_hdr_len + len + 1,
         );
         const ns = new_mem.ptr + old_hdr_len;
         setAlloc(ns, len);
@@ -276,12 +310,13 @@ pub fn removeAvailSpace(s: String) String {
     }
 
     const new_hdr_len = hdrSize(new_type);
-    const new_mem = allocator.alloc(u8, new_hdr_len + len);
+    const new_mem = allocator.alloc(u8, new_hdr_len + len + 1);
     const ns = new_mem.ptr + new_hdr_len;
     setType(ns, new_type);
     setLength(ns, len);
     setAlloc(ns, len);
     setBuf(ns, s[0..len]);
+    ns[len] = 0;
     allocator.free(old_mem);
     return ns;
 }
@@ -316,6 +351,7 @@ pub fn incrLen(s: String, incr: isize) void {
     assert((incr > 0 and alloc - len >= abs_incr) or (incr < 0 and len >= abs_incr));
     const new_len = if (incr > 0) len + abs_incr else len - abs_incr;
     setLength(s, new_len);
+    s[new_len] = 0;
 }
 
 /// Grow the sds to have the specified length. Bytes that were not part of
@@ -329,11 +365,13 @@ pub fn growZero(s: String, new_len: usize) String {
 
     const add_len = new_len - curr_len;
     const ns = makeRoomFor(s, add_len);
-    memset(ns + curr_len, 0, add_len);
+    memset(ns + curr_len, 0, add_len + 1); // also set trailing \0 byte
     setLength(ns, new_len);
     return ns;
 }
 
+/// Destructively modify the sds string 's' to hold the specified binary
+/// safe string pointed by 'src'.
 pub fn copy(s: String, src: []const u8) String {
     var ns = s;
     if (getAlloc(s) < src.len) {
@@ -341,9 +379,19 @@ pub fn copy(s: String, src: []const u8) String {
     }
     setLength(ns, src.len);
     setBuf(ns, src);
+    ns[src.len] = 0;
     return ns;
 }
 
+/// Modify the string substituting all the occurrences of the set of
+/// characters specified in the 'from' string to the corresponding character
+/// in the 'to' array.
+///
+/// For instance: sds.mapChars(mystring, "ho", "01", 2)
+/// will have the effect of turning the string "hello" into "0ell1".
+///
+/// The function returns the sds string pointer, that is always the same
+/// as the input pointer since no resize is needed.
 pub fn mapChars(s: String, from: []const u8, to: []const u8) String {
     assert(from.len == to.len);
 
@@ -359,6 +407,8 @@ pub fn mapChars(s: String, from: []const u8, to: []const u8) String {
     return s;
 }
 
+/// Join an array of strings using the specified separator.
+/// Returns the result as an sds string.
 pub fn join(slices: []const []const u8, sep: []const u8) String {
     var joined = empty();
     for (slices, 0..) |slice, i| {
@@ -368,14 +418,25 @@ pub fn join(slices: []const []const u8, sep: []const u8) String {
     return joined;
 }
 
+/// Split 's' with separator in 'sep'. An array
+/// of sds strings is returned.
+///
+/// Note that 'sep' is able to split a string using
+/// a multi-character separator. For example
+/// sds.split("foo_-_bar", "_-_"); will return two
+/// elements "foo" and "bar".
 pub fn split(str: []const u8, sep: []const u8) []String {
     var tokens = std.ArrayList(String).empty;
 
     var it = std.mem.splitSequence(u8, str, sep);
     while (it.next()) |token| {
-        tokens.append(allocator.child, new(token)) catch allocator.oom();
+        tokens.append(allocator.child, new(token)) catch {
+            allocator.oom();
+        };
     }
-    return tokens.toOwnedSlice(allocator.child) catch allocator.oom();
+    return tokens.toOwnedSlice(allocator.child) catch {
+        allocator.oom();
+    };
 }
 
 /// Split a line into arguments, where every argument can be in the
@@ -395,100 +456,90 @@ pub fn split(str: []const u8, sep: []const u8) []String {
 /// input string is empty, or NULL if the input contains unbalanced
 /// quotes or closed quotes followed by non space characters
 /// as in: "foo"bar or "foo'
-pub fn splitArgs(line: []const u8) ?[]String {
+pub fn splitArgs(line: [:0]const u8) ?[]String {
     var vector = std.ArrayList(String).empty;
     var current: ?String = null;
 
+    var p = line.ptr;
     biz: {
-        var i: usize = 0;
         while (true) {
-            while (i < line.len and isWhitespace(line[i])) i += 1;
-            if (i < line.len) {
+            // skip blanks
+            while (p[0] != 0 and isWhitespace(p[0])) p += 1;
+            if (p[0] != 0) {
                 var inq = false; // set to true if we are in "quotes"
                 var insq = false; // set to true if we are in 'single quotes'
                 var done = false;
-                var p = line[i];
+
                 if (current == null) current = empty();
                 while (!done) {
                     if (inq) {
-                        if (p == '\\' and
-                            i + 1 < line.len and line[i + 1] == 'x' and
-                            i + 2 < line.len and isHex(line[i + 2]) and
-                            i + 3 < line.len and isHex(line[i + 3]))
+                        if (p[0] == '\\' and
+                            p[1] == 'x' and
+                            isHex(p[2]) and
+                            isHex(p[3]))
                         {
-                            const byte = parseInt(u8, line[i + 2 .. i + 4], 16) catch unreachable;
+                            const byte = parseInt(u8, p[2..4], 16) catch {
+                                unreachable;
+                            };
                             current = cat(current.?, &.{byte});
-                            i += 3;
-                            p = line[i];
-                        } else if (p == '\\' and i + 1 < line.len) {
-                            i += 1;
-                            p = line[i];
+                            p += 3;
+                        } else if (p[0] == '\\' and p[1] != 0) {
+                            p += 1;
                             var c: u8 = undefined;
-                            switch (p) {
+                            switch (p[0]) {
                                 'n' => c = '\n',
                                 'r' => c = '\r',
                                 't' => c = '\t',
                                 'b' => c = 0x08,
                                 'a' => c = 0x07,
-                                else => c = p,
+                                else => c = p[0],
                             }
                             current = cat(current.?, &.{c});
-                        } else if (p == '"') {
+                        } else if (p[0] == '"') {
                             // closing quote must be followed by a space or
                             // nothing at all.
-                            if (i + 1 < line.len and !isWhitespace(line[i + 1])) {
+                            if (p[1] != 0 and !isWhitespace(p[1])) {
                                 break :biz;
                             }
                             done = true;
-                        } else if (i + 1 == line.len) {
+                        } else if (p[0] == 0) {
                             // unterminated quotes
                             break :biz;
                         } else {
-                            current = cat(current.?, &.{p});
+                            current = cat(current.?, &.{p[0]});
                         }
                     } else if (insq) {
-                        if (p == '\\' and i + 1 < line.len and line[i + 1] == '\'') {
-                            i += 1;
-                            p = line[i];
-                            current = cat(current.?, &.{'\''});
-                        } else if (p == '\'') {
+                        if (p[0] == '\\' and p[1] == '\'') {
+                            p += 1;
+                            current = cat(current.?, "'");
+                        } else if (p[0] == '\'') {
                             // closing quote must be followed by a space or
                             // nothing at all.
-                            if (i + 1 < line.len and !isWhitespace(line[i + 1])) {
+                            if (p[1] != 0 and !isWhitespace(p[1])) {
                                 break :biz;
                             }
                             done = true;
-                        } else if (i + 1 == line.len) {
+                        } else if (p[0] == 0) {
                             // unterminated quotes
                             break :biz;
                         } else {
-                            current = cat(current.?, &.{p});
+                            current = cat(current.?, &.{p[0]});
                         }
                     } else {
-                        switch (p) {
-                            ' ', '\n', '\r', '\t' => done = true,
+                        switch (p[0]) {
+                            ' ', '\n', '\r', '\t', 0 => done = true,
                             '"' => inq = true,
                             '\'' => insq = true,
-                            else => current = cat(current.?, &.{p}),
+                            else => current = cat(current.?, &.{p[0]}),
                         }
                     }
-                    i += 1;
-                    if (i == line.len) {
-                        done = true;
-                    } else {
-                        p = line[i];
-                    }
+                    if (p[0] != 0) p += 1;
                 }
-                vector.append(
-                    allocator.child,
-                    current.?,
-                ) catch allocator.oom();
+                vector.append(allocator.child, current.?) catch allocator.oom();
                 current = null;
                 continue;
             }
-            return vector.toOwnedSlice(
-                allocator.child,
-            ) catch allocator.oom();
+            return vector.toOwnedSlice(allocator.child) catch allocator.oom();
         }
     }
 
@@ -504,6 +555,7 @@ pub fn splitArgs(line: []const u8) ?[]String {
     return null;
 }
 
+/// Free the result returned by sds.split().
 pub fn freeSplitRes(tokens: []String) void {
     for (tokens) |token| {
         free(token);
@@ -511,10 +563,20 @@ pub fn freeSplitRes(tokens: []String) void {
     allocator.free(tokens);
 }
 
+/// Remove the part of the string from left and from right composed just of
+/// contiguous characters found in 'values_to_strip'.
+///
+/// Example:
+///
+/// s = sds.new("AA...AA.a.aa.aHelloWorld     :::");
+/// s = sds.trim(s,"Aa. :");
+///
+/// Output will be just "HelloWorld".
 pub fn trim(s: String, values_to_strip: []const u8) void {
     const trimed = std.mem.trim(u8, asBytes(s), values_to_strip);
     memmove(s, trimed, trimed.len);
     setLength(s, trimed.len);
+    s[trimed.len] = 0;
 }
 
 /// Turn the string into a smaller (or equal) string containing only the
@@ -570,8 +632,10 @@ pub fn range(s: String, start: isize, endinc: isize) void {
         memmove(s, s + from, new_len);
     }
     setLength(s, new_len);
+    s[new_len] = 0;
 }
 
+/// Apply toLower() to every character of the sds string 's'.
 pub fn toLower(s: String) void {
     const slice = asBytes(s);
     for (slice, 0..) |c, i| {
@@ -579,6 +643,7 @@ pub fn toLower(s: String) void {
     }
 }
 
+/// Apply toUpper() to every character of the sds string 's'.
 pub fn toUpper(s: String) void {
     const slice = asBytes(s);
     for (slice, 0..) |c, i| {
@@ -586,6 +651,17 @@ pub fn toUpper(s: String) void {
     }
 }
 
+/// Compare two sds strings s1 and s2.
+///
+/// Return value:
+///
+///     .gt if s1 > s2.
+///     .lt if s1 < s2.
+///     .eq if s1 and s2 are exactly the same binary string.
+///
+/// If two strings share exactly the same prefix, but one of the two has
+/// additional characters, the longer string is considered to be greater than
+/// the smaller one.
 pub fn cmp(s1: String, s2: String) std.math.Order {
     const lhs = asBytes(s1);
     const rhs = asBytes(s2);
@@ -593,6 +669,17 @@ pub fn cmp(s1: String, s2: String) std.math.Order {
     return std.mem.order(u8, lhs, rhs);
 }
 
+/// Compare two sds strings s1 and s2  in a case–insensitive way.
+///
+/// Return value:
+///
+///     .gt if s1 > s2.
+///     .lt if s1 < s2.
+///     .eq if s1 and s2 are exactly the same binary string.
+///
+/// If two strings share exactly the same prefix, but one of the two has
+/// additional characters, the longer string is considered to be greater than
+/// the smaller one.
 pub fn caseCmp(s1: String, s2: String) std.math.Order {
     const lhs = asBytes(s1);
     const rhs = asBytes(s2);
@@ -610,6 +697,7 @@ pub fn caseCmp(s1: String, s2: String) std.math.Order {
     return std.math.order(lhs.len, rhs.len);
 }
 
+/// Return the length of the sds string `s`, excluding the null terminator.
 pub fn getLen(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
@@ -622,10 +710,12 @@ pub fn getLen(s: String) usize {
     };
 }
 
+/// Return how many bytes can still be appended to `s` without reallocating.
 pub fn getAvail(s: String) usize {
     return getAlloc(s) - getLen(s);
 }
 
+/// Return the total capacity available for storing content in `s`.
 pub fn getAlloc(s: String) usize {
     const flags = (s - 1)[0];
     return switch (flags & TYPE_MASK) {
@@ -643,12 +733,17 @@ pub fn getAlloc(s: String) usize {
 /// 1) The sds header before the pointer.
 /// 2) The string.
 /// 3) The free buffer at the end if any.
+/// 4) The implicit null term.
 pub fn getAllocMemSize(s: String) usize {
-    return hdrSize(getType(s)) + getAlloc(s);
+    return hdrSize(getType(s)) + getAlloc(s) + 1;
 }
 
 pub inline fn asBytes(s: String) []u8 {
     return s[0..getLen(s)];
+}
+
+pub inline fn asSentinelBytes(s: String) [:0]u8 {
+    return s[0..getLen(s) :0];
 }
 
 pub fn setLength(s: String, new_len: usize) void {
@@ -662,15 +757,14 @@ pub fn setLength(s: String, new_len: usize) void {
     }
 }
 
+/// Free an sds string.
 pub fn free(s: String) void {
     freeAlloc(allocator.child, s);
 }
 
+/// Free an sds string with the specified Allocator.
 pub fn freeAlloc(alloc: Allocator, s: String) void {
-    const hdr_len = hdrSize(getType(s));
-    const mem: [*]u8 = s - hdr_len;
-    const mem_size = getAllocMemSize(s);
-    alloc.free(mem[0..mem_size]);
+    alloc.free(allocMemSlice(s));
 }
 
 inline fn getType(s: String) u8 {
@@ -685,7 +779,7 @@ inline fn setBuf(s: String, buf: []const u8) void {
     memcpy(s, buf, buf.len);
 }
 
-inline fn memSlice(s: String) []u8 {
+inline fn allocMemSlice(s: String) []u8 {
     const mem: [*]u8 = s - hdrSize(getType(s));
     return mem[0..getAllocMemSize(s)];
 }
@@ -825,7 +919,7 @@ test catRepr {
 test getAllocMemSize {
     const s = new("hello");
     defer free(s);
-    try expectEqual(@sizeOf(MemSizedHdr5) + 5, getAllocMemSize(s));
+    try expectEqual(@sizeOf(MemSizedHdr5) + 5 + 1, getAllocMemSize(s));
 }
 
 test "incrLen-" {

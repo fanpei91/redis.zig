@@ -17,7 +17,7 @@ pub fn asyncDelete(db: *Database, key: *Object) bool {
     // the object synchronously.
     const entry = db.dict.unlink(skey);
     if (entry) |ent| {
-        const val = ent.val orelse unreachable;
+        const val = ent.val.?;
         const free_effort = getFreeEffort(val);
 
         // If releasing the object is too much work, do it in the background
@@ -87,8 +87,8 @@ pub fn freeObjectFromBioThread(obj: *Object) void {
 }
 
 pub fn freeDatabaseFromBioThread(
-    db1: *Database.Dict.HashMap,
-    db2: *Database.Dict.HashMap,
+    db1: *Database.Hash.Map,
+    db2: *Database.Hash.Map,
 ) void {
     db1.destroy();
     db2.destroy();

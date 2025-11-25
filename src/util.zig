@@ -1,3 +1,139 @@
+/// Glob-style pattern matching.
+pub fn stringmatch(pattern: [:0]const u8, string: [:0]const u8, nocase: bool) bool {
+    var patternlen = pattern.len;
+    var stringlen = string.len;
+
+    var pat = pattern.ptr;
+    var str = string.ptr;
+    while (patternlen > 0 and stringlen > 0) {
+        switch (pat[0]) {
+            '*' => {
+                while (pat[1] == '*') {
+                    pat += 1;
+                    patternlen -= 1;
+                }
+                if (patternlen == 1) {
+                    return true;
+                }
+                while (stringlen > 0) {
+                    if (stringmatch(
+                        pattern[@intFromPtr(pat + 1) - @intFromPtr(pattern.ptr) ..],
+                        string[@intFromPtr(str) - @intFromPtr(string.ptr) ..],
+                        nocase,
+                    )) {
+                        return true;
+                    }
+                    str += 1;
+                    stringlen -= 1;
+                }
+                return false;
+            },
+            '?' => {
+                if (stringlen == 0) {
+                    return false;
+                }
+                str += 1;
+                stringlen -= 1;
+            },
+            '[' => {
+                pat += 1;
+                patternlen -= 1;
+                const not = pat[0] == '^';
+                if (not) {
+                    pat += 1;
+                    patternlen -= 1;
+                }
+                var match = false;
+                while (true) {
+                    if (pat[0] == '\\' and patternlen >= 2) {
+                        pat += 1;
+                        patternlen -= 1;
+                        if (pat[0] == str[0]) {
+                            match = true;
+                        }
+                    } else if (pat[0] == ']') {
+                        break;
+                    } else if (patternlen == 0) {
+                        pat -= 1;
+                        patternlen += 1;
+                        break;
+                    } else if (pat[1] == '-' and patternlen >= 3) {
+                        var start = pat[0];
+                        var end = pat[2];
+                        var c = str[0];
+                        if (start > end) {
+                            std.mem.swap(u8, &start, &end);
+                        }
+                        if (nocase) {
+                            start = toLower(start);
+                            end = toLower(end);
+                            c = toLower(c);
+                        }
+                        pat += 2;
+                        patternlen -= 2;
+                        if (c >= start and c <= end) {
+                            match = true;
+                        }
+                    } else {
+                        if (nocase) {
+                            if (toLower(pat[0]) == toLower(str[0])) {
+                                match = true;
+                            }
+                        } else {
+                            if (pat[0] == str[0]) {
+                                match = true;
+                            }
+                        }
+                    }
+                    pat += 1;
+                    patternlen -= 1;
+                }
+                if (not) {
+                    match = !match;
+                }
+                if (!match) {
+                    return false;
+                }
+                str += 1;
+                stringlen -= 1;
+            },
+            else => {
+                if (pat[0] == '\\') {
+                    if (patternlen >= 2) {
+                        pat += 1;
+                        patternlen -= 1;
+                    }
+                }
+                if (nocase) {
+                    if (toLower(pat[0]) != toLower(str[0])) {
+                        return false;
+                    }
+                } else {
+                    if (pat[0] != str[0]) {
+                        return false;
+                    }
+                }
+                str += 1;
+                stringlen -= 1;
+            },
+        }
+
+        pat += 1;
+        patternlen -= 1;
+        if (stringlen == 0) {
+            while (pat[0] == '*') {
+                pat += 1;
+                patternlen -= 1;
+            }
+            break;
+        }
+    }
+    if (patternlen == 0 and stringlen == 0) {
+        return true;
+    }
+    return false;
+}
+
 /// The maximum number of characters needed to represent a long double
 /// as a string (long double has a huge range).
 /// This should be the size of the buffer given to `ld2string()`
@@ -130,3 +266,4 @@ const assert = std.debug.assert;
 const expectEqual = std.testing.expectEqual;
 const sds = @import("sds.zig");
 const allocator = @import("allocator.zig");
+const toLower = std.ascii.toLower;

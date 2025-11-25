@@ -85,9 +85,9 @@ fn loadFromString(
             linenum = i + 1;
 
             sds.trim(line, "\t\r\n");
-            const bytes = sds.asBytes(line);
+            const bytes = sds.asSentinelBytes(line);
 
-            //Skip comments and blank lines
+            // Skip comments and blank lines
             if (bytes.len == 0 or bytes[0] == '#') continue;
 
             // Split into arguments

@@ -4,7 +4,7 @@ pub fn setCommand(cli: *Client) void {
     var flags: u32 = OBJ_SET_NO_FLAGS;
     var unit: u32 = Server.UNIT_SECONDS;
     var expire: ?*Object = null;
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var j: usize = 3;
     while (j < cli.argc) : (j += 1) {
@@ -47,7 +47,7 @@ pub fn setCommand(cli: *Client) void {
 /// RESP: 0 if the key was not set.
 /// RESP: 1 if the key was set.
 pub fn setnxCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     argv[2] = argv[2].tryEncoding();
     const key = argv[1];
     const val = argv[2];
@@ -65,7 +65,7 @@ pub fn setnxCommand(cli: *Client) void {
 
 /// SETEX key seconds value
 pub fn setexCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     argv[3] = argv[3].tryEncoding();
     const key = argv[1];
     const val = argv[3];
@@ -84,7 +84,7 @@ pub fn setexCommand(cli: *Client) void {
 
 /// PSETEX key milliseconds value
 pub fn psetexCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     argv[3] = argv[3].tryEncoding();
     const key = argv[1];
     const val = argv[3];
@@ -119,7 +119,7 @@ pub fn getCommand(cli: *Client) void {
 /// MGET key [key ...]
 pub fn mgetCommand(cli: *Client) void {
     cli.addReplyMultiBulkLen(cli.argc - 1);
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     for (argv[1..cli.argc]) |key| {
         const val = cli.db.lookupKeyRead(key) orelse {
             cli.addReply(Server.shared.nullbulk);
@@ -136,7 +136,7 @@ pub fn mgetCommand(cli: *Client) void {
 /// GETSET key value
 pub fn getsetCommand(cli: *Client) void {
     if (!get(cli)) return;
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     argv[2] = argv[2].tryEncoding();
     const key = argv[1];
     const val = argv[2];
@@ -164,7 +164,7 @@ pub fn incrbyCommand(cli: *Client) void {
 
 /// DECRBY key decrement
 pub fn decrbyCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     var decrement: i64 = undefined;
     if (!argv[2].getLongLongOrReply(cli, &decrement, null)) {
         return;
@@ -174,7 +174,7 @@ pub fn decrbyCommand(cli: *Client) void {
 
 /// INCRBYFLOAT key increment
 pub fn incrbyfloatCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
 
     const o = cli.db.lookupKeyWrite(key);
@@ -204,7 +204,7 @@ pub fn incrbyfloatCommand(cli: *Client) void {
 
 /// STRLEN key
 pub fn strlenCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const val = cli.db.lookupKeyReadOrReply(
         cli,
@@ -220,7 +220,7 @@ pub fn strlenCommand(cli: *Client) void {
 
 /// APPEND key value
 pub fn appendCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
 
     var totlen: usize = undefined;
@@ -252,7 +252,7 @@ pub fn appendCommand(cli: *Client) void {
 
 /// SETRANGE key offset value
 pub fn setrangeCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var offset: i64 = undefined;
     if (!argv[2].getLongLongOrReply(cli, &offset, null)) {
@@ -316,7 +316,7 @@ pub fn setrangeCommand(cli: *Client) void {
 
 /// GETRANGE key start end
 pub fn getrangeCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     var start: i64 = undefined;
     var end: i64 = undefined;
 
@@ -444,7 +444,7 @@ fn set(
 }
 
 fn incr(cli: *Client, by: i64) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
 
     const o = cli.db.lookupKeyWrite(key);
@@ -490,7 +490,7 @@ fn mset(cli: *Client, nx: bool) void {
         return;
     }
 
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     // Handle the NX flag. The MSETNX semantic is to return zero and don't
     // set anything if at least one key alerady exists.
     if (nx) {
@@ -515,7 +515,7 @@ fn mset(cli: *Client, nx: bool) void {
 }
 
 fn get(cli: *Client) bool {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const val = cli.db.lookupKeyReadOrReply(
         cli,

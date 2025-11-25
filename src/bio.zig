@@ -51,7 +51,7 @@ fn processBackgroundJobs(job_type: Job.Type) void {
             cond.wait(mtx);
             continue;
         }
-        const ln = jbs.first orelse unreachable;
+        const ln = jbs.first.?;
         defer jbs.removeNode(ln);
         const job = ln.value;
         job.do(job_type);

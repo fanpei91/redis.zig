@@ -124,7 +124,7 @@ const Commands = struct {
     const vtable: *const HashMap.VTable = &.{
         .hash = hash,
         .eql = eql,
-        .freeKey = freeKey,
+        .freeKey = sds.free,
     };
 
     fn hash(key: sds.String) dict.Hash {
@@ -134,16 +134,12 @@ const Commands = struct {
     fn eql(k1: sds.String, k2: sds.String) bool {
         return sds.caseCmp(sds.cast(k1), sds.cast(k2)) == .eq;
     }
-
-    fn freeKey(key: sds.String) void {
-        sds.free(key);
-    }
 };
 
 const ReadyKeys = struct {
     pub const List = LinkedList(*blocked.ReadyList, *blocked.ReadyList);
 
-    const vtable: *const List.Vtable = &.{
+    const vtable: *const List.VTable = &.{
         .setVal = setVal,
         .freeVal = freeVal,
     };

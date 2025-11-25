@@ -30,7 +30,7 @@ pub fn rpopCommand(cli: *Client) void {
 
 /// RPOPLPUSH source destination
 pub fn rpoplpushCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     const srckey = argv[1];
     const srcobj = cli.db.lookupKeyWriteOrReply(
@@ -48,7 +48,7 @@ pub fn rpoplpushCommand(cli: *Client) void {
         return;
     };
 
-    const value = List.pop(srcobj, .tail) orelse unreachable;
+    const value = List.pop(srcobj, .tail).?;
     defer value.decrRefCount();
 
     rpoplpush(cli, dstkey, dstobj, value);
@@ -60,7 +60,7 @@ pub fn rpoplpushCommand(cli: *Client) void {
 
 /// LINSERT key <BEFORE | AFTER> pivot element
 pub fn linsertCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var where: Where = undefined;
     const arg2 = sds.asBytes(sds.cast(argv[2].v.ptr));
@@ -105,7 +105,7 @@ pub fn linsertCommand(cli: *Client) void {
 
 /// LINDEX key index
 pub fn lindexCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const lobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -144,7 +144,7 @@ pub fn lindexCommand(cli: *Client) void {
 
 /// LSET key index element
 pub fn lsetCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const lobj = cli.db.lookupKeyWriteOrReply(
         cli,
@@ -176,7 +176,7 @@ pub fn lsetCommand(cli: *Client) void {
 
 /// LLEN key
 pub fn llenCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const lobj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -191,7 +191,7 @@ pub fn llenCommand(cli: *Client) void {
 
 /// LRANGE key start end
 pub fn lrangeCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     var start: i64 = undefined;
     var end: i64 = undefined;
 
@@ -243,7 +243,7 @@ pub fn lrangeCommand(cli: *Client) void {
 
 /// LTRIM key start end
 pub fn ltrimCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     var start: i64 = undefined;
     var end: i64 = undefined;
 
@@ -301,7 +301,7 @@ pub fn ltrimCommand(cli: *Client) void {
 
 /// LREM key count element
 pub fn lremCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var toremove: i64 = undefined;
     if (!argv[2].getLongLongOrReply(cli, &toremove, null)) {
@@ -360,7 +360,7 @@ pub fn brpopCommand(cli: *Client) void {
 
 /// BRPOPLPUSH source destination timeout
 pub fn brpoplpushCommand(cli: *Client) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var timeout: i64 = undefined;
     if (!blocked.getTimeoutFromObjectOrReply(
@@ -396,7 +396,7 @@ pub fn brpoplpushCommand(cli: *Client) void {
 
 /// BLPOP/BRPOP key [key ...] timeout
 fn bpop(cli: *Client, where: Where) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
 
     var timeout: i64 = undefined;
     if (!blocked.getTimeoutFromObjectOrReply(
@@ -414,7 +414,7 @@ fn bpop(cli: *Client, where: Where) void {
         if (lobj.checkTypeOrReply(cli, .list)) {
             return;
         }
-        const value = List.pop(lobj, where) orelse unreachable;
+        const value = List.pop(lobj, where).?;
         defer value.decrRefCount();
 
         cli.addReplyMultiBulkLen(2);
@@ -464,7 +464,7 @@ fn rpoplpush(
 
 /// LPUSH/RPUSH key element [element ...]
 fn push(cli: *Client, where: Where) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const list = cli.db.lookupKeyWrite(key) orelse blk: {
         const obj = List.create();
@@ -484,7 +484,7 @@ fn push(cli: *Client, where: Where) void {
 
 /// LPUSHX/RPUSHX key element [element ...]
 fn pushx(cli: *Client, where: Where) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const list = cli.db.lookupKeyWriteOrReply(
         cli,
@@ -505,7 +505,7 @@ fn pushx(cli: *Client, where: Where) void {
 
 /// LPOP/RPOP key
 fn pop(cli: *Client, where: Where) void {
-    const argv = cli.argv orelse unreachable;
+    const argv = cli.argv.?;
     const key = argv[1];
     const lobj = cli.db.lookupKeyWriteOrReply(
         cli,
@@ -611,7 +611,7 @@ pub const List = struct {
             }
             const value = obj.getDecoded();
             defer value.decrRefCount();
-            const ql = self.entry.quicklist orelse unreachable;
+            const ql = self.entry.quicklist.?;
             const str = sds.asBytes(sds.cast(value.v.ptr));
             if (where == .tail) {
                 ql.insertAfter(&self.entry, str);
