@@ -66,6 +66,7 @@ pub const table = [_]Command{
     .{ .name = "lrem", .proc = list.lremCommand, .arity = 4 },
     .{ .name = "hset", .proc = hash.hsetCommand, .arity = -4 },
     .{ .name = "hincrby", .proc = hash.hincrbyCommand, .arity = 4 },
+    .{ .name = "hincrbyfloat", .proc = hash.hincrbyfloatCommand, .arity = 4 },
     .{ .name = "hmset", .proc = hash.hsetCommand, .arity = -4 },
     .{ .name = "hsetnx", .proc = hash.hsetnxCommand, .arity = 4 },
     .{ .name = "hget", .proc = hash.hgetCommand, .arity = 3 },

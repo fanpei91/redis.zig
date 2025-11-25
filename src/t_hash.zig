@@ -74,6 +74,46 @@ pub fn hincrbyCommand(cli: *Client) void {
     cli.addReplyLongLong(value);
 }
 
+/// HINCRBYFLOAT key field increment
+pub fn hincrbyfloatCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+
+    var increment: f80 = undefined;
+    if (!argv[3].getLongDoubleFromObjectOrReply(cli, &increment, null)) {
+        return;
+    }
+
+    const key = argv[1];
+    const hobj = Hash.lookupCreateOrReply(key, cli) orelse {
+        return;
+    };
+
+    const field = sds.cast(argv[2].v.ptr);
+    var value: f80 = 0;
+    if (Hash.getValue(hobj, field)) |val| {
+        switch (val) {
+            .num => |v| value = @floatFromInt(v),
+            .str => |v| {
+                value = std.fmt.parseFloat(f80, v) catch {
+                    cli.addReplyErr("hash value is not a float");
+                    return;
+                };
+            },
+        }
+    }
+
+    value += increment;
+    if (std.math.isNan(value) or std.math.isInf(value)) {
+        cli.addReplyErr("increment would produce NaN or Infinity");
+        return;
+    }
+
+    var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
+    const s = util.ld2string(&buf, value, true);
+    _ = Hash.set(hobj, field, sds.new(s), Server.HASH_SET_TAKE_VALUE);
+    cli.addReplyBulkString(s);
+}
+
 /// HSETNX key field value
 pub fn hsetnxCommand(cli: *Client) void {
     const argv = cli.argv.?;
