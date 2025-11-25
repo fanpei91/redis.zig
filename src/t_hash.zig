@@ -34,6 +34,46 @@ pub fn hsetCommand(cli: *Client) void {
     }
 }
 
+/// HINCRBY key field increment
+pub fn hincrbyCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    var incr: i64 = undefined;
+    if (!argv[3].getLongLongFromObjectOrReply(cli, &incr, null)) {
+        return;
+    }
+    const hobj = Hash.lookupCreateOrReply(key, cli) orelse {
+        return;
+    };
+
+    var value: i64 = 0;
+    const field = sds.cast(argv[2].v.ptr);
+    if (Hash.getValue(hobj, field)) |val| {
+        switch (val) {
+            .num => |v| value = v,
+            .str => |v| {
+                if (!util.string2ll(v, &value)) {
+                    cli.addReplyErr("hash value is not an integer");
+                    return;
+                }
+            },
+        }
+    }
+
+    value = std.math.add(i64, value, incr) catch {
+        cli.addReplyErr("increment or decrement would overflow");
+        return;
+    };
+
+    _ = Hash.set(
+        hobj,
+        field,
+        sds.fromLonglong(value),
+        Server.HASH_SET_TAKE_VALUE,
+    );
+    cli.addReplyLongLong(value);
+}
+
 /// HSETNX key field value
 pub fn hsetnxCommand(cli: *Client) void {
     const argv = cli.argv.?;
@@ -566,6 +606,31 @@ pub const Hash = struct {
                 return 0;
             };
             return sds.getLen(value.val);
+        }
+        @panic("Unknown hash encoding");
+    }
+
+    /// Returns the hash value associated with the specified field.
+    /// If the field is found Value is returned, otherwise null.
+    const Value = union(enum) {
+        num: i64,
+        str: []u8,
+    };
+    fn getValue(hobj: *Object, field: sds.String) ?Value {
+        if (hobj.encoding == .ziplist) {
+            const value = getFromZipList(hobj, field) orelse {
+                return null;
+            };
+            return switch (value) {
+                .num => |v| .{ .num = v },
+                .str => |v| .{ .str = v },
+            };
+        }
+        if (hobj.encoding == .ht) {
+            const value = getFromHashMap(hobj, field) orelse {
+                return null;
+            };
+            return .{ .str = sds.asBytes(value) };
         }
         @panic("Unknown hash encoding");
     }

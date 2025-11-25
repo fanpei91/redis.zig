@@ -448,19 +448,19 @@ fn incr(cli: *Client, by: i64) void {
     const key = argv[1];
 
     const o = cli.db.lookupKeyWrite(key);
-    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
-
-    var value: i64 = 0;
-    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) return;
-
-    if ((by < 0 and value < 0 and by < std.math.minInt(i64) - value) or
-        (by > 0 and value > 0 and by > std.math.maxInt(i64) - value))
-    {
-        cli.addReplyErr("increment or decrement would overflow");
+    if (o != null and o.?.checkTypeOrReply(cli, .string)) {
         return;
     }
 
-    value += by;
+    var value: i64 = 0;
+    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) {
+        return;
+    }
+
+    value = std.math.add(i64, value, by) catch {
+        cli.addReplyErr("increment or decrement would overflow");
+        return;
+    };
 
     var new: *Object = undefined;
     if ((o != null) and
