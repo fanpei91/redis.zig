@@ -44,6 +44,34 @@ pub fn sscanCommand(cli: *Client) void {
     db.Scan.scan(cli, sobj, cursor, Set.Hash, sscanCallback);
 }
 
+/// SREM key member [member ...]
+pub fn sremCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    var deleted: i64 = 0;
+    for (argv[2..]) |member| {
+        if (Set.remove(sobj, sds.cast(member.v.ptr))) {
+            deleted += 1;
+            if (Set.size(sobj) == 0) {
+                _ = cli.db.delete(key);
+                break;
+            }
+        }
+    }
+    cli.addReplyLongLong(deleted);
+}
+
 fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
     const keys: *db.Scan.Keys = @ptrCast(@alignCast(privdata.?));
     keys.append(Object.createString(sds.asBytes(entry.key)));
@@ -125,6 +153,41 @@ pub const Set = struct {
             return;
         }
         @panic("Unsupported set conversion");
+    }
+
+    fn remove(sobj: *Object, value: sds.String) bool {
+        if (sobj.encoding == .ht) {
+            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            if (h.delete(value)) {
+                if (Server.needShrinkDictToFit(h.size(), h.slots())) {
+                    _ = h.shrinkToFit();
+                }
+                return true;
+            }
+            return false;
+        }
+        if (sobj.encoding == .intset) {
+            if (sds.asLongLong(value)) |num| {
+                const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                const ret = is.remove(num);
+                sobj.v = .{ .ptr = ret.set };
+                return ret.success;
+            }
+            return false;
+        }
+        @panic("Unknown set encoding");
+    }
+
+    fn size(sobj: *Object) u64 {
+        if (sobj.encoding == .ht) {
+            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            return h.size();
+        }
+        if (sobj.encoding == .intset) {
+            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            return is.length.get();
+        }
+        @panic("Unknown set encoding");
     }
 
     const Iterator = struct {

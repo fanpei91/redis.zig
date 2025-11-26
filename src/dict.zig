@@ -509,6 +509,8 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             return v;
         }
 
+        /// Remove an element, returning TRUE on success or FALSE if the
+        /// element was not found.
         pub fn delete(self: *HashMap, key: Key) bool {
             const deleted = self.genericDelete(key, true);
             return deleted != null;
