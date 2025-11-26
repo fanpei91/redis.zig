@@ -97,6 +97,7 @@ pub fn random(s: *IntSet) Value {
     return s.getAt(pos);
 }
 
+/// Return intset blob size in bytes.
 pub fn blobLen(s: *IntSet) usize {
     const length = s.length.get();
     const encoding = s.encoding.get();

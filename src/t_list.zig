@@ -84,7 +84,7 @@ pub fn linsertCommand(cli: *Client) void {
     }
 
     // Seek pivot from head to tail
-    var iter = List.iterator(lobj, 0, .tail);
+    var iter = List.Iterator.create(lobj, 0, .tail);
     const pivot = argv[3];
     const element = argv[4];
     var inserted = false;
@@ -116,10 +116,7 @@ pub fn lindexCommand(cli: *Client) void {
         return;
     }
 
-    var index: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &index, null)) {
-        return;
-    }
+    const index = argv[2].getLongLongOrReply(cli, null) orelse return;
 
     if (lobj.encoding != .quicklist) {
         @branchHint(.unlikely);
@@ -155,10 +152,7 @@ pub fn lsetCommand(cli: *Client) void {
         return;
     }
 
-    var index: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &index, null)) {
-        return;
-    }
+    const index = argv[2].getLongLongOrReply(cli, null) orelse return;
 
     if (lobj.encoding != .quicklist) {
         @branchHint(.unlikely);
@@ -192,15 +186,9 @@ pub fn llenCommand(cli: *Client) void {
 /// LRANGE key start end
 pub fn lrangeCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    var start: i64 = undefined;
-    var end: i64 = undefined;
 
-    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
-        return;
-    }
-    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
-        return;
-    }
+    var start = argv[2].getLongLongOrReply(cli, null) orelse return;
+    var end = argv[3].getLongLongOrReply(cli, null) orelse return;
 
     const key = argv[1];
     const lobj = cli.db.lookupKeyReadOrReply(
@@ -229,7 +217,7 @@ pub fn lrangeCommand(cli: *Client) void {
     // Return the result in form of a multi-bulk reply
     var rangelen = end - start + 1;
     cli.addReplyMultiBulkLen(@intCast(rangelen));
-    var iter = List.iterator(lobj, start, .tail);
+    var iter = List.Iterator.create(lobj, start, .tail);
     while (rangelen > 0) : (rangelen -= 1) {
         var entry: List.Entry = undefined;
         _ = iter.next(&entry);
@@ -244,15 +232,9 @@ pub fn lrangeCommand(cli: *Client) void {
 /// LTRIM key start end
 pub fn ltrimCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    var start: i64 = undefined;
-    var end: i64 = undefined;
 
-    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
-        return;
-    }
-    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
-        return;
-    }
+    var start = argv[2].getLongLongOrReply(cli, null) orelse return;
+    var end = argv[3].getLongLongOrReply(cli, null) orelse return;
 
     const key = argv[1];
     const lobj = cli.db.lookupKeyWriteOrReply(
@@ -303,11 +285,7 @@ pub fn ltrimCommand(cli: *Client) void {
 pub fn lremCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
-    var toremove: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &toremove, null)) {
-        return;
-    }
-
+    var toremove = argv[2].getLongLongOrReply(cli, null) orelse return;
     const key = argv[1];
     const lobj = cli.db.lookupKeyWriteOrReply(
         cli,
@@ -325,9 +303,9 @@ pub fn lremCommand(cli: *Client) void {
     var iter: List.Iterator = blk: {
         if (toremove < 0) {
             toremove = -toremove;
-            break :blk List.iterator(lobj, -1, .head);
+            break :blk List.Iterator.create(lobj, -1, .head);
         }
-        break :blk List.iterator(lobj, 0, .tail);
+        break :blk List.Iterator.create(lobj, 0, .tail);
     };
     var removed: i64 = 0;
     var entry: List.Entry = undefined;
@@ -362,15 +340,11 @@ pub fn brpopCommand(cli: *Client) void {
 pub fn brpoplpushCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
-    var timeout: i64 = undefined;
-    if (!blocked.getTimeoutFromObjectOrReply(
+    const timeout = blocked.getTimeoutFromObjectOrReply(
         cli,
         argv[3],
-        &timeout,
         Server.UNIT_SECONDS,
-    )) {
-        return;
-    }
+    ) orelse return;
 
     const srcobj = cli.db.lookupKeyWrite(argv[1]) orelse {
         const keys = argv[1..2];
@@ -398,15 +372,11 @@ pub fn brpoplpushCommand(cli: *Client) void {
 fn bpop(cli: *Client, where: Where) void {
     const argv = cli.argv.?;
 
-    var timeout: i64 = undefined;
-    if (!blocked.getTimeoutFromObjectOrReply(
+    const timeout = blocked.getTimeoutFromObjectOrReply(
         cli,
         argv[cli.argc - 1],
-        &timeout,
         Server.UNIT_SECONDS,
-    )) {
-        return;
-    }
+    ) orelse return;
 
     const keys = argv[1 .. cli.argc - 1];
     for (keys) |key| {
@@ -627,6 +597,26 @@ pub const List = struct {
         direction: Where,
         iter: ?QuickList.Iterator,
 
+        /// Create an iterator at the specified index.
+        pub fn create(lobj: *Object, index: i64, direction: Where) Iterator {
+            if (lobj.encoding != .quicklist) {
+                @branchHint(.unlikely);
+                @panic("Unknown list encoding");
+            }
+            const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+            return .{
+                .subject = lobj,
+                .encoding = lobj.encoding,
+                .direction = direction,
+                .iter = ql.iteratorAtIndex(
+                    // .head means start at TAIL and move *towards* head.
+                    // .tail means start at HEAD and move *towards tail.
+                    if (direction == .head) .tail else .head,
+                    index,
+                ),
+            };
+        }
+
         /// Stores pointer to current the entry in the provided entry structure
         /// and advances the position of the iterator.
         /// Returns true when the current entry is in fact an entry,
@@ -650,26 +640,6 @@ pub const List = struct {
             server.list_compress_depth,
         );
         return obj;
-    }
-
-    /// Create an iterator at the specified index.
-    pub fn iterator(lobj: *Object, index: i64, direction: Where) Iterator {
-        if (lobj.encoding != .quicklist) {
-            @branchHint(.unlikely);
-            @panic("Unknown list encoding");
-        }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
-        return .{
-            .subject = lobj,
-            .encoding = lobj.encoding,
-            .direction = direction,
-            .iter = ql.iteratorAtIndex(
-                // .head means start at TAIL and move *towards* head.
-                // .tail means start at HEAD and move *towards tail.
-                if (direction == .head) .tail else .head,
-                index,
-            ),
-        };
     }
 
     pub fn length(lobj: *Object) i64 {

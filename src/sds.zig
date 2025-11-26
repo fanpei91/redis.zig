@@ -139,7 +139,7 @@ pub fn newLenAlloc(
 }
 
 /// Create an sds string from a long long value. It is much faster than:
-/// sds.catPrintf(sds.empty(),"{}\n", .{value});
+/// sds.catPrintf(sds.empty(),"{}", .{value});
 pub fn fromLonglong(num: i64) String {
     var buf: [20]u8 = undefined;
     const digits = util.ll2string(&buf, num);
@@ -695,6 +695,25 @@ pub fn caseCmp(s1: String, s2: String) std.math.Order {
         }
     }
     return std.math.order(lhs.len, rhs.len);
+}
+
+pub fn asLongLong(s: String) ?i64 {
+    return std.fmt.parseInt(i64, asBytes(s), 10) catch {
+        return null;
+    };
+}
+
+test asLongLong {
+    var s = new("123456789");
+    defer free(s);
+
+    const llval = asLongLong(s);
+    try expect(llval != null);
+    try expectEqual(123456789, llval.?);
+
+    clear(s);
+    s = cat(s, "abc1");
+    try expect(asLongLong(s) == null);
 }
 
 /// Return the length of the sds string `s`, excluding the null terminator.

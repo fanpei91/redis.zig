@@ -100,6 +100,7 @@ pub const HASHTABLE_MIN_FILL = 10; // Minimal hash table fill 10%
 // Zipped structures related defaults
 pub const OBJ_HASH_MAX_ZIPLIST_ENTRIES = 512;
 pub const OBJ_HASH_MAX_ZIPLIST_VALUE = 64;
+pub const OBJ_SET_MAX_INTSET_ENTRIES = 512;
 
 // Hash data type
 pub const HASH_SET_TAKE_FIELD = (1 << 0);
@@ -132,7 +133,7 @@ const Commands = struct {
     }
 
     fn eql(k1: sds.String, k2: sds.String) bool {
-        return sds.caseCmp(sds.cast(k1), sds.cast(k2)) == .eq;
+        return sds.caseCmp(k1, k2) == .eq;
     }
 };
 
@@ -211,6 +212,7 @@ list_compress_depth: i32,
 // Zip structure config, see redis.conf for more information
 hash_max_ziplist_value: usize,
 hash_max_ziplist_entries: usize,
+set_max_intset_entries: usize,
 // Blocked clients
 ready_keys: *ReadyKeys.List, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
@@ -264,6 +266,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
     server.hash_max_ziplist_value = OBJ_HASH_MAX_ZIPLIST_VALUE;
     server.hash_max_ziplist_entries = OBJ_HASH_MAX_ZIPLIST_ENTRIES;
+    server.set_max_intset_entries = OBJ_SET_MAX_INTSET_ENTRIES;
     server.ready_keys = ReadyKeys.List.create(ReadyKeys.vtable);
     errdefer server.ready_keys.release();
     server.unblocked_clients = ClientList.create(&.{});

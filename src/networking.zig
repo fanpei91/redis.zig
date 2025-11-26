@@ -428,18 +428,16 @@ pub const Client = struct {
             }
 
             assert(querybuf[self.qb_pos] == '*');
-            var multibulklen: i64 = undefined;
-            const ok = util.string2ll(
+            const multibulklen = util.string2ll(
                 querybuf[self.qb_pos + 1 .. self.qb_pos + newline],
-                &multibulklen,
             );
-            if (!ok or multibulklen > 1024 * 1024) {
+            if (multibulklen == null or multibulklen.? > 1024 * 1024) {
                 self.addReplyErr(
                     "Protocol error: invalid multibulk length",
                 );
                 self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
                 return false;
-            } else if (multibulklen > 10 and
+            } else if (multibulklen.? > 10 and
                 server.requirepass != null and !self.authenticated)
             {
                 self.addReplyErr(
@@ -450,9 +448,9 @@ pub const Client = struct {
             }
 
             self.qb_pos += newline + 2;
-            if (multibulklen <= 0) return true;
+            if (multibulklen.? <= 0) return true;
 
-            self.multibulklen = @intCast(multibulklen);
+            self.multibulklen = @intCast(multibulklen.?);
 
             self.argv = allocator.alloc(
                 *Object,
@@ -494,18 +492,16 @@ pub const Client = struct {
                     return false;
                 }
 
-                var bulklen: i64 = undefined;
-                const ok = util.string2ll(
+                const bulklen = util.string2ll(
                     querybuf[self.qb_pos + 1 .. self.qb_pos + newline],
-                    &bulklen,
                 );
-                if (!ok or bulklen < 0 or bulklen > server.proto_max_bulk_len) {
+                if (bulklen == null or bulklen.? < 0 or bulklen.? > server.proto_max_bulk_len) {
                     self.addReplyErr(
                         "Protocol error: invalid bulk length",
                     );
                     self.flags |= Server.CLIENT_CLOSE_AFTER_REPLY;
                     return false;
-                } else if (bulklen > 16384 and
+                } else if (bulklen.? > 16384 and
                     server.requirepass != null and !self.authenticated)
                 {
                     self.addReplyErr(
@@ -515,7 +511,7 @@ pub const Client = struct {
                     return false;
                 }
                 self.qb_pos += newline + 2;
-                if (bulklen >= Server.PROTO_MBULK_BIG_ARG) {
+                if (bulklen.? >= Server.PROTO_MBULK_BIG_ARG) {
                     // If we are going to read a large object from network
                     // try to make it likely that it will start at c->querybuf
                     // boundary so that we can optimize object creation
@@ -525,19 +521,19 @@ pub const Client = struct {
                     // or equal to ll+2. If the data length is greater than
                     // ll+2, trimming querybuf is just a waste of time, because
                     // at this time the querybuf contains not only our bulk.
-                    if (querybuf.len - self.qb_pos <= bulklen + 2) {
+                    if (querybuf.len - self.qb_pos <= bulklen.? + 2) {
                         sds.range(self.querybuf, @intCast(self.qb_pos), -1);
                         self.qb_pos = 0;
                         // Hint the sds library about the amount of bytes this
                         // string is going to contain.
                         self.querybuf = sds.makeRoomFor(
                             self.querybuf,
-                            @intCast(bulklen + 2),
+                            @intCast(bulklen.? + 2),
                         );
                         querybuf = sds.asBytes(self.querybuf);
                     }
                 }
-                self.bulklen = bulklen;
+                self.bulklen = bulklen.?;
             }
 
             // Read bulk argument

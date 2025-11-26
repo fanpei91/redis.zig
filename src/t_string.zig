@@ -155,20 +155,15 @@ pub fn decrCommand(cli: *Client) void {
 
 /// INCRBY key increment
 pub fn incrbyCommand(cli: *Client) void {
-    var increment: i64 = undefined;
-    if (!cli.argv.?[2].getLongLongOrReply(cli, &increment, null)) {
-        return;
-    }
+    const argv = cli.argv.?;
+    const increment = argv[2].getLongLongOrReply(cli, null) orelse return;
     incr(cli, increment);
 }
 
 /// DECRBY key decrement
 pub fn decrbyCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    var decrement: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &decrement, null)) {
-        return;
-    }
+    const decrement = argv[2].getLongLongOrReply(cli, null) orelse return;
     incr(cli, -decrement);
 }
 
@@ -178,15 +173,14 @@ pub fn incrbyfloatCommand(cli: *Client) void {
     const key = argv[1];
 
     const o = cli.db.lookupKeyWrite(key);
-    if (o != null and o.?.checkTypeOrReply(cli, .string)) return;
-
-    var value: f80 = undefined;
-    var increment: f80 = undefined;
-    if (!o.?.getLongDoubleFromObjectOrReply(cli, &value, null) or
-        !argv[2].getLongDoubleFromObjectOrReply(cli, &increment, null))
-    {
-        return;
-    }
+    if (o) |v| if (v.checkTypeOrReply(cli, .string)) return;
+    var value: f80 = blk: {
+        if (o) |v| {
+            break :blk v.getLongDoubleOrReply(cli, null) orelse 0;
+        }
+        break :blk 0;
+    };
+    const increment = argv[2].getLongDoubleOrReply(cli, null) orelse return;
     value += increment;
     if (std.math.isNan(value) or std.math.isInf(value)) {
         cli.addReplyErr("increment would produce NaN or Infinity");
@@ -254,10 +248,7 @@ pub fn appendCommand(cli: *Client) void {
 pub fn setrangeCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
-    var offset: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &offset, null)) {
-        return;
-    }
+    const offset = argv[2].getLongLongOrReply(cli, null) orelse return;
     if (offset < 0) {
         cli.addReplyErr("offset is out of range");
         return;
@@ -317,15 +308,9 @@ pub fn setrangeCommand(cli: *Client) void {
 /// GETRANGE key start end
 pub fn getrangeCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    var start: i64 = undefined;
-    var end: i64 = undefined;
 
-    if (!argv[2].getLongLongOrReply(cli, &start, null)) {
-        return;
-    }
-    if (!argv[3].getLongLongOrReply(cli, &end, null)) {
-        return;
-    }
+    var start = argv[2].getLongLongOrReply(cli, null) orelse return;
+    var end = argv[3].getLongLongOrReply(cli, null) orelse return;
     const key = argv[1];
     const obj = cli.db.lookupKeyReadOrReply(
         cli,
@@ -400,9 +385,7 @@ fn set(
 ) void {
     var milliseconds: i64 = 0;
     if (expire) |exp| {
-        if (!exp.getLongLongOrReply(cli, &milliseconds, null)) {
-            return;
-        }
+        milliseconds = exp.getLongLongOrReply(cli, null) orelse return;
         if (milliseconds <= 0) {
             cli.addReplyErrFormat(
                 "invalid expire time in {s}",
@@ -448,14 +431,14 @@ fn incr(cli: *Client, by: i64) void {
     const key = argv[1];
 
     const o = cli.db.lookupKeyWrite(key);
-    if (o != null and o.?.checkTypeOrReply(cli, .string)) {
-        return;
-    }
+    if (o) |v| if (v.checkTypeOrReply(cli, .string)) return;
 
-    var value: i64 = 0;
-    if (o != null and !o.?.getLongLongOrReply(cli, &value, null)) {
-        return;
-    }
+    var value: i64 = blk: {
+        if (o) |v| {
+            break :blk v.getLongLongOrReply(cli, null) orelse return;
+        }
+        break :blk 0;
+    };
 
     value = std.math.add(i64, value, by) catch {
         cli.addReplyErr("increment or decrement would overflow");

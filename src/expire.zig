@@ -66,10 +66,7 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     const argv = cli.argv.?;
 
     // unix time in milliseconds when the key will expire.
-    var when: i64 = undefined;
-    if (!argv[2].getLongLongOrReply(cli, &when, null)) {
-        return;
-    }
+    var when = argv[2].getLongLongOrReply(cli, null) orelse return;
 
     if (unit == Server.UNIT_SECONDS) {
         when *= std.time.ms_per_s;

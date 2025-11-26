@@ -281,20 +281,15 @@ pub fn processUnblockedClients() void {
 pub fn getTimeoutFromObjectOrReply(
     cli: *Client,
     object: *Object,
-    timeout: *i64,
     unit: u32,
-) bool {
-    var llval: i64 = undefined;
-    if (!object.getLongLongFromObjectOrReply(
+) ?i64 {
+    var llval = object.getLongLongOrReply(
         cli,
-        &llval,
         "timeout is not an integer or out of range",
-    )) {
-        return false;
-    }
+    ) orelse return null;
     if (llval < 0) {
         cli.addReplyErr("timeout is negative");
-        return false;
+        return null;
     }
     if (llval > 0) {
         if (unit == Server.UNIT_SECONDS) {
@@ -302,8 +297,7 @@ pub fn getTimeoutFromObjectOrReply(
         }
         llval += std.time.milliTimestamp();
     }
-    timeout.* = llval;
-    return true;
+    return llval;
 }
 
 pub const BlockInfo = struct {

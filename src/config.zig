@@ -378,6 +378,13 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "set-max-intset-entries") and argc == 2) {
+                server.set_max_intset_entries = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }

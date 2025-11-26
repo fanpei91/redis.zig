@@ -38,10 +38,7 @@ pub fn hsetCommand(cli: *Client) void {
 pub fn hincrbyCommand(cli: *Client) void {
     const argv = cli.argv.?;
     const key = argv[1];
-    var incr: i64 = undefined;
-    if (!argv[3].getLongLongFromObjectOrReply(cli, &incr, null)) {
-        return;
-    }
+    const incr = argv[3].getLongLongOrReply(cli, null) orelse return;
     const hobj = Hash.lookupCreateOrReply(key, cli) orelse {
         return;
     };
@@ -52,10 +49,10 @@ pub fn hincrbyCommand(cli: *Client) void {
         switch (val) {
             .num => |v| value = v,
             .str => |v| {
-                if (!util.string2ll(v, &value)) {
+                value = util.string2ll(v) orelse {
                     cli.addReplyErr("hash value is not an integer");
                     return;
-                }
+                };
             },
         }
     }
@@ -78,11 +75,7 @@ pub fn hincrbyCommand(cli: *Client) void {
 pub fn hincrbyfloatCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
-    var increment: f80 = undefined;
-    if (!argv[3].getLongDoubleFromObjectOrReply(cli, &increment, null)) {
-        return;
-    }
-
+    const increment = argv[3].getLongDoubleOrReply(cli, null) orelse return;
     const key = argv[1];
     const hobj = Hash.lookupCreateOrReply(key, cli) orelse {
         return;
@@ -336,7 +329,7 @@ fn hgetX(cli: *Client, flags: i32) void {
     cli.addReplyMultiBulkLen(length);
 
     var count: u64 = 0;
-    var it = Hash.iterator(hobj);
+    var it = Hash.Iterator.create(hobj);
     while (it.next()) {
         if (flags & Server.OBJ_HASH_KEY != 0) {
             it.currentKeyToReply(cli);
@@ -410,7 +403,7 @@ pub const Hash = struct {
 
         if (enc == .ht) {
             const map = Map.create(vtable);
-            var it = iterator(hobj);
+            var it = Iterator.create(hobj);
             while (it.next()) {
                 const key = it.currentKey();
                 const val = it.currentVal();
@@ -440,6 +433,51 @@ pub const Hash = struct {
         // ZipList key/value pair
         field: ?[*]u8 = null,
         value: ?[*]u8 = null,
+
+        pub fn create(hoj: *Object) Iterator {
+            var it: Iterator = .{
+                .subject = hoj,
+                .encoding = hoj.encoding,
+            };
+            if (it.encoding == .ht) {
+                const m: *Map = @ptrCast(@alignCast(hoj.v.ptr));
+                it.di = m.iterator(false);
+            }
+            return it;
+        }
+
+        pub fn next(self: *Iterator) bool {
+            if (self.encoding == .ziplist) {
+                const zl: *ZipList = ZipList.cast(self.subject.v.ptr);
+                var field = self.field;
+                var value = self.value;
+
+                if (field == null) {
+                    assert(value == null);
+                    field = zl.index(ZipList.HEAD);
+                } else {
+                    assert(value != null);
+                    field = zl.next(value.?);
+                }
+                if (field == null) {
+                    return false;
+                }
+                value = zl.next(field.?);
+                assert(value != null);
+
+                self.field = field;
+                self.value = value;
+                return true;
+            }
+            if (self.encoding == .ht) {
+                assert(self.di != null);
+                self.de = self.di.?.next() orelse {
+                    return false;
+                };
+                return true;
+            }
+            @panic("Unknown hash encoding");
+        }
 
         pub fn currentKey(self: *const Iterator) sds.String {
             if (self.encoding == .ziplist) {
@@ -523,39 +561,6 @@ pub const Hash = struct {
             @panic("Unknown hash encoding");
         }
 
-        pub fn next(self: *Iterator) bool {
-            if (self.encoding == .ziplist) {
-                const zl: *ZipList = ZipList.cast(self.subject.v.ptr);
-                var field = self.field;
-                var value = self.value;
-
-                if (field == null) {
-                    assert(value == null);
-                    field = zl.index(ZipList.HEAD);
-                } else {
-                    assert(value != null);
-                    field = zl.next(value.?);
-                }
-                if (field == null) {
-                    return false;
-                }
-                value = zl.next(field.?);
-                assert(value != null);
-
-                self.field = field;
-                self.value = value;
-                return true;
-            }
-            if (self.encoding == .ht) {
-                assert(self.di != null);
-                self.de = self.di.?.next() orelse {
-                    return false;
-                };
-                return true;
-            }
-            @panic("Unknown hash encoding");
-        }
-
         pub fn release(self: *Iterator) void {
             if (self.encoding == .ht) {
                 self.di.?.release();
@@ -563,18 +568,6 @@ pub const Hash = struct {
             self.* = undefined;
         }
     };
-
-    pub fn iterator(hoj: *Object) Iterator {
-        var it: Iterator = .{
-            .subject = hoj,
-            .encoding = hoj.encoding,
-        };
-        if (it.encoding == .ht) {
-            const m: *Map = @ptrCast(@alignCast(hoj.v.ptr));
-            it.di = m.iterator(false);
-        }
-        return it;
-    }
 
     /// Delete an element from a hash.
     /// Return TRUE on deleted and FALSE on not found.

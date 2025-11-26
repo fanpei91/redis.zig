@@ -397,10 +397,6 @@ pub fn stringLen(self: *Object) usize {
     return util.sdigits10(self.v.int);
 }
 
-pub fn isSdsRepresentableAsLongLong(s: sds.String, llval: *i64) bool {
-    return util.string2ll(sds.asBytes(s), llval);
-}
-
 /// Get a decoded version of an encoded object (returned as a new object).
 /// If the object is already raw-encoded just increment the ref count.
 pub fn getDecoded(self: *Object) *Object {
@@ -424,8 +420,7 @@ pub fn tryEncoding(self: *Object) *Object {
     if (self.refcount > 1) return self;
 
     const slice = sds.asBytes(sds.cast(self.v.ptr));
-    var value: i64 = undefined;
-    if (slice.len <= 20 and util.string2l(slice, &value)) {
+    if (slice.len <= 20) if (util.string2ll(slice)) |value| {
         const use_shared_integers = (Server.instance.maxmemory == 0 or
             (Server.instance.maxmemory_policy & Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
         if (use_shared_integers and value > 0 and value < Server.OBJ_SHARED_INTEGERS) {
@@ -444,7 +439,7 @@ pub fn tryEncoding(self: *Object) *Object {
                 return createStringFromLonglongForValue(value);
             }
         }
-    }
+    };
     // If the string is small and is still RAW encoded,
     // try the EMBSTR encoding which is more efficient.
     // In this representation the object and the SDS string are allocated
@@ -485,38 +480,6 @@ pub fn trimStringIfNeeded(self: *Object) void {
     }
 }
 
-pub fn getLongLongOrReply(
-    self: *const Object,
-    cli: *Client,
-    target: *i64,
-    msg: ?[]const u8,
-) bool {
-    if (!self.getLongLong(target)) {
-        if (msg) |m| {
-            cli.addReplyErr(m);
-        } else {
-            cli.addReplyErr("value is not an integer or out of range");
-        }
-        return false;
-    }
-    return true;
-}
-
-pub fn getLongLong(self: *const Object, llval: *i64) bool {
-    assert(self.type == .string);
-    if (self.sdsEncoded()) {
-        return util.string2ll(
-            sds.asBytes(sds.cast(self.v.ptr)),
-            llval,
-        );
-    }
-    if (self.encoding == .int) {
-        llval.* = self.v.int;
-        return true;
-    }
-    @panic("Unknown string encoding");
-}
-
 pub fn sdsEncoded(self: *const Object) bool {
     return self.encoding == .raw or self.encoding == .embstr;
 }
@@ -535,69 +498,61 @@ pub fn commandLookupOrReply(
     return de.val;
 }
 
-pub fn getLongLongFromObjectOrReply(
+pub fn getLongLongOrReply(
     self: *const Object,
     cli: *Client,
-    target: *i64,
     msg: ?[]const u8,
-) bool {
-    if (self.getLongLongFromObject(target)) {
-        return true;
-    }
-    if (msg) |err| {
-        cli.addReplyErr(err);
-    } else {
-        cli.addReplyErr("value is not an integer or out of range");
-    }
-    return false;
+) ?i64 {
+    return self.getLongLong() orelse {
+        if (msg) |m| {
+            cli.addReplyErr(m);
+        } else {
+            cli.addReplyErr("value is not an integer or out of range");
+        }
+        return null;
+    };
 }
 
-pub fn getLongLongFromObject(self: *const Object, target: *i64) bool {
+pub fn getLongLong(self: *const Object) ?i64 {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        target.* = std.fmt.parseInt(
-            i64,
-            sds.asBytes(sds.cast(self.v.ptr)),
-            10,
-        ) catch return false;
-    } else if (self.encoding == .int) {
-        target.* = self.v.int;
-    } else {
-        @panic("Unknown string encoding");
+        return util.string2ll(sds.asBytes(sds.cast(self.v.ptr)));
     }
-    return true;
+    if (self.encoding == .int) {
+        return self.v.int;
+    }
+    @panic("Unknown string encoding");
 }
 
-pub fn getLongDoubleFromObjectOrReply(
+pub fn getLongDoubleOrReply(
     self: *const Object,
     cli: *Client,
-    target: *f80,
     msg: ?[]const u8,
-) bool {
-    if (self.getLongDoubleFromObject(target)) {
-        return true;
-    }
-    if (msg) |err| {
-        cli.addReplyErr(err);
-    } else {
-        cli.addReplyErr("value is not a valid float");
-    }
-    return false;
+) ?f80 {
+    return self.getLongDouble() orelse {
+        if (msg) |err| {
+            cli.addReplyErr(err);
+        } else {
+            cli.addReplyErr("value is not a valid float");
+        }
+        return null;
+    };
 }
 
-pub fn getLongDoubleFromObject(self: *const Object, target: *f80) bool {
+pub fn getLongDouble(self: *const Object) ?f80 {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        target.* = std.fmt.parseFloat(
+        return std.fmt.parseFloat(
             f80,
             sds.asBytes(sds.cast(self.v.ptr)),
-        ) catch return false;
-    } else if (self.encoding == .int) {
-        target.* = @floatFromInt(self.v.int);
-    } else {
-        @panic("Unknown string encoding");
+        ) catch {
+            return null;
+        };
     }
-    return true;
+    if (self.encoding == .int) {
+        return @floatFromInt(self.v.int);
+    }
+    @panic("Unknown string encoding");
 }
 
 pub fn checkTypeOrReply(self: *const Object, cli: *Client, typ: Type) bool {
@@ -646,7 +601,7 @@ fn freeSet(self: *Object) void {
             is.free();
         },
         .ht => {
-            const d: *set.Set.Dict = @ptrCast(@alignCast(self.v.ptr));
+            const d: *set.Set.Hash = @ptrCast(@alignCast(self.v.ptr));
             d.destroy();
         },
         else => @panic("Unknown set encoding type"),
@@ -689,22 +644,6 @@ test createEmbeddedString {
     defer o.decrRefCount();
     const s: sds.String = @ptrCast(o.v.ptr);
     try expectEqualStrings("hello", sds.asBytes(s));
-}
-
-test isSdsRepresentableAsLongLong {
-    var llval: i64 = undefined;
-
-    var s = sds.new("123456789");
-    defer sds.free(s);
-
-    var ok = isSdsRepresentableAsLongLong(s, &llval);
-    try expect(ok);
-    try expectEqual(123456789, llval);
-
-    sds.clear(s);
-    s = sds.cat(s, "abc1");
-    ok = isSdsRepresentableAsLongLong(s, &llval);
-    try expect(!ok);
 }
 
 const std = @import("std");

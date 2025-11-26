@@ -65,7 +65,7 @@ fn getFreeEffort(obj: *Object) u64 {
     }
 
     if (obj.type == .set and obj.encoding == .ht) {
-        const dict: *Set.Dict = @ptrCast(@alignCast(ptr));
+        const dict: *Set.Hash = @ptrCast(@alignCast(ptr));
         return dict.size();
     }
 

@@ -171,16 +171,16 @@ pub fn ld2string(buf: []u8, value: f80, humanfriendly: bool) []u8 {
 
 pub fn ll2string(buf: []u8, value: i64) []u8 {
     assert(buf.len >= 20);
-    return std.fmt.bufPrint(buf, "{d}", .{value}) catch unreachable;
+    return std.fmt.bufPrint(buf, "{d}", .{value}) catch {
+        unreachable;
+    };
 }
 
-pub fn string2l(str: []const u8, lval: *i64) bool {
-    lval.* = std.fmt.parseInt(i64, str, 0) catch return false;
-    return true;
-}
-
-pub fn string2ll(str: []const u8, llval: *i64) bool {
-    return string2l(str, llval);
+pub fn string2ll(str: []const u8) ?i64 {
+    const v = std.fmt.parseInt(i64, str, 0) catch {
+        return null;
+    };
+    return v;
 }
 
 /// Like digits10() but for signed values.

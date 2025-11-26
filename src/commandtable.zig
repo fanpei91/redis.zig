@@ -79,6 +79,7 @@ pub const table = [_]Command{
     .{ .name = "hkeys", .proc = hash.hkeysCommand, .arity = 2 },
     .{ .name = "hvals", .proc = hash.hvalsCommand, .arity = 2 },
     .{ .name = "hgetall", .proc = hash.hgetallCommand, .arity = 2 },
+    .{ .name = "sadd", .proc = set.saddCommand, .arity = -3 },
 };
 
 pub const Command = struct {
@@ -93,6 +94,7 @@ const Client = @import("networking.zig").Client;
 const string = @import("t_string.zig");
 const list = @import("t_list.zig");
 const hash = @import("t_hash.zig");
+const set = @import("t_set.zig");
 const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");

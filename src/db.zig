@@ -1,13 +1,10 @@
 /// SELECT index
 pub fn selectCommand(cli: *Client) void {
-    var id: i64 = undefined;
     const obj = cli.argv.?[1];
-    const ok = obj.getLongLongOrReply(
+    const id = obj.getLongLongOrReply(
         cli,
-        &id,
         "invalid DB index",
-    );
-    if (!ok) return;
+    ) orelse return;
 
     if (!select(cli, id)) {
         cli.addReplyErr("DB index is out of range");
@@ -68,8 +65,8 @@ pub fn moveCommand(cli: *Client) void {
     const argv = cli.argv.?;
     const src = cli.db;
 
-    var dbid: i64 = undefined;
-    if (!argv[2].getLongLong(&dbid) or !select(cli, dbid)) {
+    const dbid = argv[2].getLongLongOrReply(cli, null) orelse return;
+    if (!select(cli, dbid)) {
         cli.addReply(Server.shared.outofrangeerr);
         return;
     }
@@ -694,9 +691,7 @@ pub const Scan = struct {
             const option = sds.asBytes(sds.cast(argv[i].v.ptr));
             if (caseEql(option, "count") and j >= 2) {
                 const value = argv[i + 1];
-                if (!value.getLongLongFromObjectOrReply(cli, &count, null)) {
-                    return;
-                }
+                count = value.getLongLongOrReply(cli, null) orelse return;
                 if (count < 1) {
                     cli.addReply(Server.shared.syntaxerr);
                     return;

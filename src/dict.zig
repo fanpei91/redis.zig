@@ -265,6 +265,8 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             return .replace;
         }
 
+        /// Add an element to the target hash table. Return FALSE if key exists,
+        /// otherwise TRUE.
         pub fn add(self: *HashMap, key: Key, val: Value) bool {
             const entry = self.addRaw(key, null);
             if (entry) |ent| {
