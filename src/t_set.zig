@@ -94,6 +94,63 @@ pub fn sismemberCommand(cli: *Client) void {
     cli.addReply(Server.shared.czero);
 }
 
+/// SMOVE source destination member
+pub fn smoveCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const srckey = argv[1];
+    const srcset = cli.db.lookupKeyWriteOrReply(
+        cli,
+        srckey,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (srcset.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    const dstkey = argv[2];
+    const dstset = cli.db.lookupKeyWrite(dstkey);
+    if (dstset) |dst| if (dst.checkTypeOrReply(cli, .set)) {
+        return;
+    };
+
+    // If srcset and dstset are equal, SMOVE is a no-op.
+    const member = sds.cast(argv[3].v.ptr);
+    if (srcset == dstset) {
+        cli.addReply(
+            if (Set.isMember(srcset, member))
+                Server.shared.cone
+            else
+                Server.shared.czero,
+        );
+        return;
+    }
+
+    // If the element cannot be removed from the src set, return 0.
+    if (!Set.remove(srcset, member)) {
+        cli.addReply(Server.shared.czero);
+        return;
+    }
+
+    // Remove the src set from the database when empty.
+    if (Set.size(srcset) == 0) {
+        const ok = cli.db.delete(srckey);
+        assert(ok);
+    }
+
+    // Create the destination set when it doesn't exist.
+    const dst = dstset orelse blk: {
+        const o = Set.create(member);
+        defer o.decrRefCount();
+        cli.db.add(dstkey, o);
+        break :blk o;
+    };
+
+    _ = Set.add(dst, member);
+    cli.addReply(Server.shared.cone);
+}
+
 /// SCARD key
 pub fn scardCommand(cli: *Client) void {
     const argv = cli.argv.?;
