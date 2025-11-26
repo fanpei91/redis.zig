@@ -76,7 +76,7 @@ pub fn sremCommand(cli: *Client) void {
 pub fn sismemberCommand(cli: *Client) void {
     const argv = cli.argv.?;
     const key = argv[1];
-    const sobj = cli.db.lookupKeyWriteOrReply(
+    const sobj = cli.db.lookupKeyReadOrReply(
         cli,
         key,
         Server.shared.czero,
@@ -92,6 +92,24 @@ pub fn sismemberCommand(cli: *Client) void {
         return;
     }
     cli.addReply(Server.shared.czero);
+}
+
+/// SCARD key
+pub fn scardCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    cli.addReplyLongLong(@intCast(Set.size(sobj)));
 }
 
 fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
