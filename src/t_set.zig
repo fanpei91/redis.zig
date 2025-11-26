@@ -22,6 +22,33 @@ pub fn saddCommand(cli: *Client) void {
     cli.addReplyLongLong(added);
 }
 
+/// SSCAN key cursor [MATCH pattern] [COUNT count]
+pub fn sscanCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const cursor = db.Scan.parseCursorOrReply(argv[2], cli) orelse {
+        return;
+    };
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptyscan,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    db.Scan.scan(cli, sobj, cursor, Set.Hash, sscanCallback);
+}
+
+fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
+    const keys: *db.Scan.Keys = @ptrCast(@alignCast(privdata.?));
+    keys.append(Object.createString(sds.asBytes(entry.key)));
+}
+
 pub const Set = struct {
     /// Return a set that *can* hold "value". When the object has
     /// an integer-encodable value, an intset will be returned.
@@ -182,3 +209,4 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Server = @import("Server.zig");
 const server = &Server.instance;
+const db = @import("db.zig");

@@ -80,6 +80,7 @@ pub const table = [_]Command{
     .{ .name = "hvals", .proc = hash.hvalsCommand, .arity = 2 },
     .{ .name = "hgetall", .proc = hash.hgetallCommand, .arity = 2 },
     .{ .name = "sadd", .proc = set.saddCommand, .arity = -3 },
+    .{ .name = "sscan", .proc = set.sscanCommand, .arity = -3 },
 };
 
 pub const Command = struct {
