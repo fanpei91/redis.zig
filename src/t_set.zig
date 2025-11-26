@@ -72,6 +72,28 @@ pub fn sremCommand(cli: *Client) void {
     cli.addReplyLongLong(deleted);
 }
 
+/// SISMEMBER key member
+pub fn sismemberCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    if (Set.isMember(sobj, sds.cast(argv[2].v.ptr))) {
+        cli.addReply(Server.shared.cone);
+        return;
+    }
+    cli.addReply(Server.shared.czero);
+}
+
 fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
     const keys: *db.Scan.Keys = @ptrCast(@alignCast(privdata.?));
     keys.append(Object.createString(sds.asBytes(entry.key)));
@@ -178,7 +200,22 @@ pub const Set = struct {
         @panic("Unknown set encoding");
     }
 
-    fn size(sobj: *Object) u64 {
+    fn isMember(sobj: *const Object, value: sds.String) bool {
+        if (sobj.encoding == .ht) {
+            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            return h.find(value) != null;
+        }
+        if (sobj.encoding == .intset) {
+            if (sds.asLongLong(value)) |num| {
+                const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                return is.find(num);
+            }
+            return false;
+        }
+        @panic("Unknown set encoding");
+    }
+
+    fn size(sobj: *const Object) u64 {
         if (sobj.encoding == .ht) {
             const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
             return h.size();
