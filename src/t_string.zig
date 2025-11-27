@@ -118,7 +118,7 @@ pub fn getCommand(cli: *Client) void {
 
 /// MGET key [key ...]
 pub fn mgetCommand(cli: *Client) void {
-    cli.addReplyMultiBulkLen(cli.argc - 1);
+    cli.addReplyMultiBulkLen(@intCast(cli.argc - 1));
     const argv = cli.argv.?;
     for (argv[1..cli.argc]) |key| {
         const val = cli.db.lookupKeyRead(key) orelse {

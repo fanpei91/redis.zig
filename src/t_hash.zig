@@ -326,7 +326,7 @@ fn hgetX(cli: *Client, flags: i32) void {
     };
 
     const length = Hash.length(hobj) * multiplier;
-    cli.addReplyMultiBulkLen(length);
+    cli.addReplyMultiBulkLen(@intCast(length));
 
     var count: u64 = 0;
     var it = Hash.Iterator.create(hobj);

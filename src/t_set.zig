@@ -147,6 +147,135 @@ pub fn scardCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(Set.size(sobj)));
 }
 
+/// SINTER key [key ...]
+pub fn sinterCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sinter(cli, argv[1..cli.argc], null);
+}
+
+/// SINTERSTORE destination key [key ...]
+pub fn sinterstoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sinter(cli, argv[2..cli.argc], argv[1]);
+}
+
+fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
+    var sets = std.ArrayList(*Object).initCapacity(
+        allocator.child,
+        keys.len,
+    ) catch allocator.oom();
+    defer sets.deinit(allocator.child);
+
+    for (keys) |key| {
+        const sobj = if (dstkey != null)
+            cli.db.lookupKeyWrite(key)
+        else
+            cli.db.lookupKeyRead(key);
+        if (sobj == null) {
+            if (dstkey) |dst| {
+                _ = cli.db.delete(dst);
+                cli.addReply(Server.shared.czero);
+            } else {
+                cli.addReply(Server.shared.emptymultibulk);
+            }
+            return;
+        }
+        if (sobj.?.checkTypeOrReply(cli, .set)) {
+            return;
+        }
+        sets.append(allocator.child, sobj.?) catch allocator.oom();
+    }
+
+    // Sort sets from the smallest to largest, this will improve our
+    // algorithm's performance.
+    std.mem.sort(*Object, sets.items, {}, sortSetsByCardinality);
+
+    var replylen: ?*Client.ReplyBlock = null;
+    var dstset: ?*Object = null;
+    defer if (dstset) |obj| obj.decrRefCount();
+
+    // The first thing we should output is the total number of elements...
+    // since this is a multi-bulk write, but at this stage we don't know
+    // the intersection set size, so we use a trick, append an placeholer
+    // object to the output list and save the pointer to later modify it
+    // with the right length.
+    if (dstkey == null) {
+        replylen = cli.addDeferredMultiBulkLength();
+    } else {
+        // If we have a target key where to store the resulting set
+        // create this key with an empty set inside
+        dstset = Object.createIntSet();
+    }
+
+    var cardinality: i64 = 0;
+
+    // Iterate all the elements of the first (smallest) set, and test
+    // the element against all the other sets, if at least one set does
+    // not include the element it is discarded
+    const first = sets.items[0];
+    var it = Set.Iterator.create(first);
+    next: while (it.next()) |value| {
+        for (sets.items[1..]) |set| {
+            if (set == first) continue :next;
+            switch (value) {
+                .num => |v| {
+                    assert(first.encoding == .intset);
+                    if (set.encoding == .intset) {
+                        const is: *IntSet = @ptrCast(@alignCast(set.v.ptr));
+                        if (!is.find(v)) continue :next;
+                    } else if (set.encoding == .ht) {
+                        const member = sds.fromLonglong(v);
+                        defer sds.free(member);
+                        if (!Set.isMember(set, member)) continue :next;
+                    }
+                },
+                .s => |v| {
+                    assert(first.encoding == .ht);
+                    if (!Set.isMember(set, v)) continue :next;
+                },
+            }
+        }
+        if (dstkey == null) {
+            switch (value) {
+                .num => |v| cli.addReplyLongLong(v),
+                .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+            }
+            cardinality += 1;
+        } else {
+            switch (value) {
+                .num => |v| {
+                    const member = sds.fromLonglong(v);
+                    defer sds.free(member);
+                    const ok = Set.add(dstset.?, member);
+                    assert(ok);
+                },
+                .s => |v| {
+                    const ok = Set.add(dstset.?, v);
+                    assert(ok);
+                },
+            }
+        }
+    }
+    it.release();
+
+    if (dstkey) |dst| {
+        // Store the resulting set into the target, if the intersection
+        // is not an empty set.
+        _ = cli.db.delete(dst);
+        const len = Set.size(dstset.?);
+        if (len > 0) {
+            cli.db.add(dst, dstset.?);
+        }
+        cli.addReplyLongLong(@intCast(len));
+    } else {
+        cli.setDeferredMultiBulkLength(replylen.?, cardinality);
+    }
+}
+
+fn sortSetsByCardinality(_: void, lhs: *Object, rhs: *Object) bool {
+    return Set.size(lhs) < Set.size(rhs);
+}
+
 /// SUNION key [key ...]
 pub fn sunionCommand(cli: *Client) void {
     const argv = cli.argv.?;
@@ -188,10 +317,10 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
             cli.db.lookupKeyWrite(key)
         else
             cli.db.lookupKeyRead(key);
-        sets.append(allocator.child, sobj) catch allocator.oom();
         if (sobj) |obj| if (obj.checkTypeOrReply(cli, .set)) {
             return;
         };
+        sets.append(allocator.child, sobj) catch allocator.oom();
     }
 
     // Select what DIFF algorithm to use.

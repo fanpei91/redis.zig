@@ -100,7 +100,7 @@ pub const Client = struct {
             };
         }
     };
-    const ReplyBlock = struct {
+    pub const ReplyBlock = struct {
         size: usize,
         used: usize,
         buffer: [0]u8,
@@ -129,7 +129,7 @@ pub const Client = struct {
             allocator.free(reply.asBytes());
         }
 
-        fn asBytes(self: *ReplyBlock) []u8 {
+        fn asBytes(self: *ReplyBlock) []align(@alignOf(ReplyBlock)) u8 {
             const ptr: [*]align(@alignOf(ReplyBlock)) u8 = @ptrCast(@alignCast(self));
             return ptr[0 .. @sizeOf(ReplyBlock) + self.size];
         }
@@ -602,7 +602,7 @@ pub const Client = struct {
 
     pub fn addReplyHelp(self: *Client, help: []const []const u8) void {
         const argv = self.argv.?;
-        self.addReplyMultiBulkLen(1 + help.len + 2);
+        const reply = self.addDeferredMultiBulkLength();
 
         const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
         defer sds.free(cmd);
@@ -611,13 +611,17 @@ pub const Client = struct {
             "{s} <subcommand> arg arg ... arg. Subcommands are:",
             .{sds.asBytes(cmd)},
         );
+        var blen: i64 = 1;
 
         for (help) |h| {
             self.addReplyStatus(h);
+            blen += 1;
         }
 
         self.addReplyStatus("HELP");
         self.addReplyStatus("    Print this help.");
+        blen += 2;
+        self.setDeferredMultiBulkLength(reply, blen);
     }
 
     pub fn addReplyStatusFormat(
@@ -671,11 +675,43 @@ pub const Client = struct {
         self.addReplyBulkString(str);
     }
 
-    pub fn addReplyMultiBulkLen(self: *Client, len: usize) void {
-        if (len < Server.shared.mbulkhdr.len) {
-            self.addReply(Server.shared.mbulkhdr[len]);
+    /// Add a placeholder object to the reply list that will contain the
+    /// multi bulk length, which is not known when this function is called.
+    pub fn addDeferredMultiBulkLength(self: *Client) ?*ReplyBlock {
+        if (!prepareClientToWrite(self)) return null;
+        const rb = ReplyBlock.create(64);
+        rb.used = rb.size;
+        self.reply.append(rb);
+        self.reply_bytes += rb.size;
+        return rb;
+    }
+
+    /// Populate the length object and try gluing it to the next chunk.
+    pub fn setDeferredMultiBulkLength(
+        _: *Client,
+        reply: ?*ReplyBlock,
+        length: i64,
+    ) void {
+        const rb = reply orelse return;
+        const buf = rb.buf();
+        var mem: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
+        const str = util.ll2string(&mem, length);
+        rb.used = 0;
+        buf[rb.used] = '*';
+        rb.used += 1;
+        memcpy(buf[rb.used..], str, str.len);
+        rb.used += str.len;
+        buf[rb.used] = '\r';
+        rb.used += 1;
+        buf[rb.used] = '\n';
+        rb.used += 1;
+    }
+
+    pub fn addReplyMultiBulkLen(self: *Client, len: i64) void {
+        if (len < Server.shared.mbulkhdr.len and len >= 0) {
+            self.addReply(Server.shared.mbulkhdr[@intCast(len)]);
         } else {
-            self.addReplyLongLongWithPrefix(@intCast(len), '*');
+            self.addReplyLongLongWithPrefix(len, '*');
         }
     }
 
