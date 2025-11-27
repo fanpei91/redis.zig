@@ -85,6 +85,10 @@ pub const table = [_]Command{
     .{ .name = "sismember", .proc = set.sismemberCommand, .arity = 3 },
     .{ .name = "scard", .proc = set.scardCommand, .arity = 2 },
     .{ .name = "smove", .proc = set.smoveCommand, .arity = 4 },
+    .{ .name = "sunion", .proc = set.sunionCommand, .arity = -2 },
+    .{ .name = "sunionstore", .proc = set.sunionstoreCommand, .arity = -3 },
+    .{ .name = "sdiff", .proc = set.sdiffCommand, .arity = -2 },
+    .{ .name = "sdiffstore", .proc = set.sdiffstoreCommand, .arity = -3 },
 };
 
 pub const Command = struct {

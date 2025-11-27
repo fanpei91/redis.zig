@@ -22,28 +22,6 @@ pub fn saddCommand(cli: *Client) void {
     cli.addReplyLongLong(added);
 }
 
-/// SSCAN key cursor [MATCH pattern] [COUNT count]
-pub fn sscanCommand(cli: *Client) void {
-    const argv = cli.argv.?;
-    const cursor = db.Scan.parseCursorOrReply(argv[2], cli) orelse {
-        return;
-    };
-
-    const key = argv[1];
-    const sobj = cli.db.lookupKeyReadOrReply(
-        cli,
-        key,
-        Server.shared.emptyscan,
-    ) orelse {
-        return;
-    };
-    if (sobj.checkTypeOrReply(cli, .set)) {
-        return;
-    }
-
-    db.Scan.scan(cli, sobj, cursor, Set.Hash, sscanCallback);
-}
-
 /// SREM key member [member ...]
 pub fn sremCommand(cli: *Client) void {
     const argv = cli.argv.?;
@@ -167,6 +145,202 @@ pub fn scardCommand(cli: *Client) void {
     }
 
     cli.addReplyLongLong(@intCast(Set.size(sobj)));
+}
+
+/// SUNION key [key ...]
+pub fn sunionCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sunionDiff(cli, argv[1..cli.argc], null, Op.@"union");
+}
+
+/// SUNIONSTORE destination key [key ...]
+pub fn sunionstoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sunionDiff(cli, argv[2..cli.argc], argv[1], Op.@"union");
+}
+
+/// SDIFF key [key ...]
+pub fn sdiffCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sunionDiff(cli, argv[1..cli.argc], null, Op.diff);
+}
+
+/// SDIFFSTORE destination key [key ...]
+pub fn sdiffstoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    sunionDiff(cli, argv[2..cli.argc], argv[1], Op.diff);
+}
+
+const Op = enum {
+    @"union",
+    diff,
+    inter,
+};
+fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
+    var sets = std.ArrayList(?*Object).initCapacity(
+        allocator.child,
+        keys.len,
+    ) catch allocator.oom();
+    defer sets.deinit(allocator.child);
+
+    for (keys) |key| {
+        const sobj = if (dstkey != null)
+            cli.db.lookupKeyWrite(key)
+        else
+            cli.db.lookupKeyRead(key);
+        sets.append(allocator.child, sobj) catch allocator.oom();
+        if (sobj) |obj| if (obj.checkTypeOrReply(cli, .set)) {
+            return;
+        };
+    }
+
+    // Select what DIFF algorithm to use.
+    //
+    // Algorithm 1 is O(N*M) where N is the size of the element first set
+    // and M the total number of sets.
+    //
+    // Algorithm 2 is O(N) where N is the total number of elements in all
+    // the sets.
+    //
+    // We compute what is the best bet with the current input here.
+    var diff_algo: u32 = 1;
+    if (op == .diff) if (sets.items[0]) |first| {
+        var algo_one_work: usize = 0;
+        var algo_two_work: usize = 0;
+        for (sets.items) |set| if (set) |s| {
+            algo_one_work += Set.size(first);
+            algo_two_work += Set.size(s);
+        };
+        // Algorithm 1 has better constant times and performs less operations
+        // if there are elements in common. Give it some advantage.
+        algo_one_work = @divFloor(algo_one_work, 2);
+        diff_algo = if (algo_one_work <= algo_two_work) 1 else 2;
+
+        if (diff_algo == 1 and sets.items.len > 1) {
+            // With algorithm 1 it is better to order the sets to subtract
+            // by decreasing size, so that we are more likely to find
+            // duplicated elements ASAP.
+            std.mem.sort(
+                ?*Object,
+                sets.items[1..],
+                {},
+                sortSetsByReversedCardinality,
+            );
+        }
+    };
+
+    // We need a temp set object to store our union. If the dstkey
+    // is not NULL (that is, we are inside an SUNIONSTORE operation) then
+    // this set object will be the resulting object to set into the target key
+    const dstset = Object.createIntSet();
+    defer dstset.decrRefCount();
+
+    if (op == .@"union") {
+        // Union is trivial, just add every element of every set to the
+        // temporary set.
+        for (sets.items) |item| if (item) |set| {
+            var it = Set.Iterator.create(set);
+            defer it.release();
+            while (it.nextObject()) |value| {
+                defer sds.free(value);
+                _ = Set.add(dstset, value);
+            }
+        };
+    } else if (op == .diff and sets.items[0] != null and diff_algo == 1) {
+        // DIFF Algorithm 1:
+        //
+        // We perform the diff by iterating all the elements of the first set,
+        // and only adding it to the target set if the element does not exist
+        // into all the other sets.
+        //
+        // This way we perform at max N*M operations, where N is the size of
+        // the first set, and M the number of sets.
+        const first = sets.items[0].?;
+        var it = Set.Iterator.create(first);
+        defer it.release();
+        next: while (it.nextObject()) |value| {
+            defer sds.free(value);
+            for (sets.items[1..]) |item| if (item) |set| {
+                if (set == first) continue :next;
+                if (Set.isMember(set, value)) continue :next;
+            };
+            const ok = Set.add(dstset, value);
+            assert(ok);
+        }
+    } else if (op == .diff and sets.items[0] != null and diff_algo == 2) {
+        // DIFF Algorithm 2:
+        //
+        // Add all the elements of the first set to the auxiliary set.
+        // Then remove all the elements of all the next sets from it.
+        //
+        // This is O(N) where N is the sum of all the elements in every
+        // set.
+        for (sets.items, 0..) |item, i| if (item) |set| {
+            var it = Set.Iterator.create(set);
+            defer it.release();
+            while (it.nextObject()) |value| {
+                defer sds.free(value);
+                if (i == 0) {
+                    const ok = Set.add(dstset, value);
+                    assert(ok);
+                } else {
+                    _ = Set.remove(dstset, value);
+                }
+            }
+            // Exit if result set is empty as any additional removal
+            // of elements will have no effect.
+            if (Set.size(dstset) == 0) break;
+        };
+    }
+
+    // Output the content of the resulting set, if not in STORE mode
+    if (dstkey == null) {
+        cli.addReplyMultiBulkLen(@intCast(Set.size(dstset)));
+        var it = Set.Iterator.create(dstset);
+        defer it.release();
+        while (it.nextObject()) |value| {
+            defer sds.free(value);
+            cli.addReplyBulkString(sds.asBytes(value));
+        }
+        return;
+    }
+
+    // If we have a target key where to store the resulting set
+    // create this key with the result set inside
+    _ = cli.db.delete(dstkey.?);
+    const len = Set.size(dstset);
+    if (len > 0) {
+        cli.db.add(dstkey.?, dstset);
+    }
+    cli.addReplyLongLong(@intCast(len));
+}
+
+fn sortSetsByReversedCardinality(_: void, lhs: ?*Object, rhs: ?*Object) bool {
+    const l = if (lhs) |set| Set.size(set) else 0;
+    const r = if (rhs) |set| Set.size(set) else 0;
+    return l > r;
+}
+
+/// SSCAN key cursor [MATCH pattern] [COUNT count]
+pub fn sscanCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const cursor = db.Scan.parseCursorOrReply(argv[2], cli) orelse {
+        return;
+    };
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptyscan,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    db.Scan.scan(cli, sobj, cursor, Set.Hash, sscanCallback);
 }
 
 fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
@@ -329,6 +503,8 @@ pub const Set = struct {
             return it;
         }
 
+        /// Move to the next entry in the set. Returns the object at the current
+        /// position.
         pub fn next(self: *Iterator) ?Value {
             if (self.encoding == .ht) {
                 const entry = self.di.?.next() orelse {
@@ -345,6 +521,21 @@ pub const Set = struct {
                 return .{ .num = v };
             }
             @panic("Wrong set encoding in Iterator.next");
+        }
+
+        /// The not copy on write friendly version but easy to use version
+        /// of next() is nextObject(), returning new SDS strings.
+        /// So if you don't retain a pointer to this object you should call
+        /// sds.free() against it.
+        ///
+        /// This function is the way to go for write operations where COW is not
+        /// an issue.
+        pub fn nextObject(self: *Iterator) ?sds.String {
+            if (self.next()) |value| switch (value) {
+                .s => |v| return sds.dupe(v),
+                .num => |v| return sds.fromLonglong(v),
+            };
+            return null;
         }
 
         pub fn release(self: *Iterator) void {
@@ -385,3 +576,4 @@ const assert = std.debug.assert;
 const Server = @import("Server.zig");
 const server = &Server.instance;
 const db = @import("db.zig");
+const allocator = @import("allocator.zig");
