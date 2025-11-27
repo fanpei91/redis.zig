@@ -240,11 +240,11 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         // temporary set.
         for (sets.items) |item| if (item) |set| {
             var it = Set.Iterator.create(set);
-            defer it.release();
             while (it.nextObject()) |value| {
                 defer sds.free(value);
                 _ = Set.add(dstset, value);
             }
+            it.release();
         };
     } else if (op == .diff and sets.items[0] != null and diff_algo == 1) {
         // DIFF Algorithm 1:
@@ -257,7 +257,6 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         // the first set, and M the number of sets.
         const first = sets.items[0].?;
         var it = Set.Iterator.create(first);
-        defer it.release();
         next: while (it.nextObject()) |value| {
             defer sds.free(value);
             for (sets.items[1..]) |item| if (item) |set| {
@@ -267,6 +266,7 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
             const ok = Set.add(dstset, value);
             assert(ok);
         }
+        it.release();
     } else if (op == .diff and sets.items[0] != null and diff_algo == 2) {
         // DIFF Algorithm 2:
         //
@@ -277,7 +277,6 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         // set.
         for (sets.items, 0..) |item, i| if (item) |set| {
             var it = Set.Iterator.create(set);
-            defer it.release();
             while (it.nextObject()) |value| {
                 defer sds.free(value);
                 if (i == 0) {
@@ -287,6 +286,7 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
                     _ = Set.remove(dstset, value);
                 }
             }
+            it.release();
             // Exit if result set is empty as any additional removal
             // of elements will have no effect.
             if (Set.size(dstset) == 0) break;
@@ -297,11 +297,11 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     if (dstkey == null) {
         cli.addReplyMultiBulkLen(@intCast(Set.size(dstset)));
         var it = Set.Iterator.create(dstset);
-        defer it.release();
         while (it.nextObject()) |value| {
             defer sds.free(value);
             cli.addReplyBulkString(sds.asBytes(value));
         }
+        it.release();
         return;
     }
 
@@ -319,6 +319,182 @@ fn sortSetsByReversedCardinality(_: void, lhs: ?*Object, rhs: ?*Object) bool {
     const l = if (lhs) |set| Set.size(set) else 0;
     const r = if (rhs) |set| Set.size(set) else 0;
     return l > r;
+}
+
+/// SPOP key [count]
+pub fn spopCommand(cli: *Client) void {
+    if (cli.argc == 3) {
+        spopWithCount(cli);
+        return;
+    }
+    if (cli.argc > 3) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    var ele: *Object = undefined;
+    defer ele.decrRefCount();
+
+    switch (Set.randomElement(sobj)) {
+        .num => |v| {
+            assert(sobj.encoding == .intset);
+            ele = Object.createStringFromLonglong(v);
+            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            const ret = is.remove(v);
+            sobj.v = .{ .ptr = ret.set };
+        },
+        .s => |v| {
+            assert(sobj.encoding == .ht);
+            ele = Object.createString(sds.asBytes(v));
+            _ = Set.remove(sobj, v);
+        },
+    }
+
+    cli.addReplyBulk(ele);
+
+    if (Set.size(sobj) == 0) {
+        const ok = cli.db.delete(key);
+        assert(ok);
+    }
+}
+
+/// How many times bigger should be the set compared to the remaining size
+/// for us to use the "create new set" strategy? Read later in the
+/// implementation for more info.
+const SPOP_MOVE_STRATEGY_MUL = 5;
+
+fn spopWithCount(cli: *Client) void {
+    assert(cli.argc == 3);
+
+    const argv = cli.argv.?;
+    var count = argv[2].getLongLongOrReply(cli, null) orelse {
+        return;
+    };
+    if (count < 0) {
+        cli.addReply(Server.shared.outofrangeerr);
+        return;
+    }
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    if (count == 0) {
+        cli.addReply(Server.shared.emptymultibulk);
+        return;
+    }
+
+    const size = Set.size(sobj);
+
+    // CASE 1:
+    // The number of requested elements is greater than or equal to
+    // the number of elements inside the set: simply return the whole set.
+    if (count >= size) {
+        cli.addReplyMultiBulkLen(@intCast(size));
+        var it = Set.Iterator.create(sobj);
+        while (it.next()) |value| switch (value) {
+            .num => |v| cli.addReplyBulkLongLong(v),
+            .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+        };
+        it.release();
+        // Delete the set as it is now empty
+        const ok = cli.db.delete(key);
+        assert(ok);
+        return;
+    }
+
+    // Send the array length which is common to both the code paths.
+    cli.addReplyMultiBulkLen(@intCast(count));
+
+    // Elements left after SPOP.
+    var remaining = size - @as(u64, @intCast(count));
+
+    // If we are here, the number of requested elements is less than the
+    // number of elements inside the set. Also we are sure that count < size.
+    // Use two different strategies.
+    //
+    // CASE 2: The number of elements to return is small compared to the
+    // set size. We can just extract random elements and return them to
+    // the set.
+    if (remaining * SPOP_MOVE_STRATEGY_MUL > count) {
+        while (count > 0) : (count -= 1) {
+            switch (Set.randomElement(sobj)) {
+                .num => |v| {
+                    assert(sobj.encoding == .intset);
+                    cli.addReplyBulkLongLong(v);
+                    const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                    const ret = is.remove(v);
+                    assert(ret.success);
+                    sobj.v = .{ .ptr = ret.set };
+                },
+                .s => |v| {
+                    assert(sobj.encoding == .ht);
+                    cli.addReplyBulkString(sds.asBytes(v));
+                    const ok = Set.remove(sobj, v);
+                    assert(ok);
+                },
+            }
+        }
+    } else {
+        // CASE 3: The number of elements to return is very big, approaching
+        // the size of the set itself. After some time extracting random elements
+        // from such a set becomes computationally expensive, so we use
+        // a different strategy, we extract random elements that we don't
+        // want to return (the elements that will remain part of the set),
+        // creating a new set as we do this (that will be stored as the original
+        // set). Then we return the elements left in the original set and
+        // release it.
+        const newset: *Object = blk: {
+            if (sobj.encoding == .intset) {
+                break :blk Object.createIntSet();
+            }
+            break :blk Object.createSet();
+        };
+        defer newset.decrRefCount();
+
+        // Create a new set with just the remaining elements.
+        while (remaining > 0) : (remaining -= 1) {
+            const ele: sds.String = switch (Set.randomElement(sobj)) {
+                .num => |v| sds.fromLonglong(v),
+                .s => |v| sds.dupe(v),
+            };
+            defer sds.free(ele);
+            _ = Set.add(newset, ele);
+            _ = Set.remove(sobj, ele);
+        }
+
+        // Transfer the old set to the client.
+        var it = Set.Iterator.create(sobj);
+        while (it.next()) |value| switch (value) {
+            .num => |v| cli.addReplyBulkLongLong(v),
+            .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+        };
+        it.release();
+
+        // Assign the new set as the key value.
+        cli.db.overwrite(key, newset);
+    }
 }
 
 /// SSCAN key cursor [MATCH pattern] [COUNT count]
@@ -349,6 +525,11 @@ fn sscanCallback(privdata: ?*anyopaque, entry: *const Set.Hash.Entry) void {
 }
 
 pub const Set = struct {
+    const Value = union(enum) {
+        num: i64,
+        s: sds.String,
+    };
+
     /// Return a set that *can* hold "value". When the object has
     /// an integer-encodable value, an intset will be returned.
     /// Otherwise a regular hash table.
@@ -410,7 +591,6 @@ pub const Set = struct {
             // Presize the dict to avoid rehashing
             _ = h.expand(is.length.get());
             var it = Iterator.create(sobj);
-            defer it.release();
             while (it.next()) |value| switch (value) {
                 .num => |v| {
                     const s = sds.fromLonglong(v);
@@ -419,6 +599,7 @@ pub const Set = struct {
                 },
                 .s => unreachable,
             };
+            it.release();
             sobj.v = .{ .ptr = h };
             sobj.encoding = .ht;
             return;
@@ -464,6 +645,20 @@ pub const Set = struct {
         @panic("Unknown set encoding");
     }
 
+    /// Return random element from a non empty set.
+    fn randomElement(sobj: *Object) Value {
+        if (sobj.encoding == .ht) {
+            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            const de = h.getRandom().?;
+            return .{ .s = de.key };
+        }
+        if (sobj.encoding == .intset) {
+            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            return .{ .num = is.random() };
+        }
+        @panic("Unknown set encoding");
+    }
+
     fn size(sobj: *const Object) u64 {
         if (sobj.encoding == .ht) {
             const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
@@ -481,11 +676,6 @@ pub const Set = struct {
         encoding: Object.Encoding,
         ii: ?u32 = null, // intset iterator
         di: ?Hash.Iterator = null,
-
-        const Value = union(enum) {
-            num: i64,
-            s: sds.String,
-        };
 
         pub fn create(sobj: *Object) Iterator {
             var it: Iterator = .{

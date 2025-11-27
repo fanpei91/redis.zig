@@ -89,6 +89,7 @@ pub const table = [_]Command{
     .{ .name = "sunionstore", .proc = set.sunionstoreCommand, .arity = -3 },
     .{ .name = "sdiff", .proc = set.sdiffCommand, .arity = -2 },
     .{ .name = "sdiffstore", .proc = set.sdiffstoreCommand, .arity = -3 },
+    .{ .name = "spop", .proc = set.spopCommand, .arity = -2 },
 };
 
 pub const Command = struct {

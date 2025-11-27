@@ -337,6 +337,8 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             return entry.val;
         }
 
+        /// Return a random entry from the hash table. Useful to
+        /// implement randomized algorithms.
         pub fn getRandom(self: *HashMap) ?*Entry {
             if (self.size() == 0) return null;
             if (self.isRehashing()) self.rehashStep();
