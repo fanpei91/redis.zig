@@ -230,6 +230,7 @@ pub fn appendCommand(cli: *Client) void {
         const o = cli.db.unshareStringValue(key, obj);
         o.v = .{
             .ptr = sds.cat(
+                allocator.child,
                 sds.cast(o.v.ptr),
                 sds.asBytes(sds.cast(append.v.ptr)),
             ),
@@ -270,7 +271,7 @@ pub fn setrangeCommand(cli: *Client) void {
             return;
         }
 
-        o = Object.create(.string, sds.newLen(null, length));
+        o = Object.create(.string, sds.newLen(allocator.child, null, length));
         defer o.?.decrRefCount();
         cli.db.add(key, o.?);
     } else {
@@ -295,7 +296,7 @@ pub fn setrangeCommand(cli: *Client) void {
     }
     const obj = o.?;
     var s = sds.cast(obj.v.ptr);
-    obj.v = .{ .ptr = sds.growZero(s, length) };
+    obj.v = .{ .ptr = sds.growZero(allocator.child, s, length) };
     s = sds.cast(obj.v.ptr);
     memcpy(
         s + @as(usize, @intCast(offset)),
@@ -531,3 +532,4 @@ const sds = @import("sds.zig");
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const util = @import("util.zig");
+const allocator = @import("allocator.zig");

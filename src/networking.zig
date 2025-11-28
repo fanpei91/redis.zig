@@ -28,51 +28,16 @@ pub const Client = struct {
             const HashMap = dict.Dict(*Object, *blocked.BlockInfo);
 
             const vtable: *const HashMap.VTable = &.{
-                .hash = hash,
-                .eql = eql,
+                .hash = Object.hash,
+                .eql = Object.eql,
                 .dupeKey = dupeKey,
-                .freeKey = freeKey,
+                .freeKey = Object.decrRefCount,
                 .freeVal = freeVal,
             };
-
-            fn hash(key: *Object) dict.Hash {
-                var o = key;
-                if (o.sdsEncoded()) {
-                    return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-                }
-                if (o.encoding == .int) {
-                    var buf: [32]u8 = undefined;
-                    const s = util.ll2string(&buf, o.v.int);
-                    return dict.genHash(s);
-                }
-                o = o.getDecoded();
-                defer o.decrRefCount();
-                return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-            }
-
-            fn eql(k1: *Object, k2: *Object) bool {
-                var o1 = k1;
-                var o2 = k2;
-
-                if (o1.encoding == .int and o2.encoding == .int) {
-                    return o1.v.int == o2.v.int;
-                }
-
-                o1 = o1.getDecoded();
-                defer o1.decrRefCount();
-                o2 = o2.getDecoded();
-                defer o2.decrRefCount();
-
-                return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
-            }
 
             fn dupeKey(key: *Object) *Object {
                 key.incrRefCount();
                 return key;
-            }
-
-            fn freeKey(key: *Object) void {
-                key.decrRefCount();
             }
 
             fn freeVal(val: *blocked.BlockInfo) void {
@@ -197,7 +162,7 @@ pub const Client = struct {
         cli.client_list_node = null;
         cli.reqtype = 0;
         cli.querybuf_peak = 0;
-        cli.querybuf = sds.empty();
+        cli.querybuf = sds.empty(allocator.child);
         cli.qb_pos = 0;
         cli.argv = null;
         cli.argc = 0;
@@ -367,9 +332,9 @@ pub const Client = struct {
             linefeed += 1;
         }
         const query = querybuf[self.qb_pos .. self.qb_pos + newline];
-        const aux = sds.new(query);
-        defer sds.free(aux);
-        const args = sds.splitArgs(sds.asSentinelBytes(aux)) orelse {
+        const aux = sds.new(allocator.child, query);
+        defer sds.free(allocator.child, aux);
+        const args = sds.splitArgs(allocator.child, sds.asSentinelBytes(aux)) orelse {
             self.addReplyErr(
                 "Protocol error: unbalanced quotes in request",
             );
@@ -527,6 +492,7 @@ pub const Client = struct {
                         // Hint the sds library about the amount of bytes this
                         // string is going to contain.
                         self.querybuf = sds.makeRoomFor(
+                            allocator.child,
                             self.querybuf,
                             @intCast(bulklen.? + 2),
                         );
@@ -557,6 +523,7 @@ pub const Client = struct {
                 // Assume that if we saw a fat argument we'll see another one
                 // likely...
                 self.querybuf = sds.newLen(
+                    allocator.child,
                     null,
                     @intCast(self.bulklen + 2),
                 );
@@ -604,8 +571,8 @@ pub const Client = struct {
         const argv = self.argv.?;
         const reply = self.addDeferredMultiBulkLength();
 
-        const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
-        defer sds.free(cmd);
+        const cmd = sds.new(allocator.child, sds.asBytes(sds.cast(argv[0].v.ptr)));
+        defer sds.free(allocator.child, cmd);
         sds.toUpper(cmd);
         self.addReplyStatusFormat(
             "{s} <subcommand> arg arg ... arg. Subcommands are:",
@@ -629,9 +596,9 @@ pub const Client = struct {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        var status = sds.empty();
-        defer sds.free(status);
-        status = sds.catPrintf(status, fmt, args);
+        var status = sds.empty(allocator.child);
+        defer sds.free(allocator.child, status);
+        status = sds.catPrintf(allocator.child, status, fmt, args);
         self.addReplyStatus(sds.asBytes(status));
     }
 
@@ -646,8 +613,8 @@ pub const Client = struct {
     /// subcommands in response to an unknown subcommand or argument error.
     pub fn addReplySubcommandSyntaxError(self: *Client) void {
         const argv = self.argv.?;
-        const cmd = sds.new(sds.asBytes(sds.cast(argv[0].v.ptr)));
-        defer sds.free(cmd);
+        const cmd = sds.new(allocator.child, sds.asBytes(sds.cast(argv[0].v.ptr)));
+        defer sds.free(allocator.child, cmd);
         sds.toUpper(cmd);
         // zig fmt: off
         self.addReplyErrFormat(
@@ -679,7 +646,8 @@ pub const Client = struct {
     /// multi bulk length, which is not known when this function is called.
     pub fn addDeferredMultiBulkLength(self: *Client) ?*ReplyBlock {
         if (!prepareClientToWrite(self)) return null;
-        const rb = ReplyBlock.create(64);
+        // Enought for the longgest *-9223372036854775808\r\n
+        const rb = ReplyBlock.create(24);
         rb.used = rb.size;
         self.reply.append(rb);
         self.reply_bytes += rb.size;
@@ -693,6 +661,8 @@ pub const Client = struct {
         length: i64,
     ) void {
         const rb = reply orelse return;
+        assert(rb.size == 24);
+
         const buf = rb.buf();
         var mem: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
         const str = util.ll2string(&mem, length);
@@ -783,9 +753,9 @@ pub const Client = struct {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        var s = sds.empty();
-        defer sds.free(s);
-        s = sds.catPrintf(s, fmt, args);
+        var s = sds.empty(allocator.child);
+        defer sds.free(allocator.child, s);
+        s = sds.catPrintf(allocator.child, s, fmt, args);
         const bytes = sds.asBytes(s);
         // Make sure there are no newlines in the string, otherwise invalid protocol
         // is emitted.
@@ -985,7 +955,7 @@ pub const Client = struct {
     }
 
     pub fn free(self: *Client) void {
-        sds.free(self.querybuf);
+        sds.free(allocator.child, self.querybuf);
         self.querybuf = undefined;
 
         if (self.flags & Server.CLIENT_BLOCKED != 0) {
@@ -1166,7 +1136,7 @@ fn readQueryFromClient(
     if (cli.querybuf_peak < qblen) {
         cli.querybuf_peak = qblen;
     }
-    cli.querybuf = sds.makeRoomFor(cli.querybuf, readlen);
+    cli.querybuf = sds.makeRoomFor(allocator.child, cli.querybuf, readlen);
     const nread = posix.read(
         fd,
         cli.querybuf[qblen .. qblen + readlen],
@@ -1188,9 +1158,9 @@ fn readQueryFromClient(
     cli.lastinteraction = server.unixtime.get();
     if (sds.getLen(cli.querybuf) > server.client_max_querybuf_len) {
         defer cli.free();
-        var bytes = sds.empty();
-        defer sds.free(bytes);
-        bytes = sds.catRepr(bytes, cli.querybuf[0..64]);
+        var bytes = sds.empty(allocator.child);
+        defer sds.free(allocator.child, bytes);
+        bytes = sds.catRepr(allocator.child, bytes, cli.querybuf[0..64]);
         log.warn(
             "Closing client that reached max query buffer length (qbuf initial bytes: {s})",
             .{sds.asBytes(bytes)},

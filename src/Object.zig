@@ -18,9 +18,9 @@ const help: []const []const u8 = &.{
 pub fn objectCommand(cli: *Client) void {
     const argv = cli.argv.?;
     const subcmd = sds.asBytes(sds.cast(argv[1].v.ptr));
-    const eql = std.ascii.eqlIgnoreCase;
+    const eqlCase = std.ascii.eqlIgnoreCase;
 
-    if (cli.argc == 2 and eql(subcmd, "help")) {
+    if (cli.argc == 2 and eqlCase(subcmd, "help")) {
         cli.addReplyHelp(help);
         return;
     }
@@ -34,15 +34,15 @@ pub fn objectCommand(cli: *Client) void {
             return;
         };
 
-        if (eql(subcmd, "refcount")) {
+        if (eqlCase(subcmd, "refcount")) {
             cli.addReplyLongLong(obj.refcount);
             return;
         }
-        if (eql(subcmd, "encoding")) {
+        if (eqlCase(subcmd, "encoding")) {
             cli.addReplyBulkString(obj.encoding.toString());
             return;
         }
-        if (eql(subcmd, "idletime")) {
+        if (eqlCase(subcmd, "idletime")) {
             if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
                 // zig fmt: off
                 cli.addReplyErr(
@@ -58,7 +58,7 @@ pub fn objectCommand(cli: *Client) void {
             cli.addReplyLongLong(@intCast(idle));
             return;
         }
-        if (eql(subcmd, "freq")) {
+        if (eqlCase(subcmd, "freq")) {
             if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU == 0) {
                 // zig fmt: off
                 cli.addReplyErr("An LFU maxmemory policy is not selected, " ++
@@ -178,7 +178,7 @@ pub fn createString(str: []const u8) *Object {
 }
 
 pub fn createRawString(str: []const u8) *Object {
-    const s = sds.new(str);
+    const s = sds.new(allocator.child, str);
     return create(.string, s);
 }
 
@@ -254,7 +254,7 @@ fn createStringFromLonglongWithOptions(value: i64, from_shared: bool) *Object {
         return o;
     }
 
-    const s = sds.fromLonglong(value);
+    const s = sds.fromLonglong(allocator.child, value);
     return create(.string, s);
 }
 
@@ -430,7 +430,7 @@ pub fn tryEncoding(self: *Object) *Object {
             return obj;
         } else {
             if (self.encoding == .raw) {
-                sds.free(sds.cast(self.v.ptr));
+                sds.free(allocator.child, sds.cast(self.v.ptr));
                 self.encoding = .int;
                 self.v = .{ .int = value };
                 return self;
@@ -475,7 +475,7 @@ pub fn trimStringIfNeeded(self: *Object) void {
     }
     var s = sds.cast(self.v.ptr);
     if (sds.getAvail(s) > sds.getLen(s) / 10) {
-        s = sds.removeAvailSpace(s);
+        s = sds.removeAvailSpace(allocator.child, s);
         self.v = .{ .ptr = s };
     }
 }
@@ -555,6 +555,37 @@ pub fn getLongDouble(self: *const Object) ?f80 {
     @panic("Unknown string encoding");
 }
 
+pub fn hash(self: *Object) dict.Hash {
+    var o = self;
+    if (o.sdsEncoded()) {
+        return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+    }
+    if (o.encoding == .int) {
+        var buf: [32]u8 = undefined;
+        const s = util.ll2string(&buf, o.v.int);
+        return dict.genHash(s);
+    }
+    o = o.getDecoded();
+    defer o.decrRefCount();
+    return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+}
+
+pub fn eql(self: *Object, other: *Object) bool {
+    var o1 = self;
+    var o2 = other;
+
+    if (o1.encoding == .int and o2.encoding == .int) {
+        return o1.v.int == o2.v.int;
+    }
+
+    o1 = o1.getDecoded();
+    defer o1.decrRefCount();
+    o2 = o2.getDecoded();
+    defer o2.decrRefCount();
+
+    return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+}
+
 pub fn checkTypeOrReply(self: *const Object, cli: *Client, typ: Type) bool {
     if (self.type != typ) {
         cli.addReply(Server.shared.wrongtypeerr);
@@ -581,7 +612,7 @@ pub fn free(self: *Object) void {
 fn freeString(self: *Object) void {
     if (self.encoding == .raw) {
         const s: sds.String = @ptrCast(self.v.ptr);
-        sds.free(s);
+        sds.free(allocator.child, s);
     }
 }
 
@@ -625,7 +656,7 @@ fn freeZset(self: *Object) void {
 fn freeHash(self: *Object) void {
     switch (self.encoding) {
         .ht => {
-            const ht: *hash.Hash.Map = @ptrCast(@alignCast(self.v.ptr));
+            const ht: *hashtype.Hash.Map = @ptrCast(@alignCast(self.v.ptr));
             ht.destroy();
         },
         .ziplist => {
@@ -670,4 +701,4 @@ const evict = @import("evict.zig");
 const server = &Server.instance;
 const dict = @import("dict.zig");
 const set = @import("t_set.zig");
-const hash = @import("t_hash.zig");
+const hashtype = @import("t_hash.zig");

@@ -65,7 +65,7 @@ pub fn hincrbyCommand(cli: *Client) void {
     _ = Hash.set(
         hobj,
         field,
-        sds.fromLonglong(value),
+        sds.fromLonglong(allocator.child, value),
         Server.HASH_SET_TAKE_VALUE,
     );
     cli.addReplyLongLong(value);
@@ -103,7 +103,12 @@ pub fn hincrbyfloatCommand(cli: *Client) void {
 
     var buf: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
     const s = util.ld2string(&buf, value, true);
-    _ = Hash.set(hobj, field, sds.new(s), Server.HASH_SET_TAKE_VALUE);
+    _ = Hash.set(
+        hobj,
+        field,
+        sds.new(allocator.child, s),
+        Server.HASH_SET_TAKE_VALUE,
+    );
     cli.addReplyBulkString(s);
 }
 
@@ -377,7 +382,7 @@ pub const Hash = struct {
             }
             sum += len;
         }
-        const zl: *ZipList = ZipList.cast(hobj.v.ptr);
+        const zl = ZipList.cast(hobj.v.ptr);
         if (!ZipList.safeToAdd(zl, sum)) {
             convert(hobj, .ht);
         }
@@ -412,7 +417,7 @@ pub const Hash = struct {
             }
             it.release();
 
-            const zl: *ZipList = ZipList.cast(hobj.v.ptr);
+            const zl = ZipList.cast(hobj.v.ptr);
             zl.free();
 
             hobj.v = .{ .ptr = map };
@@ -440,7 +445,7 @@ pub const Hash = struct {
                 .encoding = hoj.encoding,
             };
             if (it.encoding == .ht) {
-                const m: *Map = @ptrCast(@alignCast(hoj.v.ptr));
+                const m = Map.cast(hoj.v.ptr);
                 it.di = m.iterator(false);
             }
             return it;
@@ -448,7 +453,7 @@ pub const Hash = struct {
 
         pub fn next(self: *Iterator) bool {
             if (self.encoding == .ziplist) {
-                const zl: *ZipList = ZipList.cast(self.subject.v.ptr);
+                const zl = ZipList.cast(self.subject.v.ptr);
                 var field = self.field;
                 var value = self.value;
 
@@ -482,8 +487,8 @@ pub const Hash = struct {
         pub fn currentKey(self: *const Iterator) sds.String {
             if (self.encoding == .ziplist) {
                 return switch (self.currentKeyFromZipList()) {
-                    .num => |v| sds.fromLonglong(v),
-                    .str => |v| sds.new(v),
+                    .num => |v| sds.fromLonglong(allocator.child, v),
+                    .str => |v| sds.new(allocator.child, v),
                 };
             }
             if (self.encoding == .ht) {
@@ -507,8 +512,8 @@ pub const Hash = struct {
         pub fn currentVal(self: *const Iterator) sds.String {
             if (self.encoding == .ziplist) {
                 return switch (self.currentValFromZipList()) {
-                    .num => |v| sds.fromLonglong(v),
-                    .str => |v| sds.new(v),
+                    .num => |v| sds.fromLonglong(allocator.child, v),
+                    .str => |v| sds.new(allocator.child, v),
                 };
             }
             if (self.encoding == .ht) {
@@ -586,7 +591,7 @@ pub const Hash = struct {
             return false;
         }
         if (hobj.encoding == .ht) {
-            const m: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            const m = Map.cast(hobj.v.ptr);
             // Always check if the dictionary needs a shrink after a delete.
             defer if (Server.needShrinkDictToFit(m.size(), m.slots())) {
                 _ = m.shrinkToFit();
@@ -615,7 +620,7 @@ pub const Hash = struct {
             return @divExact(zl.len.get(), 2);
         }
         if (hobj.encoding == .ht) {
-            const m: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            const m = Map.cast(hobj.v.ptr);
             return m.size();
         }
         @panic("Unknown hash encoding");
@@ -634,7 +639,7 @@ pub const Hash = struct {
             };
         }
         if (hobj.encoding == .ht) {
-            const m: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            const m = Map.cast(hobj.v.ptr);
             const value = m.find(field) orelse {
                 return 0;
             };
@@ -693,10 +698,10 @@ pub const Hash = struct {
         // Free SDS strings we did not referenced elsewhere if the flags
         // want this function to be responsible.
         defer if (field) |f| if (flags & Server.HASH_SET_TAKE_FIELD != 0) {
-            sds.free(f);
+            sds.free(allocator.child, f);
         };
         defer if (value) |v| if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
-            sds.free(v);
+            sds.free(allocator.child, v);
         };
 
         if (hobj.encoding == .ziplist) {
@@ -705,7 +710,7 @@ pub const Hash = struct {
                 convert(hobj, .ht);
             };
 
-            var zl: *ZipList = ZipList.cast(hobj.v.ptr);
+            var zl = ZipList.cast(hobj.v.ptr);
             if (zl.index(ZipList.HEAD)) |head| {
                 if (ZipList.find(head, sds.asBytes(key), 1)) |f| {
                     var v = zl.next(f).?;
@@ -725,14 +730,14 @@ pub const Hash = struct {
         }
 
         if (hobj.encoding == .ht) {
-            const map: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+            const map = Map.cast(hobj.v.ptr);
             if (map.find(key)) |de| {
-                sds.free(de.val);
+                sds.free(allocator.child, de.val);
                 if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                     de.val = val;
                     value = null;
                 } else {
-                    de.val = sds.dupe(val);
+                    de.val = sds.dupe(allocator.child, val);
                 }
                 return .update;
             }
@@ -743,13 +748,13 @@ pub const Hash = struct {
                 f = key;
                 field = null;
             } else {
-                f = sds.dupe(key);
+                f = sds.dupe(allocator.child, key);
             }
             if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                 v = val;
                 value = null;
             } else {
-                v = sds.dupe(key);
+                v = sds.dupe(allocator.child, key);
             }
             const ok = map.add(f, v);
             assert(ok);
@@ -807,7 +812,7 @@ pub const Hash = struct {
     fn getFromHashMap(hobj: *Object, field: sds.String) ?sds.String {
         assert(hobj.encoding == .ht);
 
-        const map: *Map = @ptrCast(@alignCast(hobj.v.ptr));
+        const map = Map.cast(hobj.v.ptr);
         const de = map.find(field) orelse {
             return null;
         };
@@ -819,8 +824,8 @@ pub const Hash = struct {
     const vtable: *const Map.VTable = &.{
         .hash = hash,
         .eql = eql,
-        .freeKey = sds.free,
-        .freeVal = sds.free,
+        .freeKey = freeKey,
+        .freeVal = freeVal,
     };
 
     fn hash(key: sds.String) dict.Hash {
@@ -829,6 +834,14 @@ pub const Hash = struct {
 
     fn eql(k1: sds.String, k2: sds.String) bool {
         return sds.cmp(k1, k2) == .eq;
+    }
+
+    fn freeKey(key: sds.String) void {
+        sds.free(allocator.child, key);
+    }
+
+    fn freeVal(val: sds.String) void {
+        sds.free(allocator.child, val);
     }
 };
 
@@ -843,3 +856,4 @@ const ZipList = @import("ZipList.zig");
 const dict = @import("dict.zig");
 const util = @import("util.zig");
 const db = @import("db.zig");
+const allocator = @import("allocator.zig");

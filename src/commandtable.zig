@@ -92,6 +92,7 @@ pub const table = [_]Command{
     .{ .name = "sinter", .proc = set.sinterCommand, .arity = -2 },
     .{ .name = "sinterstore", .proc = set.sinterstoreCommand, .arity = -3 },
     .{ .name = "spop", .proc = set.spopCommand, .arity = -2 },
+    .{ .name = "srandmember", .proc = set.srandmemberCommand, .arity = -2 },
 };
 
 pub const Command = struct {

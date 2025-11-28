@@ -125,7 +125,7 @@ const Commands = struct {
     const vtable: *const HashMap.VTable = &.{
         .hash = hash,
         .eql = eql,
-        .freeKey = sds.free,
+        .freeKey = freeKey,
     };
 
     fn hash(key: sds.String) dict.Hash {
@@ -134,6 +134,10 @@ const Commands = struct {
 
     fn eql(k1: sds.String, k2: sds.String) bool {
         return sds.caseCmp(k1, k2) == .eq;
+    }
+
+    fn freeKey(key: sds.String) void {
+        sds.free(allocator.child, key);
     }
 };
 
@@ -726,6 +730,7 @@ fn clientsCronResizeQueryBuffer(cli: *Client) bool {
         // at least a few kbytes.
         if (sds.getAvail(cli.querybuf) > 4 * 1024) {
             cli.querybuf = sds.removeAvailSpace(
+                allocator.child,
                 cli.querybuf,
             );
         }
@@ -766,8 +771,8 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     cli.cmd = self.lookupCommand(cmd);
     cli.lastcmd = cli.cmd;
     if (cli.cmd == null) {
-        var args = sds.empty();
-        defer sds.free(args);
+        var args = sds.empty(allocator.child);
+        defer sds.free(allocator.child, args);
         var i: usize = 1;
         while (i < cli.argc and sds.getLen(args) < 128) : (i += 1) {
             const arg: sds.String = @ptrCast(cli.argv.?[i].v.ptr);
@@ -776,6 +781,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
                 remaining = sds.getLen(arg);
             }
             args = sds.catPrintf(
+                allocator.child,
                 args,
                 "`{s}`, ",
                 .{arg[0..remaining]},
@@ -827,7 +833,7 @@ fn populateCommandTable(self: *Server) void {
     for (0..commandtable.table.len) |i| {
         const command = &commandtable.table[i];
         const added = self.commands.add(
-            sds.new(command.name),
+            sds.new(allocator.child, command.name),
             @constCast(command),
         );
         assert(added);
@@ -943,6 +949,20 @@ pub fn timeCommand(cli: *Client) void {
     cli.addReplyMultiBulkLen(2);
     cli.addReplyBulkLongLong(sec);
     cli.addReplyBulkLongLong(usec);
+}
+
+test {
+    _ = @import("sds.zig");
+    _ = @import("IntSet.zig");
+    _ = @import("Object.zig");
+    _ = @import("QuickList.zig");
+    _ = @import("ZipList.zig");
+    _ = @import("ae.zig");
+    _ = @import("config.zig");
+    _ = @import("dict.zig");
+    _ = @import("list.zig");
+    _ = @import("t_zset.zig");
+    _ = @import("util.zig");
 }
 
 const server = &instance;

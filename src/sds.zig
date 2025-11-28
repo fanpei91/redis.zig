@@ -83,37 +83,21 @@ pub fn cast(ptr: *anyopaque) String {
 }
 
 /// Create a new sds string starting from a string.
-pub fn new(init: []const u8) String {
-    return newLen(init.ptr, init.len);
+pub fn new(allocator: Allocator, init: []const u8) String {
+    return newLen(allocator, init.ptr, init.len);
 }
 
 /// Create an empty (zero length) sds string. Even in this case the string
 /// always has an implicit null term.
-pub fn empty() String {
-    return new("");
+pub fn empty(allocator: Allocator) String {
+    return new(allocator, "");
 }
 
 /// Create a new sds string with the content specified by the 'init' pointer
 /// and 'initlen'.
 ///
 /// If init is null, the buffer is left uninitialized;
-pub fn newLen(init: ?[*]const u8, initlen: usize) String {
-    return newLenAlloc(
-        allocator.child,
-        init,
-        initlen,
-    );
-}
-
-/// Create a new sds string with the content specified by the 'init' pointer
-/// and 'initlen' and Allocator.
-///
-/// If init is null, the buffer is left uninitialized;
-pub fn newLenAlloc(
-    alloc: Allocator,
-    init: ?[*]const u8,
-    initlen: usize,
-) String {
+pub fn newLen(allocator: Allocator, init: ?[*]const u8, initlen: usize) String {
     // Empty strings are usually created in order to append. Use type 8
     // since type 5 is not good at this.
     var typ = reqType(initlen);
@@ -123,7 +107,7 @@ pub fn newLenAlloc(
 
     const hdr_len = hdrSize(typ);
     const mem_size = hdr_len + initlen + 1;
-    const mem = alloc.alloc(u8, mem_size) catch allocator.oom();
+    const mem = allocator.alloc(u8, mem_size) catch oom();
     if (init == null) @memset(mem, 0);
 
     const s: String = mem.ptr + hdr_len;
@@ -140,21 +124,15 @@ pub fn newLenAlloc(
 
 /// Create an sds string from a long long value. It is much faster than:
 /// sds.catPrintf(sds.empty(),"{}", .{value});
-pub fn fromLonglong(num: i64) String {
+pub fn fromLonglong(allocator: Allocator, num: i64) String {
     var buf: [20]u8 = undefined;
     const digits = util.ll2string(&buf, num);
-    return new(digits);
+    return new(allocator, digits);
 }
 
 /// Duplicate an sds string.
-pub fn dupe(s: String) String {
-    return new(s[0..getLen(s)]);
-}
-
-/// Duplicate an sds string with the specified Allocator to alloc memory.
-pub fn dupeAlloc(alloc: Allocator, s: String) String {
-    const bytes = asBytes(s);
-    return newLenAlloc(alloc, bytes.ptr, bytes.len);
+pub fn dupe(allocator: Allocator, s: String) String {
+    return new(allocator, s[0..getLen(s)]);
 }
 
 /// Modify an sds string in-place to make it empty (zero length).
@@ -172,7 +150,7 @@ pub fn clear(s: String) void {
 ///
 /// Note: this does not change the *length* of the sds string as returned
 /// by getLen(), but only the free buffer space we have.
-pub fn makeRoomFor(s: String, add_len: usize) String {
+pub fn makeRoomFor(allocator: Allocator, s: String, add_len: usize) String {
     if (getAvail(s) >= add_len) return s;
 
     const old_len = getLen(s);
@@ -198,7 +176,7 @@ pub fn makeRoomFor(s: String, add_len: usize) String {
         const new_mem = allocator.realloc(
             old_mem,
             new_mem_size,
-        );
+        ) catch oom();
         const ns: [*]u8 = new_mem.ptr + new_hdr_len;
         setAlloc(ns, new_alloc);
         return ns;
@@ -206,7 +184,7 @@ pub fn makeRoomFor(s: String, add_len: usize) String {
 
     // Since the header size changes, need to move the string forward,
     // and can't use realloc.
-    const new_mem = allocator.alloc(u8, new_mem_size);
+    const new_mem = allocator.alloc(u8, new_mem_size) catch oom();
     const ns: String = new_mem.ptr + new_hdr_len;
     setType(ns, new_type);
     setLength(ns, old_len);
@@ -218,9 +196,9 @@ pub fn makeRoomFor(s: String, add_len: usize) String {
 }
 
 /// Append the specified string to the sds string 's'.
-pub fn cat(s: String, src: []const u8) String {
+pub fn cat(allocator: Allocator, s: String, src: []const u8) String {
     const cur_len = getLen(s);
-    const ns = makeRoomFor(s, src.len);
+    const ns = makeRoomFor(allocator, s, src.len);
     memcpy(ns + cur_len, src, src.len);
     setLength(ns, cur_len + src.len);
     ns[cur_len + src.len] = 0;
@@ -239,54 +217,59 @@ pub fn cat(s: String, src: []const u8) String {
 /// format. When this is the need, just use sds.empty() as the target string:
 ///
 /// s = sds.catPrintf(sds.empty(), "... your format ...", args)
-pub fn catPrintf(s: String, comptime fmt: []const u8, args: anytype) String {
+pub fn catPrintf(
+    allocator: Allocator,
+    s: String,
+    comptime fmt: []const u8,
+    args: anytype,
+) String {
     var stack_impl = std.heap.stackFallback(
         fmt.len * 10,
-        allocator.child,
+        allocator,
     );
     const stack_allocator = stack_impl.get();
     const buf = std.fmt.allocPrint(
         stack_allocator,
         fmt,
         args,
-    ) catch allocator.oom();
+    ) catch oom();
     defer stack_allocator.free(buf);
-    return cat(s, buf);
+    return cat(allocator, s, buf);
 }
 
 /// Append to the sds string "s" an escaped string representation where
 /// all the non-printable characters are turned into escapes in the form
 /// "\n\r\a...." or "\x<hex-number>".
-pub fn catRepr(s: String, raw: []const u8) String {
-    var ns = cat(s, "\"");
+pub fn catRepr(allocator: Allocator, s: String, raw: []const u8) String {
+    var ns = cat(allocator, s, "\"");
 
     for (raw) |b| {
         switch (b) {
-            '\\', '"' => ns = catPrintf(ns, "\\{c}", .{b}),
-            '\n' => ns = cat(ns, "\\n"),
-            '\r' => ns = cat(ns, "\\r"),
-            '\t' => ns = cat(ns, "\\t"),
+            '\\', '"' => ns = catPrintf(allocator, ns, "\\{c}", .{b}),
+            '\n' => ns = cat(allocator, ns, "\\n"),
+            '\r' => ns = cat(allocator, ns, "\\r"),
+            '\t' => ns = cat(allocator, ns, "\\t"),
             // in c: '\a'
-            0x07 => ns = cat(ns, "\\a"),
+            0x07 => ns = cat(allocator, ns, "\\a"),
             // in c: '\b'
-            0x08 => ns = cat(ns, "\\b"),
+            0x08 => ns = cat(allocator, ns, "\\b"),
             else => {
                 if (std.ascii.isPrint(b)) {
-                    ns = catPrintf(ns, "{c}", .{b});
+                    ns = catPrintf(allocator, ns, "{c}", .{b});
                 } else {
-                    ns = catPrintf(ns, "\\x{x:0>2}", .{b});
+                    ns = catPrintf(allocator, ns, "\\x{x:0>2}", .{b});
                 }
             },
         }
     }
-    ns = cat(ns, "\"");
+    ns = cat(allocator, ns, "\"");
     return ns;
 }
 
 /// Reallocate the sds string so that it has no free space at the end. The
 /// contained string remains not altered, but next concatenation operations
 /// will require a reallocation.
-pub fn removeAvailSpace(s: String) String {
+pub fn removeAvailSpace(allocator: Allocator, s: String) String {
     if (getAvail(s) == 0) return s;
 
     const len = getLen(s);
@@ -303,14 +286,14 @@ pub fn removeAvailSpace(s: String) String {
         const new_mem = allocator.realloc(
             old_mem,
             old_hdr_len + len + 1,
-        );
+        ) catch oom();
         const ns = new_mem.ptr + old_hdr_len;
         setAlloc(ns, len);
         return ns;
     }
 
     const new_hdr_len = hdrSize(new_type);
-    const new_mem = allocator.alloc(u8, new_hdr_len + len + 1);
+    const new_mem = allocator.alloc(u8, new_hdr_len + len + 1) catch oom();
     const ns = new_mem.ptr + new_hdr_len;
     setType(ns, new_type);
     setLength(ns, len);
@@ -359,12 +342,12 @@ pub fn incrLen(s: String, incr: isize) void {
 ///
 /// if the specified length is smaller than the current length, no operation
 /// is performed.
-pub fn growZero(s: String, new_len: usize) String {
+pub fn growZero(allocator: Allocator, s: String, new_len: usize) String {
     const curr_len = getLen(s);
     if (new_len <= curr_len) return s;
 
     const add_len = new_len - curr_len;
-    const ns = makeRoomFor(s, add_len);
+    const ns = makeRoomFor(allocator, s, add_len);
     memset(ns + curr_len, 0, add_len + 1); // also set trailing \0 byte
     setLength(ns, new_len);
     return ns;
@@ -372,10 +355,10 @@ pub fn growZero(s: String, new_len: usize) String {
 
 /// Destructively modify the sds string 's' to hold the specified binary
 /// safe string pointed by 'src'.
-pub fn copy(s: String, src: []const u8) String {
+pub fn copy(allocator: Allocator, s: String, src: []const u8) String {
     var ns = s;
     if (getAlloc(s) < src.len) {
-        ns = makeRoomFor(s, src.len - getLen(s));
+        ns = makeRoomFor(allocator, s, src.len - getLen(s));
     }
     setLength(ns, src.len);
     setBuf(ns, src);
@@ -409,11 +392,15 @@ pub fn mapChars(s: String, from: []const u8, to: []const u8) String {
 
 /// Join an array of strings using the specified separator.
 /// Returns the result as an sds string.
-pub fn join(slices: []const []const u8, sep: []const u8) String {
-    var joined = empty();
+pub fn join(
+    allocator: Allocator,
+    slices: []const []const u8,
+    sep: []const u8,
+) String {
+    var joined = empty(allocator);
     for (slices, 0..) |slice, i| {
-        joined = cat(joined, slice);
-        if (i != slices.len - 1) joined = cat(joined, sep);
+        joined = cat(allocator, joined, slice);
+        if (i != slices.len - 1) joined = cat(allocator, joined, sep);
     }
     return joined;
 }
@@ -425,18 +412,14 @@ pub fn join(slices: []const []const u8, sep: []const u8) String {
 /// a multi-character separator. For example
 /// sds.split("foo_-_bar", "_-_"); will return two
 /// elements "foo" and "bar".
-pub fn split(str: []const u8, sep: []const u8) []String {
+pub fn split(allocator: Allocator, str: []const u8, sep: []const u8) []String {
     var tokens = std.ArrayList(String).empty;
 
     var it = std.mem.splitSequence(u8, str, sep);
     while (it.next()) |token| {
-        tokens.append(allocator.child, new(token)) catch {
-            allocator.oom();
-        };
+        tokens.append(allocator, new(allocator, token)) catch oom();
     }
-    return tokens.toOwnedSlice(allocator.child) catch {
-        allocator.oom();
-    };
+    return tokens.toOwnedSlice(allocator) catch oom();
 }
 
 /// Split a line into arguments, where every argument can be in the
@@ -456,7 +439,7 @@ pub fn split(str: []const u8, sep: []const u8) []String {
 /// input string is empty, or NULL if the input contains unbalanced
 /// quotes or closed quotes followed by non space characters
 /// as in: "foo"bar or "foo'
-pub fn splitArgs(line: [:0]const u8) ?[]String {
+pub fn splitArgs(allocator: Allocator, line: [:0]const u8) ?[]String {
     var vector = std.ArrayList(String).empty;
     var current: ?String = null;
 
@@ -470,7 +453,7 @@ pub fn splitArgs(line: [:0]const u8) ?[]String {
                 var insq = false; // set to true if we are in 'single quotes'
                 var done = false;
 
-                if (current == null) current = empty();
+                if (current == null) current = empty(allocator);
                 while (!done) {
                     if (inq) {
                         if (p[0] == '\\' and
@@ -481,7 +464,7 @@ pub fn splitArgs(line: [:0]const u8) ?[]String {
                             const byte = parseInt(u8, p[2..4], 16) catch {
                                 unreachable;
                             };
-                            current = cat(current.?, &.{byte});
+                            current = cat(allocator, current.?, &.{byte});
                             p += 3;
                         } else if (p[0] == '\\' and p[1] != 0) {
                             p += 1;
@@ -494,7 +477,7 @@ pub fn splitArgs(line: [:0]const u8) ?[]String {
                                 'a' => c = 0x07,
                                 else => c = p[0],
                             }
-                            current = cat(current.?, &.{c});
+                            current = cat(allocator, current.?, &.{c});
                         } else if (p[0] == '"') {
                             // closing quote must be followed by a space or
                             // nothing at all.
@@ -506,12 +489,12 @@ pub fn splitArgs(line: [:0]const u8) ?[]String {
                             // unterminated quotes
                             break :biz;
                         } else {
-                            current = cat(current.?, &.{p[0]});
+                            current = cat(allocator, current.?, &.{p[0]});
                         }
                     } else if (insq) {
                         if (p[0] == '\\' and p[1] == '\'') {
                             p += 1;
-                            current = cat(current.?, "'");
+                            current = cat(allocator, current.?, "'");
                         } else if (p[0] == '\'') {
                             // closing quote must be followed by a space or
                             // nothing at all.
@@ -523,42 +506,42 @@ pub fn splitArgs(line: [:0]const u8) ?[]String {
                             // unterminated quotes
                             break :biz;
                         } else {
-                            current = cat(current.?, &.{p[0]});
+                            current = cat(allocator, current.?, &.{p[0]});
                         }
                     } else {
                         switch (p[0]) {
                             ' ', '\n', '\r', '\t', 0 => done = true,
                             '"' => inq = true,
                             '\'' => insq = true,
-                            else => current = cat(current.?, &.{p[0]}),
+                            else => current = cat(allocator, current.?, &.{p[0]}),
                         }
                     }
                     if (p[0] != 0) p += 1;
                 }
-                vector.append(allocator.child, current.?) catch allocator.oom();
+                vector.append(allocator, current.?) catch oom();
                 current = null;
                 continue;
             }
-            return vector.toOwnedSlice(allocator.child) catch allocator.oom();
+            return vector.toOwnedSlice(allocator) catch oom();
         }
     }
 
     // Equivalent to `goto err` in C.
     if (current) |cur| {
-        free(cur);
+        free(allocator, cur);
     }
     for (vector.items) |item| {
-        free(item);
+        free(allocator, item);
     }
-    vector.deinit(allocator.child);
+    vector.deinit(allocator);
 
     return null;
 }
 
 /// Free the result returned by sds.split().
-pub fn freeSplitRes(tokens: []String) void {
+pub fn freeSplitRes(allocator: Allocator, tokens: []String) void {
     for (tokens) |token| {
-        free(token);
+        free(allocator, token);
     }
     allocator.free(tokens);
 }
@@ -703,19 +686,6 @@ pub fn asLongLong(s: String) ?i64 {
     };
 }
 
-test asLongLong {
-    var s = new("123456789");
-    defer free(s);
-
-    const llval = asLongLong(s);
-    try expect(llval != null);
-    try expectEqual(123456789, llval.?);
-
-    clear(s);
-    s = cat(s, "abc1");
-    try expect(asLongLong(s) == null);
-}
-
 /// Return the length of the sds string `s`, excluding the null terminator.
 pub fn getLen(s: String) usize {
     const flags = (s - 1)[0];
@@ -777,13 +747,8 @@ pub fn setLength(s: String, new_len: usize) void {
 }
 
 /// Free an sds string.
-pub fn free(s: String) void {
-    freeAlloc(allocator.child, s);
-}
-
-/// Free an sds string with the specified Allocator.
-pub fn freeAlloc(alloc: Allocator, s: String) void {
-    alloc.free(allocMemSlice(s));
+pub fn free(allocator: Allocator, s: String) void {
+    allocator.free(allocMemSlice(s));
 }
 
 inline fn getType(s: String) u8 {
@@ -839,51 +804,56 @@ fn hdrSize(typ: u8) usize {
 }
 
 test new {
+    const allocator = std.testing.allocator;
     const init = "hello";
-    const s = new(init);
-    defer free(s);
+    const s = new(allocator, init);
+    defer free(allocator, s);
 
     try expectEqual(init.len, getLen(s));
     try expectEqualStrings(init, asBytes(s));
 
     const long_str = "hello" ** 100;
-    const long_s = new(long_str);
-    defer free(long_s);
+    const long_s = new(allocator, long_str);
+    defer free(allocator, long_s);
     try expectEqual(long_str.len, getLen(long_s));
     try expectEqualStrings(long_str, asBytes(long_s));
 }
 
 test empty {
-    const s = empty();
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = empty(allocator);
+    defer free(allocator, s);
 
     try expectEqual(0, getLen(s));
     try expectStringEndsWith("", asBytes(s));
 }
 
 test fromLonglong {
-    const min = fromLonglong(std.math.minInt(i64));
-    defer free(min);
+    const allocator = std.testing.allocator;
+    const min = fromLonglong(allocator, std.math.minInt(i64));
+    defer free(allocator, min);
     try expectEqualStrings("-9223372036854775808", asBytes(min));
 
-    const max = fromLonglong(std.math.maxInt(i64));
-    defer free(max);
+    const max = fromLonglong(allocator, std.math.maxInt(i64));
+    defer free(allocator, max);
     try expectEqualStrings("9223372036854775807", asBytes(max));
 }
 
 test dupe {
-    const s = new("hello");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    defer free(allocator, s);
 
-    const dup = dupe(s);
-    defer free(dup);
+    const dup = dupe(allocator, s);
+    defer free(allocator, dup);
 
     try expectEqualStrings(asBytes(s), asBytes(dup));
 }
 
 test clear {
-    const s = new("hello");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    defer free(allocator, s);
 
     clear(s);
     try expectEqual(0, getLen(s));
@@ -891,77 +861,86 @@ test clear {
 }
 
 test makeRoomFor {
-    const s = new("hello");
-    const s1 = makeRoomFor(s, 500);
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    const s1 = makeRoomFor(allocator, s, 500);
+    defer free(allocator, s1);
 
     try expectEqual(5, getLen(s1));
     try expectEqualStrings("hello", asBytes(s1));
 }
 
 test removeAvailSpace {
-    var s = new("hello");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    var s = new(allocator, "hello");
+    defer free(allocator, s);
 
-    s = makeRoomFor(s, 5);
-    s = removeAvailSpace(s);
+    s = makeRoomFor(allocator, s, 5);
+    s = removeAvailSpace(allocator, s);
     try expect(getLen(s) == 5);
     try expect(getAlloc(s) == 5);
     try expect(getAvail(s) == 0);
 }
 
 test cat {
-    const s = new("hello");
-    const ns = cat(s, "world");
-    defer free(ns);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    const ns = cat(allocator, s, "world");
+    defer free(allocator, ns);
 
     try expectEqual(10, getLen(ns));
     try expectEqualStrings("helloworld", asBytes(ns));
 }
 
 test catPrintf {
-    const s = new("hello");
-    const ns = catPrintf(s, " {s} {d}", .{ "world", 2025 });
-    defer free(ns);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    const ns = catPrintf(allocator, s, " {s} {d}", .{ "world", 2025 });
+    defer free(allocator, ns);
     try expectEqualStrings("hello world 2025", asBytes(ns));
 }
 
 test catRepr {
-    const s = empty();
+    const allocator = std.testing.allocator;
+    const s = empty(allocator);
     const input = "\x07\n\x00foo\r\""; // in c: \a\n\0foo\r\"
-    const ns = catRepr(s, input);
-    defer free(ns);
+    const ns = catRepr(allocator, s, input);
+    defer free(allocator, ns);
 
     try expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", asBytes(ns));
 }
 
 test getAllocMemSize {
-    const s = new("hello");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    defer free(allocator, s);
     try expectEqual(@sizeOf(MemSizedHdr5) + 5 + 1, getAllocMemSize(s));
 }
 
 test "incrLen-" {
-    const s = new("hello");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
+    defer free(allocator, s);
     incrLen(s, -3);
 
     try expectEqual(2, getLen(s));
 }
 
 test "incrLen+" {
-    var s = new("hello");
-    defer free(s);
-    s = makeRoomFor(s, 3);
+    const allocator = std.testing.allocator;
+    var s = new(allocator, "hello");
+    defer free(allocator, s);
+    s = makeRoomFor(allocator, s, 3);
     incrLen(s, 3);
     try expectEqual(8, getLen(s));
 }
 
 test growZero {
-    const s = new("hello");
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
 
-    const ns = growZero(s, 10);
-    defer free(ns);
+    const ns = growZero(allocator, s, 10);
+    defer free(allocator, ns);
 
     try expectEqual(10, getLen(ns));
     try expectEqualSlices(
@@ -972,45 +951,49 @@ test growZero {
 }
 
 test copy {
-    const s = new("hello");
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "hello");
 
-    var cp = copy(s, "world");
+    var cp = copy(allocator, s, "world");
     try expectEqual(getLen(cp), 5);
     try expectEqualStrings("world", asBytes(cp));
     try expectEqual(s, cp);
 
-    cp = copy(cp, "world!");
-    defer free(cp);
+    cp = copy(allocator, cp, "world!");
+    defer free(allocator, cp);
     try expectEqual(getLen(cp), 6);
     try expectEqualStrings("world!", asBytes(cp));
     try expect(s != cp);
 }
 
 test mapChars {
-    var s = new("hello\r\nzig");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    var s = new(allocator, "hello\r\nzig");
+    defer free(allocator, s);
 
     s = mapChars(s, "eoi\r\n", "EOI  ");
     try expectEqualSlices(u8, "hEllO  zIg", asBytes(s));
 }
 
 test join {
+    const allocator = std.testing.allocator;
     var tokens = std.ArrayList([]const u8).empty;
-    defer tokens.deinit(allocator.child);
+    defer tokens.deinit(allocator);
 
-    tokens.append(allocator.child, "hello") catch allocator.oom();
-    tokens.append(allocator.child, "world") catch allocator.oom();
-    tokens.append(allocator.child, "zig") catch allocator.oom();
+    tokens.append(allocator, "hello") catch oom();
+    tokens.append(allocator, "world") catch oom();
+    tokens.append(allocator, "zig") catch oom();
 
-    const joined = join(tokens.items, "|");
-    defer free(joined);
+    const joined = join(allocator, tokens.items, "|");
+    defer free(allocator, joined);
 
     try expectEqualSlices(u8, "hello|world|zig", asBytes(joined));
 }
 
 test split {
-    const tokens = split("hello|world|zig", "|");
-    defer freeSplitRes(tokens);
+    const allocator = std.testing.allocator;
+    const tokens = split(allocator, "hello|world|zig", "|");
+    defer freeSplitRes(allocator, tokens);
 
     try expect(tokens.len == 3);
     try expectEqualStrings("hello", asBytes(tokens[0]));
@@ -1019,66 +1002,68 @@ test split {
 }
 
 test splitArgs {
-    var tokens = (splitArgs(" \n SET  \r key \t 1")).?;
+    const allocator = std.testing.allocator;
+    var tokens = (splitArgs(allocator, " \n SET  \r key \t 1")).?;
     try expect(tokens.len == 3);
     try expectEqualStrings("SET", asBytes(tokens[0]));
     try expectEqualStrings("key", asBytes(tokens[1]));
     try expectEqualStrings("1", asBytes(tokens[2]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("\"1\"")).?;
+    tokens = (splitArgs(allocator, "\"1\"")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("1", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("\"line1\\nline2\"")).?;
+    tokens = (splitArgs(allocator, "\"line1\\nline2\"")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("line1\nline2", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("\"ABC\\x41XYZ\"")).?;
+    tokens = (splitArgs(allocator, "\"ABC\\x41XYZ\"")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("ABCAXYZ", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("'abc'")).?;
+    tokens = (splitArgs(allocator, "'abc'")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("abc", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("'I\\'m here'")).?;
+    tokens = (splitArgs(allocator, "'I\\'m here'")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("I'm here", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("\"a\\tb\"")).?;
+    tokens = (splitArgs(allocator, "\"a\\tb\"")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("a\tb", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("\"abc\\xGZ\"")).?;
+    tokens = (splitArgs(allocator, "\"abc\\xGZ\"")).?;
     try expect(tokens.len == 1);
     try expectEqualStrings("abcxGZ", asBytes(tokens[0]));
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("")).?;
+    tokens = (splitArgs(allocator, "")).?;
     try expect(tokens.len == 0);
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    tokens = (splitArgs("   ")).?;
+    tokens = (splitArgs(allocator, "   ")).?;
     try expect(tokens.len == 0);
-    freeSplitRes(tokens);
+    freeSplitRes(allocator, tokens);
 
-    var null_tokens: ?[]String = splitArgs("  SET key 'abc");
+    var null_tokens: ?[]String = splitArgs(allocator, "  SET key 'abc");
     try expect(null_tokens == null);
 
-    null_tokens = splitArgs("  SET key \"foo\"bar");
+    null_tokens = splitArgs(allocator, "  SET key \"foo\"bar");
     try expect(null_tokens == null);
 }
 
 test trim {
-    const s = new("AA...AA.a.aa.aHelloWorld     :::");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "AA...AA.a.aa.aHelloWorld     :::");
+    defer free(allocator, s);
 
     trim(s, "Aa. :");
     try expectEqualStrings("HelloWorld", asBytes(s));
@@ -1088,139 +1073,167 @@ test trim {
 }
 
 test "range(1, 1)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 1, 1);
 
     try expectEqualStrings("h", asBytes(s));
 }
 
 test "range(1, -1)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 1, -1);
 
     try expectEqualStrings("hello!", asBytes(s));
 }
 
 test "range(-2, -1)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, -2, -1);
 
     try expectEqualStrings("o!", asBytes(s));
 }
 
 test "range(2, 1)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 2, 1);
 
     try expectEqualStrings("", asBytes(s));
 }
 
 test "range(1, 100)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 1, 100);
 
     try expectEqualStrings("hello!", asBytes(s));
 }
 
 test "range(100, 100)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 100, 100);
 
     try expectEqualStrings("", asBytes(s));
 }
 
 test "range(0, 1)" {
-    const s = new("!hello!");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "!hello!");
+    defer free(allocator, s);
     range(s, 0, 1);
 
     try expectEqualStrings("!h", asBytes(s));
 }
 
 test toLower {
-    const s = new("Hello1");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "Hello1");
+    defer free(allocator, s);
     toLower(s);
 
     try expectEqualStrings("hello1", asBytes(s));
 }
 
 test toUpper {
-    const s = new("Hello1");
-    defer free(s);
+    const allocator = std.testing.allocator;
+    const s = new(allocator, "Hello1");
+    defer free(allocator, s);
     toUpper(s);
 
     try expectEqualStrings("HELLO1", asBytes(s));
 }
 
 test "cmp.gt" {
-    const s1 = new("foo");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "foo");
+    defer free(allocator, s1);
 
-    const s2 = new("foa");
-    defer free(s2);
+    const s2 = new(allocator, "foa");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.gt, cmp(s1, s2));
 }
 
 test "cmp.eq" {
-    const s1 = new("bar");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "bar");
+    defer free(allocator, s1);
 
-    const s2 = new("bar");
-    defer free(s2);
+    const s2 = new(allocator, "bar");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.eq, cmp(s1, s2));
 }
 
 test "cmp.lt" {
-    const s1 = new("aar");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "aar");
+    defer free(allocator, s1);
 
-    const s2 = new("bar");
-    defer free(s2);
+    const s2 = new(allocator, "bar");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.lt, cmp(s1, s2));
 }
 
 test "cmpCase.gt" {
-    const s1 = new("Foo");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "Foo");
+    defer free(allocator, s1);
 
-    const s2 = new("foA");
-    defer free(s2);
+    const s2 = new(allocator, "foA");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.gt, caseCmp(s1, s2));
 }
 
 test "cmpCase.eq" {
-    const s1 = new("bar");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "bar");
+    defer free(allocator, s1);
 
-    const s2 = new("Bar");
-    defer free(s2);
+    const s2 = new(allocator, "Bar");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.eq, caseCmp(s1, s2));
 }
 
 test "cmpCase.lt" {
-    const s1 = new("aar");
-    defer free(s1);
+    const allocator = std.testing.allocator;
+    const s1 = new(allocator, "aar");
+    defer free(allocator, s1);
 
-    const s2 = new("Bar");
-    defer free(s2);
+    const s2 = new(allocator, "Bar");
+    defer free(allocator, s2);
 
     try expectEqual(std.math.Order.lt, caseCmp(s1, s2));
 }
 
+test asLongLong {
+    const allocator = std.testing.allocator;
+    var s = new(allocator, "123456789");
+    defer free(allocator, s);
+
+    const llval = asLongLong(s);
+    try expect(llval != null);
+    try expectEqual(123456789, llval.?);
+
+    clear(s);
+    s = cat(allocator, s, "abc1");
+    try expect(asLongLong(s) == null);
+}
+
 const std = @import("std");
-const allocator = @import("allocator.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -1238,3 +1251,4 @@ const memset = memzig.memset;
 const memmove = memzig.memmove;
 const util = @import("util.zig");
 const Allocator = std.mem.Allocator;
+const oom = @import("allocator.zig").oom;

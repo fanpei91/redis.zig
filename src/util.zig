@@ -220,7 +220,7 @@ pub fn digits10(v: u64) u32 {
 pub fn getAbsolutePath(filename: []const u8) !sds.String {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const realpath = try std.fs.realpath(filename, &buffer);
-    return sds.new(realpath);
+    return sds.new(allocator.child, realpath);
 }
 
 /// Return true if strings are the same, false if they are not.

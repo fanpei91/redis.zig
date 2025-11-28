@@ -505,6 +505,10 @@ len: u64, // number of Nodes
 fill: i16, // fill factor for individual nodes
 compress: u16, // depth of end nodes not to compress;0=off
 
+pub inline fn cast(ptr: *anyopaque) *QuickList {
+    return @ptrCast(@alignCast(ptr));
+}
+
 pub fn create() *QuickList {
     const list = allocator.create(QuickList);
     list.* = .{

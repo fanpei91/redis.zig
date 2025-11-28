@@ -10,11 +10,11 @@ pub fn main() void {
     const argv = try std.process.argsAlloc(allocator.child);
     defer std.process.argsFree(allocator.child, argv);
 
-    var options: sds.String = sds.empty();
-    defer sds.free(options);
+    var options: sds.String = sds.empty(allocator.child);
+    defer sds.free(allocator.child, options);
 
     var configfile: ?sds.String = null;
-    defer if (configfile) |f| sds.free(f);
+    defer if (configfile) |f| sds.free(allocator.child, f);
 
     if (argv.len >= 2) {
         // First option to parse in argv[]
@@ -38,14 +38,14 @@ pub fn main() void {
             if (argv[j][0] == '-' and argv[j][1] == '-') {
                 // option name
                 if (sds.getLen(options) != 0) {
-                    options = sds.cat(options, "\n");
+                    options = sds.cat(allocator.child, options, "\n");
                 }
-                options = sds.cat(options, argv[j][2..]);
-                options = sds.cat(options, " ");
+                options = sds.cat(allocator.child, options, argv[j][2..]);
+                options = sds.cat(allocator.child, options, " ");
             } else {
                 // option argument
-                options = sds.catRepr(options, argv[j]);
-                options = sds.cat(options, " ");
+                options = sds.catRepr(allocator.child, options, argv[j]);
+                options = sds.cat(allocator.child, options, " ");
             }
         }
     }

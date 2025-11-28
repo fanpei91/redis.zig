@@ -111,7 +111,7 @@ pub const SkipList = struct {
 
         pub fn free(self: *Node) void {
             if (self.ele) |ele| {
-                sds.free(ele);
+                sds.free(allocator.child, ele);
             }
             const parent: *SizedNode = @fieldParentPtr("node", self);
             const mem: [*]align(@alignOf(SizedNode)) u8 = @ptrCast(@alignCast(parent));
@@ -365,7 +365,7 @@ test SkipList {
     var sl = SkipList.create();
     defer sl.free();
 
-    var ele = sds.new("score 1");
+    var ele = sds.new(allocator.child, "score 1");
     try expect(sl.getRank(1, ele) == 0);
     const score1 = sl.insert(
         1,
@@ -375,7 +375,7 @@ test SkipList {
     try expect(sl.length == 1);
     try expect(sl.getRank(1, ele) == 1);
 
-    ele = sds.new("score 2");
+    ele = sds.new(allocator.child, "score 2");
     var score2 = sl.insert(
         2,
         ele,
@@ -403,12 +403,12 @@ test SkipList {
 
     score2 = sl.insert(
         2,
-        sds.new("score 2.0"),
+        sds.new(allocator.child, "score 2.0"),
     );
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
 
-    ele = sds.new("deleted");
+    ele = sds.new(allocator.child, "deleted");
     _ = sl.insert(3, ele);
     try expect(sl.length == 4);
     const deleted = sl.delete(3, ele);

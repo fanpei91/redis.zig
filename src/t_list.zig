@@ -123,7 +123,7 @@ pub fn lindexCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+    const ql = QuickList.cast(lobj.v.ptr);
     var entry: QuickList.Entry = undefined;
     if (ql.index(index, &entry)) {
         var obj: *Object = undefined;
@@ -159,7 +159,7 @@ pub fn lsetCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+    const ql = QuickList.cast(lobj.v.ptr);
     const element = sds.asBytes(sds.cast(argv[3].v.ptr));
     if (ql.replaceAtIndex(index, element)) {
         cli.addReply(Server.shared.ok);
@@ -272,7 +272,7 @@ pub fn ltrimCommand(cli: *Client) void {
         @panic("Unknown list encoding");
     }
 
-    const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+    const ql = QuickList.cast(lobj.v.ptr);
     _ = ql.delRange(0, ltrim);
     _ = ql.delRange(-rtrim, rtrim);
     if (List.length(lobj) == 0) {
@@ -603,7 +603,7 @@ pub const List = struct {
                 @branchHint(.unlikely);
                 @panic("Unknown list encoding");
             }
-            const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+            const ql = QuickList.cast(lobj.v.ptr);
             return .{
                 .subject = lobj,
                 .encoding = lobj.encoding,
@@ -634,7 +634,7 @@ pub const List = struct {
 
     pub fn create() *Object {
         const obj = Object.createQuickList();
-        const ql: *QuickList = @ptrCast(@alignCast(obj.v.ptr));
+        const ql = QuickList.cast(obj.v.ptr);
         ql.setOptions(
             server.list_max_ziplist_size,
             server.list_compress_depth,
@@ -647,7 +647,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        const ql = QuickList.cast(lobj.v.ptr);
         return @intCast(ql.count);
     }
 
@@ -656,7 +656,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        const ql = QuickList.cast(lobj.v.ptr);
         const value = element.getDecoded();
         defer value.decrRefCount();
         ql.push(
@@ -670,7 +670,7 @@ pub const List = struct {
             @branchHint(.unlikely);
             @panic("Unknown list encoding");
         }
-        const ql: *QuickList = @ptrCast(@alignCast(lobj.v.ptr));
+        const ql = QuickList.cast(lobj.v.ptr);
         const obj = ql.pop(
             if (where == .head) .head else .tail,
             popSaver,

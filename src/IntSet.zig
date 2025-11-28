@@ -16,6 +16,10 @@ pub fn new() *IntSet {
     return s;
 }
 
+pub inline fn cast(ptr: *anyopaque) *IntSet {
+    return @ptrCast(@alignCast(ptr));
+}
+
 pub fn add(s: *IntSet, value: Value) struct { set: *IntSet, success: bool } {
     const enc = valueEncoding(value);
     if (enc > s.encoding.get()) {

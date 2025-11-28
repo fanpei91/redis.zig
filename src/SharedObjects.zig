@@ -34,111 +34,115 @@ pub fn create() SharedObjects {
     var self: SharedObjects = undefined;
     self.crlf = Object.create(
         .string,
-        sds.new("\r\n"),
+        sds.new(allocator.child, "\r\n"),
     );
     self.ok = Object.create(
         .string,
-        sds.new("+OK\r\n"),
+        sds.new(allocator.child, "+OK\r\n"),
     );
     self.err = Object.create(
         .string,
-        sds.new("-ERR\r\n"),
+        sds.new(allocator.child, "-ERR\r\n"),
     );
     self.emptybulk = Object.create(
         .string,
-        sds.new("$0\r\n\r\n"),
+        sds.new(allocator.child, "$0\r\n\r\n"),
     );
     self.czero = Object.create(
         .string,
-        sds.new(":0\r\n"),
+        sds.new(allocator.child, ":0\r\n"),
     );
     self.cone = Object.create(
         .string,
-        sds.new(":1\r\n"),
+        sds.new(allocator.child, ":1\r\n"),
     );
     self.cnegone = Object.create(
         .string,
-        sds.new(":-1\r\n"),
+        sds.new(allocator.child, ":-1\r\n"),
     );
     self.nullbulk = Object.create(
         .string,
-        sds.new("$-1\r\n"),
+        sds.new(allocator.child, "$-1\r\n"),
     );
     self.nullmultibulk = Object.create(
         .string,
-        sds.new("*-1\r\n"),
+        sds.new(allocator.child, "*-1\r\n"),
     );
     self.emptymultibulk = Object.create(
         .string,
-        sds.new("*0\r\n"),
+        sds.new(allocator.child, "*0\r\n"),
     );
     self.pong = Object.create(
         .string,
-        sds.new("+PONG\r\n"),
+        sds.new(allocator.child, "+PONG\r\n"),
     );
     self.queued = Object.create(
         .string,
-        sds.new("+QUEUED\r\n"),
+        sds.new(allocator.child, "+QUEUED\r\n"),
     );
     self.emptyscan = Object.create(
         .string,
-        sds.new("*2\r\n$1\r\n0\r\n*0\r\n"),
+        sds.new(allocator.child, "*2\r\n$1\r\n0\r\n*0\r\n"),
     );
     self.wrongtypeerr = Object.create(
         .string,
         sds.new(
+            allocator.child,
             "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
         ),
     );
     self.nokeyerr = Object.create(
         .string,
-        sds.new("-ERR no such key\r\n"),
+        sds.new(allocator.child, "-ERR no such key\r\n"),
     );
     self.syntaxerr = Object.create(
         .string,
-        sds.new("-ERR syntax error\r\n"),
+        sds.new(allocator.child, "-ERR syntax error\r\n"),
     );
     self.sameobjecterr = Object.create(
         .string,
         sds.new(
+            allocator.child,
             "-ERR source and destination objects are the same\r\n",
         ),
     );
     self.outofrangeerr = Object.create(
         .string,
-        sds.new("-ERR index out of range\r\n"),
+        sds.new(allocator.child, "-ERR index out of range\r\n"),
     );
     self.noautherr = Object.create(
         .string,
-        sds.new("-NOAUTH Authentication required.\r\n"),
+        sds.new(allocator.child, "-NOAUTH Authentication required.\r\n"),
     );
     self.oomerr = Object.create(
         .string,
         sds.new(
+            allocator.child,
             "-OOM command not allowed when used memory > 'maxmemory'.\r\n",
         ),
     );
     self.execaborterr = Object.create(
         .string,
         sds.new(
+            allocator.child,
             "-EXECABORT Transaction discarded because of previous errors.\r\n",
         ),
     );
     self.busykeyerr = Object.create(
         .string,
-        sds.new("-BUSYKEY Target key name already exists.\r\n"),
+        sds.new(allocator.child, "-BUSYKEY Target key name already exists.\r\n"),
     );
     self.space = Object.create(
         .string,
-        sds.new(" "),
+        sds.new(allocator.child, " "),
     );
     self.colon = Object.create(
         .string,
-        sds.new(":"),
+        sds.new(allocator.child, ":"),
     );
     self.plus = Object.create(
         .string,
-        sds.new("+"),
+        sds.new(allocator.child, "+"),
     );
     for (0..Server.OBJ_SHARED_INTEGERS) |i| {
         var obj = Object.createInt(@intCast(i));
@@ -147,15 +151,25 @@ pub fn create() SharedObjects {
     for (0..Server.OBJ_SHARED_BULKHDR_LEN) |i| {
         self.bulkhdr[i] = Object.create(
             .string,
-            sds.catPrintf(sds.empty(), "${}\r\n", .{i}),
+            sds.catPrintf(
+                allocator.child,
+                sds.empty(allocator.child),
+                "${}\r\n",
+                .{i},
+            ),
         );
         self.mbulkhdr[i] = Object.create(
             .string,
-            sds.catPrintf(sds.empty(), "*{}\r\n", .{i}),
+            sds.catPrintf(
+                allocator.child,
+                sds.empty(allocator.child),
+                "*{}\r\n",
+                .{i},
+            ),
         );
     }
-    self.minstring = sds.new("minstring");
-    self.maxstring = sds.new("maxstring");
+    self.minstring = sds.new(allocator.child, "minstring");
+    self.maxstring = sds.new(allocator.child, "maxstring");
     return self;
 }
 
@@ -188,11 +202,12 @@ pub fn destroy(self: *SharedObjects) void {
     for (self.integers) |obj| obj.free();
     for (self.bulkhdr) |obj| obj.decrRefCount();
     for (self.mbulkhdr) |obj| obj.decrRefCount();
-    sds.free(self.minstring);
-    sds.free(self.maxstring);
+    sds.free(allocator.child, self.minstring);
+    sds.free(allocator.child, self.maxstring);
     self.* = undefined;
 }
 
 const Object = @import("Object.zig");
 const sds = @import("sds.zig");
 const Server = @import("Server.zig");
+const allocator = @import("allocator.zig");

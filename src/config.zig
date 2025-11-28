@@ -39,8 +39,8 @@ pub fn load(
     filename: ?sds.String,
     options: ?sds.String,
 ) !void {
-    var config = sds.empty();
-    defer sds.free(config);
+    var config = sds.empty(allocator.child);
+    defer sds.free(allocator.child, config);
     var buf: [Server.CONFIG_MAX_LINE]u8 = undefined;
 
     if (filename) |f| {
@@ -58,13 +58,13 @@ pub fn load(
         while (true) {
             const nread = try fp.read(&buf);
             if (nread == 0) break;
-            config = sds.cat(config, buf[0..nread]);
+            config = sds.cat(allocator.child, config, buf[0..nread]);
         }
     }
 
     if (options) |o| {
-        config = sds.cat(config, "\n");
-        config = sds.cat(config, sds.asBytes(o));
+        config = sds.cat(allocator.child, config, "\n");
+        config = sds.cat(allocator.child, config, sds.asBytes(o));
     }
 
     return try loadFromString(server, config);
@@ -74,8 +74,8 @@ fn loadFromString(
     server: *Server,
     config: sds.String,
 ) (error{InvalidConfig})!void {
-    const lines = sds.split(sds.asBytes(config), "\n");
-    defer sds.freeSplitRes(lines);
+    const lines = sds.split(allocator.child, sds.asBytes(config), "\n");
+    defer sds.freeSplitRes(allocator.child, lines);
     var err: ?[]const u8 = null;
     var i: usize = 0;
     var linenum: usize = 0;
@@ -91,11 +91,11 @@ fn loadFromString(
             if (bytes.len == 0 or bytes[0] == '#') continue;
 
             // Split into arguments
-            const argv = sds.splitArgs(bytes) orelse {
+            const argv = sds.splitArgs(allocator.child, bytes) orelse {
                 err = "Unbalanced quotes in configuration line";
                 break :biz;
             };
-            defer sds.freeSplitRes(argv);
+            defer sds.freeSplitRes(allocator.child, argv);
             const argc = argv.len;
 
             // Skip this line if the resulting command vector is empty.

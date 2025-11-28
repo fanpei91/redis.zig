@@ -33,8 +33,8 @@ pub fn genCaseHash(key: []const u8, comptime max_len: usize) Hash {
         allocator.child,
     );
     const stack_allocator = stack_impl.get();
-    const s = sds.newLenAlloc(stack_allocator, key.ptr, key.len);
-    defer sds.freeAlloc(stack_allocator, s);
+    const s = sds.new(stack_allocator, key);
+    defer sds.free(stack_allocator, s);
     sds.toLower(s);
     return genHash(sds.asBytes(s));
 }
@@ -227,6 +227,10 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
         ht: [2]HashTable = .{ .{}, .{} },
         rehashidx: i64 = -1,
         iterators: u64 = 0,
+
+        pub inline fn cast(ptr: *anyopaque) *HashMap {
+            return @ptrCast(@alignCast(ptr));
+        }
 
         pub fn iterator(self: *HashMap, safe: bool) Iterator {
             const it: Iterator = .{
@@ -795,8 +799,8 @@ test "add() | addOrFind() || find() | fetchVal()" {
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = sds.new(key);
-        const sval = sds.new(val);
+        const skey = sds.new(allocator.child, key);
+        const sval = sds.new(allocator.child, val);
         var added = dict.add(
             skey,
             sval,
@@ -825,10 +829,10 @@ test "add() | addOrFind() || find() | fetchVal()" {
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = sds.new(key);
-        defer sds.free(skey);
-        const sval = sds.new(val);
-        defer sds.free(sval);
+        const skey = sds.new(allocator.child, key);
+        defer sds.free(allocator.child, skey);
+        const sval = sds.new(allocator.child, val);
+        defer sds.free(allocator.child, sval);
 
         const found = dict.find(skey);
         try expect(found != null);
@@ -850,9 +854,9 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     try expectEqual(cnt, dict.size());
 
-    const key = sds.new("addOrFind");
+    const key = sds.new(allocator.child, "addOrFind");
     const new_entry = dict.addOrFind(key);
-    const val = sds.new("value");
+    const val = sds.new(allocator.child, "value");
     dict.setVal(new_entry, val);
     const existing_entry = dict.addOrFind(key);
     try expectEqual(new_entry, existing_entry);
@@ -889,9 +893,9 @@ test "replace()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new("k1");
-    _ = dict.add(key, sds.new("v1"));
-    const ret = dict.replace(key, sds.new("v2"));
+    const key = sds.new(allocator.child, "k1");
+    _ = dict.add(key, sds.new(allocator.child, "v1"));
+    const ret = dict.replace(key, sds.new(allocator.child, "v2"));
     try expectEqual(.replace, ret);
 
     const found = dict.find(key);
@@ -902,8 +906,8 @@ test "delete()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new("k1");
-    _ = dict.add(key, sds.new("v1"));
+    const key = sds.new(allocator.child, "k1");
+    _ = dict.add(key, sds.new(allocator.child, "v1"));
     const deleted = dict.delete(key);
 
     try expect(deleted);
@@ -914,8 +918,8 @@ test "unlink() | freeUnlinkedEntry()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new("key1");
-    _ = dict.add(key, sds.new("val2"));
+    const key = sds.new(allocator.child, "key1");
+    _ = dict.add(key, sds.new(allocator.child, "val2"));
     const unlinked = dict.unlink(key);
     try expect(unlinked != null);
     try expectEqual(0, dict.size());
@@ -965,8 +969,8 @@ test "iterator() | fingerprint()" {
     try expectEqual(count, iters);
     iter.release();
 
-    const key = sds.new("nokey");
-    defer sds.free(key);
+    const key = sds.new(allocator.child, "nokey");
+    defer sds.free(allocator.child, key);
     _ = dict.find(key);
     try expect(fp != dict.fingerprint());
 }
@@ -1023,8 +1027,8 @@ const TestDict = struct {
             ) catch unreachable;
             defer allocator.free(val);
             _ = dict.add(
-                sds.new(key),
-                sds.new(val),
+                sds.new(allocator.child, key),
+                sds.new(allocator.child, val),
             );
         }
     }
@@ -1042,11 +1046,11 @@ const TestDict = struct {
     }
 
     fn freeKey(key: sds.String) void {
-        sds.free(key);
+        sds.free(allocator.child, key);
     }
 
     fn freeVal(val: sds.String) void {
-        sds.free(val);
+        sds.free(allocator.child, val);
     }
 };
 

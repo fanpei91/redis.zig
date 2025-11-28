@@ -193,9 +193,9 @@ pub const Database = struct {
         const vtable: *const Map.VTable = &.{
             .hash = hash,
             .eql = eql,
-            .dupeKey = sds.dupe,
+            .dupeKey = dupeKey,
             .dupeVal = dupeVal,
-            .freeKey = sds.free,
+            .freeKey = freeKey,
             .freeVal = freeVal,
         };
 
@@ -207,12 +207,20 @@ pub const Database = struct {
             return sds.cmp(k1, k2) == .eq;
         }
 
+        fn dupeKey(key: sds.String) sds.String {
+            return sds.dupe(allocator.child, key);
+        }
+
         fn dupeVal(val: ?*Object) ?*Object {
             // Lazy freeing will set value to null.
             if (val) |v| {
                 v.incrRefCount();
             }
             return val;
+        }
+
+        fn freeKey(key: sds.String) void {
+            sds.free(allocator.child, key);
         }
 
         fn freeVal(val: ?*Object) void {
@@ -242,20 +250,12 @@ pub const Database = struct {
         const HashMap = dict.Dict(*Object, *Server.ClientList);
 
         const vtable: *const HashMap.VTable = &.{
-            .hash = hash,
-            .eql = eql,
+            .hash = Object.hash,
+            .eql = Object.eql,
             .dupeKey = dupeKey,
             .freeKey = Object.decrRefCount,
             .freeVal = Server.ClientList.release,
         };
-
-        fn hash(key: *Object) dict.Hash {
-            return dict.genHash(sds.asBytes(sds.cast(key.v.ptr)));
-        }
-
-        fn eql(k1: *Object, k2: *Object) bool {
-            return sds.cmp(sds.cast(k1.v.ptr), sds.cast(k2.v.ptr)) == .eq;
-        }
 
         fn dupeKey(key: *Object) *Object {
             key.incrRefCount();
@@ -267,42 +267,11 @@ pub const Database = struct {
         const HashMap = dict.Dict(*Object, void);
 
         const vtable: *const HashMap.VTable = &.{
-            .hash = hash,
-            .eql = eql,
+            .hash = Object.hash,
+            .eql = Object.eql,
             .dupeKey = dupeKey,
             .freeKey = Object.decrRefCount,
         };
-
-        fn hash(key: *Object) dict.Hash {
-            var o = key;
-            if (o.sdsEncoded()) {
-                return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-            }
-            if (o.encoding == .int) {
-                var buf: [32]u8 = undefined;
-                const s = util.ll2string(&buf, o.v.int);
-                return dict.genHash(s);
-            }
-            o = o.getDecoded();
-            defer o.decrRefCount();
-            return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
-        }
-
-        fn eql(k1: *Object, k2: *Object) bool {
-            var o1 = k1;
-            var o2 = k2;
-
-            if (o1.encoding == .int and o2.encoding == .int) {
-                return o1.v.int == o2.v.int;
-            }
-
-            o1 = o1.getDecoded();
-            defer o1.decrRefCount();
-            o2 = o2.getDecoded();
-            defer o2.decrRefCount();
-
-            return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
-        }
 
         fn dupeKey(key: *Object) *Object {
             key.incrRefCount();

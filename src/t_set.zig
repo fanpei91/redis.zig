@@ -147,6 +147,175 @@ pub fn scardCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(Set.size(sobj)));
 }
 
+/// SRANDMEMBER key [count]
+pub fn srandmemberCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+
+    if (cli.argc == 3) {
+        srandmemberWithCount(cli);
+        return;
+    }
+    if (cli.argc > 3) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    switch (Set.randomElement(sobj)) {
+        .num => |v| cli.addReplyBulkLongLong(v),
+        .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+    }
+}
+
+/// How many times bigger should be the set compared to the requested size
+/// for us to don't use the "remove elements" strategy? Read later in the
+/// implementation for more info.
+const SRANDMEMBER_SUB_STRATEGY_MUL = 3;
+
+fn srandmemberWithCount(cli: *Client) void {
+    assert(cli.argc == 3);
+    const argv = cli.argv.?;
+
+    const l = argv[2].getLongLongOrReply(cli, null) orelse {
+        return;
+    };
+
+    var count: u64 = 0;
+    var uniq: bool = true;
+
+    if (l >= 0) {
+        count = @intCast(l);
+    } else {
+        // A negative count means: return the same elements multiple times
+        // (i.e. don't remove the extracted element after every extraction).
+        count = @intCast(-l);
+        uniq = false;
+    }
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .set)) {
+        return;
+    }
+
+    // If count is zero, serve it ASAP to avoid special cases later.
+    if (count == 0) {
+        cli.addReply(Server.shared.emptymultibulk);
+        return;
+    }
+
+    // CASE 1: The count was negative, so the extraction method is just:
+    // "return N random elements" sampling the whole set every time.
+    // This case is trivial and can be served without auxiliary data
+    // structures.
+    if (!uniq) {
+        cli.addReplyMultiBulkLen(@intCast(count));
+        while (count > 0) : (count -= 1) {
+            switch (Set.randomElement(sobj)) {
+                .num => |v| cli.addReplyBulkLongLong(v),
+                .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+            }
+        }
+        return;
+    }
+
+    // CASE 2:
+    // The number of requested elements is greater than the number of
+    // elements inside the set: simply return the whole set.
+    var size = Set.size(sobj);
+    if (count >= size) {
+        cli.addReplyMultiBulkLen(@intCast(size));
+        var it = Set.Iterator.create(sobj);
+        defer it.release();
+        while (it.next()) |value| switch (value) {
+            .num => |v| cli.addReplyBulkLongLong(v),
+            .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
+        };
+        return;
+    }
+
+    // For CASE 3 and CASE 4 we need an auxiliary dictionary.
+    const d: *dict.Dict(*Object, void) = .create(&.{
+        .hash = Object.hash,
+        .eql = Object.eql,
+        .freeKey = Object.decrRefCount,
+    });
+    defer d.destroy();
+
+    // CASE 3:
+    // The number of elements inside the set is not greater than
+    // SRANDMEMBER_SUB_STRATEGY_MUL times the number of requested elements.
+    // In this case we create a set from scratch with all the elements, and
+    // subtract random elements to reach the requested number of elements.
+    //
+    // This is done because if the number of requsted elements is just
+    // a bit less than the number of elements in the set, the natural approach
+    // used into CASE 3 is highly inefficient.
+    if (count * SRANDMEMBER_SUB_STRATEGY_MUL > size) {
+        var it = Set.Iterator.create(sobj);
+        defer it.release();
+        while (it.next()) |value| {
+            const obj = switch (value) {
+                .num => |v| Object.createStringFromLonglong(v),
+                .s => |v| Object.createString(sds.asBytes(v)),
+            };
+            const ok = d.add(obj, {});
+            assert(ok);
+        }
+        assert(d.size() == size);
+
+        // Remove random elements to reach the right count.
+        while (size > count) : (size -= 1) {
+            const de = d.getRandom().?;
+            const ok = d.delete(de.key);
+            assert(ok);
+        }
+    }
+    // CASE 4: We have a big set compared to the requested number of elements.
+    // In this case we can simply get random elements from the set and add
+    // to the temporary set, trying to eventually get enough unique elements
+    // to reach the specified count.
+    else {
+        var added: u64 = 0;
+        while (added < count) {
+            const obj = switch (Set.randomElement(sobj)) {
+                .num => |v| Object.createStringFromLonglong(v),
+                .s => |v| Object.createString(sds.asBytes(v)),
+            };
+            if (d.add(obj, {})) {
+                added += 1;
+            } else {
+                obj.decrRefCount();
+            }
+        }
+    }
+
+    // CASE 3 & 4: send the result to the user.
+    cli.addReplyMultiBulkLen(@intCast(count));
+    var it = d.iterator(false);
+    defer it.release();
+    while (it.next()) |entry| {
+        cli.addReplyBulk(entry.key);
+    }
+}
+
 /// SINTER key [key ...]
 pub fn sinterCommand(cli: *Client) void {
     const argv = cli.argv.?;
@@ -194,12 +363,12 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
     var dstset: ?*Object = null;
     defer if (dstset) |obj| obj.decrRefCount();
 
-    // The first thing we should output is the total number of elements...
-    // since this is a multi-bulk write, but at this stage we don't know
-    // the intersection set size, so we use a trick, append an placeholer
-    // object to the output list and save the pointer to later modify it
-    // with the right length.
     if (dstkey == null) {
+        // The first thing we should output is the total number of elements...
+        // since this is a multi-bulk write, but at this stage we don't know
+        // the intersection set size, so we use a trick, append an placeholer
+        // object to the output list and save the pointer to later modify it
+        // with the right length.
         replylen = cli.addDeferredMultiBulkLength();
     } else {
         // If we have a target key where to store the resulting set
@@ -209,11 +378,17 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
 
     var cardinality: i64 = 0;
 
+    var stack_impl = std.heap.stackFallback(
+        128,
+        allocator.child,
+    );
+    const stack_allocator = stack_impl.get();
     // Iterate all the elements of the first (smallest) set, and test
     // the element against all the other sets, if at least one set does
     // not include the element it is discarded
     const first = sets.items[0];
     var it = Set.Iterator.create(first);
+    defer it.release();
     next: while (it.next()) |value| {
         for (sets.items[1..]) |set| {
             if (set == first) continue :next;
@@ -221,11 +396,11 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
                 .num => |v| {
                     assert(first.encoding == .intset);
                     if (set.encoding == .intset) {
-                        const is: *IntSet = @ptrCast(@alignCast(set.v.ptr));
+                        const is = IntSet.cast(set.v.ptr);
                         if (!is.find(v)) continue :next;
                     } else if (set.encoding == .ht) {
-                        const member = sds.fromLonglong(v);
-                        defer sds.free(member);
+                        const member = sds.fromLonglong(stack_allocator, v);
+                        defer sds.free(stack_allocator, member);
                         if (!Set.isMember(set, member)) continue :next;
                     }
                 },
@@ -244,8 +419,8 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
         } else {
             switch (value) {
                 .num => |v| {
-                    const member = sds.fromLonglong(v);
-                    defer sds.free(member);
+                    const member = sds.fromLonglong(stack_allocator, v);
+                    defer sds.free(stack_allocator, member);
                     const ok = Set.add(dstset.?, member);
                     assert(ok);
                 },
@@ -256,7 +431,6 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
             }
         }
     }
-    it.release();
 
     if (dstkey) |dst| {
         // Store the resulting set into the target, if the intersection
@@ -364,13 +538,19 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     const dstset = Object.createIntSet();
     defer dstset.decrRefCount();
 
+    var stack_impl = std.heap.stackFallback(
+        2048,
+        allocator.child,
+    );
+    const stack_allocator = stack_impl.get();
+
     if (op == .@"union") {
         // Union is trivial, just add every element of every set to the
         // temporary set.
         for (sets.items) |item| if (item) |set| {
             var it = Set.Iterator.create(set);
-            while (it.nextObject()) |value| {
-                defer sds.free(value);
+            while (it.nextObject(stack_allocator)) |value| {
+                defer sds.free(stack_allocator, value);
                 _ = Set.add(dstset, value);
             }
             it.release();
@@ -386,8 +566,8 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         // the first set, and M the number of sets.
         const first = sets.items[0].?;
         var it = Set.Iterator.create(first);
-        next: while (it.nextObject()) |value| {
-            defer sds.free(value);
+        next: while (it.nextObject(stack_allocator)) |value| {
+            defer sds.free(stack_allocator, value);
             for (sets.items[1..]) |item| if (item) |set| {
                 if (set == first) continue :next;
                 if (Set.isMember(set, value)) continue :next;
@@ -406,8 +586,8 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         // set.
         for (sets.items, 0..) |item, i| if (item) |set| {
             var it = Set.Iterator.create(set);
-            while (it.nextObject()) |value| {
-                defer sds.free(value);
+            while (it.nextObject(stack_allocator)) |value| {
+                defer sds.free(stack_allocator, value);
                 if (i == 0) {
                     const ok = Set.add(dstset, value);
                     assert(ok);
@@ -426,8 +606,8 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     if (dstkey == null) {
         cli.addReplyMultiBulkLen(@intCast(Set.size(dstset)));
         var it = Set.Iterator.create(dstset);
-        while (it.nextObject()) |value| {
-            defer sds.free(value);
+        while (it.nextObject(stack_allocator)) |value| {
+            defer sds.free(stack_allocator, value);
             cli.addReplyBulkString(sds.asBytes(value));
         }
         it.release();
@@ -481,7 +661,7 @@ pub fn spopCommand(cli: *Client) void {
         .num => |v| {
             assert(sobj.encoding == .intset);
             ele = Object.createStringFromLonglong(v);
-            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            const is = IntSet.cast(sobj.v.ptr);
             const ret = is.remove(v);
             sobj.v = .{ .ptr = ret.set };
         },
@@ -572,7 +752,7 @@ fn spopWithCount(cli: *Client) void {
                 .num => |v| {
                     assert(sobj.encoding == .intset);
                     cli.addReplyBulkLongLong(v);
-                    const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                    const is = IntSet.cast(sobj.v.ptr);
                     const ret = is.remove(v);
                     assert(ret.success);
                     sobj.v = .{ .ptr = ret.set };
@@ -602,13 +782,19 @@ fn spopWithCount(cli: *Client) void {
         };
         defer newset.decrRefCount();
 
+        var stack_impl = std.heap.stackFallback(
+            2048,
+            allocator.child,
+        );
+        const stack_allocator = stack_impl.get();
+
         // Create a new set with just the remaining elements.
         while (remaining > 0) : (remaining -= 1) {
             const ele: sds.String = switch (Set.randomElement(sobj)) {
-                .num => |v| sds.fromLonglong(v),
-                .s => |v| sds.dupe(v),
+                .num => |v| sds.fromLonglong(stack_allocator, v),
+                .s => |v| sds.dupe(stack_allocator, v),
             };
-            defer sds.free(ele);
+            defer sds.free(stack_allocator, ele);
             _ = Set.add(newset, ele);
             _ = Set.remove(sobj, ele);
         }
@@ -674,20 +860,20 @@ pub const Set = struct {
     /// element is added and TRUE is returned.
     fn add(sobj: *Object, value: sds.String) bool {
         if (sobj.encoding == .ht) {
-            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
-            return h.add(sds.dupe(value), {});
+            const h = Hash.cast(sobj.v.ptr);
+            return h.add(sds.dupe(allocator.child, value), {});
         }
         if (sobj.encoding == .intset) {
             const llval = sds.asLongLong(value) orelse {
                 convert(sobj, .ht);
                 // The set *was* an intset and this value is not integer
                 // encodable, so dict.add should always work.
-                const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
-                const ok = h.add(sds.dupe(value), {});
+                const h = Hash.cast(sobj.v.ptr);
+                const ok = h.add(sds.dupe(allocator.child, value), {});
                 assert(ok);
                 return true;
             };
-            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            const is = IntSet.cast(sobj.v.ptr);
             const ret = is.add(llval);
             sobj.v = .{ .ptr = ret.set };
             if (ret.success) {
@@ -712,7 +898,7 @@ pub const Set = struct {
     fn convert(sobj: *Object, enc: Object.Encoding) void {
         assert(sobj.type == .set and sobj.encoding == .intset);
 
-        const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+        const is = IntSet.cast(sobj.v.ptr);
         defer is.free();
 
         if (enc == .ht) {
@@ -722,7 +908,7 @@ pub const Set = struct {
             var it = Iterator.create(sobj);
             while (it.next()) |value| switch (value) {
                 .num => |v| {
-                    const s = sds.fromLonglong(v);
+                    const s = sds.fromLonglong(allocator.child, v);
                     const ok = h.add(s, {});
                     assert(ok);
                 },
@@ -738,7 +924,7 @@ pub const Set = struct {
 
     fn remove(sobj: *Object, value: sds.String) bool {
         if (sobj.encoding == .ht) {
-            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            const h = Hash.cast(sobj.v.ptr);
             if (h.delete(value)) {
                 if (Server.needShrinkDictToFit(h.size(), h.slots())) {
                     _ = h.shrinkToFit();
@@ -749,7 +935,7 @@ pub const Set = struct {
         }
         if (sobj.encoding == .intset) {
             if (sds.asLongLong(value)) |num| {
-                const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                const is = IntSet.cast(sobj.v.ptr);
                 const ret = is.remove(num);
                 sobj.v = .{ .ptr = ret.set };
                 return ret.success;
@@ -761,12 +947,12 @@ pub const Set = struct {
 
     fn isMember(sobj: *const Object, value: sds.String) bool {
         if (sobj.encoding == .ht) {
-            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            const h = Hash.cast(sobj.v.ptr);
             return h.find(value) != null;
         }
         if (sobj.encoding == .intset) {
             if (sds.asLongLong(value)) |num| {
-                const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+                const is = IntSet.cast(sobj.v.ptr);
                 return is.find(num);
             }
             return false;
@@ -777,12 +963,12 @@ pub const Set = struct {
     /// Return random element from a non empty set.
     fn randomElement(sobj: *Object) Value {
         if (sobj.encoding == .ht) {
-            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            const h = Hash.cast(sobj.v.ptr);
             const de = h.getRandom().?;
             return .{ .s = de.key };
         }
         if (sobj.encoding == .intset) {
-            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            const is = IntSet.cast(sobj.v.ptr);
             return .{ .num = is.random() };
         }
         @panic("Unknown set encoding");
@@ -790,11 +976,11 @@ pub const Set = struct {
 
     fn size(sobj: *const Object) u64 {
         if (sobj.encoding == .ht) {
-            const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+            const h = Hash.cast(sobj.v.ptr);
             return h.size();
         }
         if (sobj.encoding == .intset) {
-            const is: *IntSet = @ptrCast(@alignCast(sobj.v.ptr));
+            const is = IntSet.cast(sobj.v.ptr);
             return is.length.get();
         }
         @panic("Unknown set encoding");
@@ -812,7 +998,7 @@ pub const Set = struct {
                 .encoding = sobj.encoding,
             };
             if (it.encoding == .ht) {
-                const h: *Hash = @ptrCast(@alignCast(sobj.v.ptr));
+                const h = Hash.cast(sobj.v.ptr);
                 it.di = h.iterator(false);
             } else if (it.encoding == .intset) {
                 it.ii = 0;
@@ -832,7 +1018,7 @@ pub const Set = struct {
                 return .{ .s = entry.key };
             }
             if (self.encoding == .intset) {
-                const is: *IntSet = @ptrCast(@alignCast(self.subject.v.ptr));
+                const is = IntSet.cast(self.subject.v.ptr);
                 const v = is.get(self.ii.?) orelse {
                     return null;
                 };
@@ -845,14 +1031,14 @@ pub const Set = struct {
         /// The not copy on write friendly version but easy to use version
         /// of next() is nextObject(), returning new SDS strings.
         /// So if you don't retain a pointer to this object you should call
-        /// sds.free() against it.
+        /// sds.allocFree() against it.
         ///
         /// This function is the way to go for write operations where COW is not
         /// an issue.
-        pub fn nextObject(self: *Iterator) ?sds.String {
+        pub fn nextObject(self: *Iterator, alloc: Allocator) ?sds.String {
             if (self.next()) |value| switch (value) {
-                .s => |v| return sds.dupe(v),
-                .num => |v| return sds.fromLonglong(v),
+                .s => |v| return sds.dupe(alloc, v),
+                .num => |v| return sds.fromLonglong(alloc, v),
             };
             return null;
         }
@@ -869,7 +1055,7 @@ pub const Set = struct {
     const vtable: *const Hash.VTable = &.{
         .hash = hash,
         .eql = eql,
-        .freeKey = sds.free,
+        .freeKey = freeKey,
     };
 
     fn hash(key: sds.String) dict.Hash {
@@ -878,6 +1064,10 @@ pub const Set = struct {
 
     fn eql(k1: sds.String, k2: sds.String) bool {
         return sds.cmp(k1, k2) == .eq;
+    }
+
+    fn freeKey(key: sds.String) void {
+        sds.free(allocator.child, key);
     }
 };
 
@@ -896,3 +1086,5 @@ const Server = @import("Server.zig");
 const server = &Server.instance;
 const db = @import("db.zig");
 const allocator = @import("allocator.zig");
+const Allocator = std.mem.Allocator;
+const util = @import("util.zig");
