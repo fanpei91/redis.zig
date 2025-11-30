@@ -159,6 +159,29 @@ pub fn zcardCommand(cli: *Client) void {
     cli.addReplyLongLong(@intCast(Zset.length(zobj)));
 }
 
+/// ZSCORE key member
+pub fn zscoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    const member = sds.cast(argv[2].v.ptr);
+    const score = Zset.scoreOf(zobj, member) orelse {
+        cli.addReply(Server.shared.nullbulk);
+        return;
+    };
+    cli.addReplyDouble(score);
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -373,6 +396,27 @@ const Zset = struct {
         if (zobj.encoding == .skiplist) {
             const sl: *SkipListSet = .cast(zobj.v.ptr);
             return sl.zsl.length;
+        }
+        @panic("Unknown sorted set encoding");
+    }
+
+    /// Return the score of the specified member of the sorted set. If the
+    /// element does not exist NULL is returned.
+    pub fn scoreOf(zobj: *Object, member: sds.String) ?f64 {
+        if (zobj.encoding == .ziplist) {
+            const zl: *ZipListSet = .cast(zobj.v.ptr);
+            var score: f64 = undefined;
+            _ = zl.find(member, &score) orelse {
+                return null;
+            };
+            return score;
+        }
+        if (zobj.encoding == .skiplist) {
+            const sl: *SkipListSet = .cast(zobj.v.ptr);
+            const de = sl.dict.find(member) orelse {
+                return null;
+            };
+            return de.val.*;
         }
         @panic("Unknown sorted set encoding");
     }
