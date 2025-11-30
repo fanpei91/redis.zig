@@ -182,6 +182,40 @@ pub fn zscoreCommand(cli: *Client) void {
     cli.addReplyDouble(score);
 }
 
+/// ZRANK key member
+pub fn zrankCommand(cli: *Client) void {
+    zrank(cli, false);
+}
+
+/// ZREVRANK key member
+pub fn zrevrankCommand(cli: *Client) void {
+    zrank(cli, true);
+}
+
+/// ZRANK/ZREVRANK key member
+fn zrank(cli: *Client, reverse: bool) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.nullbulk,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    const ele = sds.cast(argv[2].v.ptr);
+    const ranking = Zset.rank(zobj, ele, reverse) orelse {
+        cli.addReply(Server.shared.nullbulk);
+        return;
+    };
+    cli.addReplyLongLong(@intCast(ranking));
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -397,6 +431,62 @@ const Zset = struct {
             const sl: *SkipListSet = .cast(zobj.v.ptr);
             return sl.zsl.length;
         }
+        @panic("Unknown sorted set encoding");
+    }
+
+    /// Given a sorted set object returns the 0-based rank of the object or
+    /// NULL if the object does not exist.
+    ///
+    /// For rank we mean the position of the element in the sorted collection
+    /// of elements. So the first element has rank 0, the second rank 1, and so
+    /// forth up to length-1 elements.
+    ///
+    /// If 'reverse' is false, the rank is returned considering as first element
+    /// the one with the lowest score. Otherwise if 'reverse' is non-zero
+    /// the rank is computed considering as element with rank 0 the one with
+    /// the highest score.
+    fn rank(zobj: *Object, ele: sds.String, reverse: bool) ?u64 {
+        const llen = length(zobj);
+
+        if (zobj.encoding == .ziplist) {
+            const zl: *ZipListSet = .cast(zobj.v.ptr);
+            var eptr = zl.zl.index(0);
+            assert(eptr != null);
+            var sptr = zl.zl.next(eptr.?);
+            assert(sptr != null);
+
+            var ranking: u64 = 1;
+            while (eptr) |ep| {
+                if (ZipList.eql(ep, sds.asBytes(ele))) {
+                    break;
+                }
+                ranking += 1;
+                zl.next(&eptr, &sptr);
+            }
+            if (eptr != null) {
+                if (reverse) {
+                    return llen - ranking;
+                }
+                return ranking - 1;
+            }
+            return null;
+        }
+
+        if (zobj.encoding == .skiplist) {
+            const sl: *SkipListSet = .cast(zobj.v.ptr);
+            const de = sl.dict.find(ele) orelse {
+                return null;
+            };
+            const score = de.val.*;
+            const ranking = sl.zsl.getRank(score, ele);
+            // Existing elements always have a rank.
+            assert(ranking != 0);
+            if (reverse) {
+                return llen - ranking;
+            }
+            return ranking - 1;
+        }
+
         @panic("Unknown sorted set encoding");
     }
 

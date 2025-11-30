@@ -98,6 +98,8 @@ pub const table = [_]Command{
     .{ .name = "zincrby", .proc = zset.zincrbyCommand, .arity = 4 },
     .{ .name = "zcard", .proc = zset.zcardCommand, .arity = 2 },
     .{ .name = "zscore", .proc = zset.zscoreCommand, .arity = 3 },
+    .{ .name = "zrank", .proc = zset.zrankCommand, .arity = 3 },
+    .{ .name = "zrevrank", .proc = zset.zrevrankCommand, .arity = 3 },
 };
 
 pub const Command = struct {
