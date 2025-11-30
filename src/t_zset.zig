@@ -142,6 +142,23 @@ fn zadd(cli: *Client, flags: i32) void {
     }
 }
 
+/// ZCARD key
+pub fn zcardCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+    cli.addReplyLongLong(@intCast(Zset.length(zobj)));
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -208,8 +225,8 @@ const Zset = struct {
 
         if (zobj.encoding == .ziplist) {
             var curscore: f64 = undefined;
-            var szl: *ZipListSet = .cast(zobj.v.ptr);
-            if (szl.find(ele, &curscore)) |eptr| {
+            var zl: *ZipListSet = .cast(zobj.v.ptr);
+            if (zl.find(ele, &curscore)) |eptr| {
                 // NX? Return, same element already exists.
                 if (nx) {
                     flags.* |= ZADD_NOP;
@@ -226,20 +243,21 @@ const Zset = struct {
                 }
                 // Remove and re-insert when score changed.
                 if (inscore != curscore) {
-                    szl.delete(eptr);
-                    szl.insert(ele, inscore);
+                    zl.delete(eptr);
+                    zl.insert(ele, inscore);
+                    flags.* |= ZADD_UPDATED;
                 }
                 return true;
             } else if (!xx) {
                 // check if the element is too large or the list
                 // becomes too long *before* executing insert.
-                if (szl.length() + 1 > server.zset_max_ziplist_entries or
+                if (zl.length() + 1 > server.zset_max_ziplist_entries or
                     sds.getLen(ele) > server.zset_max_ziplist_value or
-                    !ZipList.safeToAdd(szl.zl, sds.getLen(ele)))
+                    !ZipList.safeToAdd(zl.zl, sds.getLen(ele)))
                 {
                     convert(zobj, .skiplist);
                 } else {
-                    szl.insert(ele, score);
+                    zl.insert(ele, score);
                     if (newscore) |new| new.* = score;
                     flags.* |= ZADD_ADDED;
                     return true;
@@ -344,6 +362,18 @@ const Zset = struct {
             return;
         }
 
+        @panic("Unknown sorted set encoding");
+    }
+
+    pub fn length(zobj: *Object) u64 {
+        if (zobj.encoding == .ziplist) {
+            const zl: *ZipListSet = .cast(zobj.v.ptr);
+            return zl.length();
+        }
+        if (zobj.encoding == .skiplist) {
+            const sl: *SkipListSet = .cast(zobj.v.ptr);
+            return sl.zsl.length;
+        }
         @panic("Unknown sorted set encoding");
     }
 };
@@ -496,6 +526,7 @@ pub const SkipListSet = struct {
         return z;
     }
 
+    /// The inside skiplist takes ownership of the passed SDS string 'ele'.
     fn insert(self: *SkipListSet, score: f64, ele: sds.String) void {
         const node = self.zsl.insert(score, ele);
         const ok = self.dict.add(ele, &node.score);

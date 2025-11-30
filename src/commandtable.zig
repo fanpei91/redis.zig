@@ -96,6 +96,7 @@ pub const table = [_]Command{
     .{ .name = "srandmember", .proc = set.srandmemberCommand, .arity = -2 },
     .{ .name = "zadd", .proc = zset.zaddCommand, .arity = -4 },
     .{ .name = "zincrby", .proc = zset.zincrbyCommand, .arity = 4 },
+    .{ .name = "zcard", .proc = zset.zcardCommand, .arity = 2 },
 };
 
 pub const Command = struct {
