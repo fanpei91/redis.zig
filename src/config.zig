@@ -372,15 +372,34 @@ fn loadFromString(
                 continue;
             }
             if (eql(option, "hash-max-ziplist-entries") and argc == 2) {
-                server.hash_max_ziplist_entries = memtosize(
+                server.hash_max_ziplist_entries = std.fmt.parseInt(
+                    usize,
                     sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                continue;
+            }
+
+            if (eql(option, "zset-max-ziplist-value") and argc == 2) {
+                server.zset_max_ziplist_value = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+            if (eql(option, "zset-max-ziplist-entries") and argc == 2) {
+                server.zset_max_ziplist_entries = std.fmt.parseInt(
+                    usize,
+                    sds.asBytes(argv[1]),
+                    10,
                 ) catch 0;
                 continue;
             }
 
             if (eql(option, "set-max-intset-entries") and argc == 2) {
-                server.set_max_intset_entries = memtosize(
+                server.set_max_intset_entries = std.fmt.parseInt(
+                    usize,
                     sds.asBytes(argv[1]),
+                    10,
                 ) catch 0;
                 continue;
             }

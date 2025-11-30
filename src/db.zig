@@ -191,21 +191,13 @@ pub const Database = struct {
         pub const Map = dict.Dict(sds.String, ?*Object);
 
         const vtable: *const Map.VTable = &.{
-            .hash = hash,
-            .eql = eql,
+            .hash = sds.hash,
+            .eql = sds.eql,
             .dupeKey = dupeKey,
             .dupeVal = dupeVal,
             .freeKey = freeKey,
             .freeVal = freeVal,
         };
-
-        fn hash(key: sds.String) dict.Hash {
-            return dict.genHash(sds.asBytes(key));
-        }
-
-        fn eql(k1: sds.String, k2: sds.String) bool {
-            return sds.cmp(k1, k2) == .eq;
-        }
 
         fn dupeKey(key: sds.String) sds.String {
             return sds.dupe(allocator.child, key);
@@ -233,17 +225,9 @@ pub const Database = struct {
         const HashMap = dict.Dict(sds.String, i64);
 
         const vtable: *const HashMap.VTable = &.{
-            .hash = hash,
-            .eql = eql,
+            .hash = sds.hash,
+            .eql = sds.eql,
         };
-
-        fn hash(key: sds.String) dict.Hash {
-            return dict.genHash(sds.asBytes(key));
-        }
-
-        fn eql(k1: sds.String, k2: sds.String) bool {
-            return sds.cmp(k1, k2) == .eq;
-        }
     };
 
     const BlockingKeys = struct {
@@ -836,3 +820,4 @@ const list = @import("list.zig");
 const caseEql = std.ascii.eqlIgnoreCase;
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
+const hasher = @import("hasher.zig");

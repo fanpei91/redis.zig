@@ -1053,18 +1053,10 @@ pub const Set = struct {
     pub const Hash = dict.Dict(sds.String, void);
 
     const vtable: *const Hash.VTable = &.{
-        .hash = hash,
-        .eql = eql,
+        .hash = sds.hash,
+        .eql = sds.eql,
         .freeKey = freeKey,
     };
-
-    fn hash(key: sds.String) dict.Hash {
-        return dict.genHash(sds.asBytes(key));
-    }
-
-    fn eql(k1: sds.String, k2: sds.String) bool {
-        return sds.cmp(k1, k2) == .eq;
-    }
 
     fn freeKey(key: sds.String) void {
         sds.free(allocator.child, key);
@@ -1088,3 +1080,4 @@ const db = @import("db.zig");
 const allocator = @import("allocator.zig");
 const Allocator = std.mem.Allocator;
 const util = @import("util.zig");
+const hasher = @import("hasher.zig");

@@ -350,14 +350,14 @@ pub fn createHash() *Object {
 }
 
 pub fn createZset() *Object {
-    const zs = Zset.create();
+    const zs = SkipListSet.create();
     const obj = create(.zset, zs);
     obj.encoding = .skiplist;
     return obj;
 }
 
 pub fn createZsetZipList() *Object {
-    const zl = ZipList.new();
+    const zl = ZipListSet.create();
     const obj = create(.zset, zl);
     obj.encoding = .ziplist;
     return obj;
@@ -555,19 +555,50 @@ pub fn getLongDouble(self: *const Object) ?f80 {
     @panic("Unknown string encoding");
 }
 
-pub fn hash(self: *Object) dict.Hash {
+pub fn getDoubleOrReply(
+    self: *const Object,
+    cli: *Client,
+    msg: ?[]const u8,
+) ?f64 {
+    return self.getDouble() orelse {
+        if (msg) |err| {
+            cli.addReplyErr(err);
+        } else {
+            cli.addReplyErr("value is not a valid float");
+        }
+        return null;
+    };
+}
+
+pub fn getDouble(self: *const Object) ?f64 {
+    assert(self.type == .string);
+    if (self.sdsEncoded()) {
+        return std.fmt.parseFloat(
+            f64,
+            sds.asBytes(sds.cast(self.v.ptr)),
+        ) catch {
+            return null;
+        };
+    }
+    if (self.encoding == .int) {
+        return @floatFromInt(self.v.int);
+    }
+    @panic("Unknown string encoding");
+}
+
+pub fn hash(self: *Object) hasher.Hash {
     var o = self;
     if (o.sdsEncoded()) {
-        return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+        return sds.hash(sds.cast(o.v.ptr));
     }
     if (o.encoding == .int) {
         var buf: [32]u8 = undefined;
         const s = util.ll2string(&buf, o.v.int);
-        return dict.genHash(s);
+        return hasher.hash(s);
     }
     o = o.getDecoded();
     defer o.decrRefCount();
-    return dict.genHash(sds.asBytes(sds.cast(o.v.ptr)));
+    return sds.hash(sds.cast(o.v.ptr));
 }
 
 pub fn eql(self: *Object, other: *Object) bool {
@@ -582,8 +613,7 @@ pub fn eql(self: *Object, other: *Object) bool {
     defer o1.decrRefCount();
     o2 = o2.getDecoded();
     defer o2.decrRefCount();
-
-    return sds.cmp(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr)) == .eq;
+    return sds.eql(sds.cast(o1.v.ptr), sds.cast(o2.v.ptr));
 }
 
 pub fn checkTypeOrReply(self: *const Object, cli: *Client, typ: Type) bool {
@@ -600,7 +630,7 @@ pub fn strEncoding(self: *Object) []const u8 {
 
 pub fn free(self: *Object) void {
     if (self.type == .string and self.encoding == .embstr) {
-        const s: sds.String = @ptrCast(self.v.ptr);
+        const s: sds.String = sds.cast(self.v.ptr);
         const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
         const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
         allocator.free(mem[0..mem_size]);
@@ -611,14 +641,14 @@ pub fn free(self: *Object) void {
 
 fn freeString(self: *Object) void {
     if (self.encoding == .raw) {
-        const s: sds.String = @ptrCast(self.v.ptr);
+        const s: sds.String = sds.cast(self.v.ptr);
         sds.free(allocator.child, s);
     }
 }
 
 fn freeList(self: *Object) void {
     if (self.encoding == .quicklist) {
-        const ql: *QuickList = @ptrCast(@alignCast(self.v.ptr));
+        const ql: *QuickList = .cast(self.v.ptr);
         ql.release();
     } else {
         @panic("Unknown list encoding type");
@@ -628,11 +658,11 @@ fn freeList(self: *Object) void {
 fn freeSet(self: *Object) void {
     switch (self.encoding) {
         .intset => {
-            const is: *IntSet = @ptrCast(@alignCast(self.v.ptr));
+            const is: *IntSet = .cast(self.v.ptr);
             is.free();
         },
         .ht => {
-            const d: *set.Set.Hash = @ptrCast(@alignCast(self.v.ptr));
+            const d: *set.Set.Hash = .cast(self.v.ptr);
             d.destroy();
         },
         else => @panic("Unknown set encoding type"),
@@ -642,12 +672,12 @@ fn freeSet(self: *Object) void {
 fn freeZset(self: *Object) void {
     switch (self.encoding) {
         .skiplist => {
-            const zl: *Zset = @ptrCast(@alignCast(self.v.ptr));
-            zl.destroy();
+            const sl: *SkipListSet = .cast(self.v.ptr);
+            sl.destroy();
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.v.ptr);
-            zl.free();
+            const zl: *ZipListSet = .cast(self.v.ptr);
+            zl.destroy();
         },
         else => @panic("Unknown sorted set encoding type"),
     }
@@ -656,11 +686,11 @@ fn freeZset(self: *Object) void {
 fn freeHash(self: *Object) void {
     switch (self.encoding) {
         .ht => {
-            const ht: *hashtype.Hash.Map = @ptrCast(@alignCast(self.v.ptr));
+            const ht: *hashtype.Hash.Map = .cast(self.v.ptr);
             ht.destroy();
         },
         .ziplist => {
-            const zl: *ZipList = ZipList.cast(self.v.ptr);
+            const zl: *ZipList = .cast(self.v.ptr);
             zl.free();
         },
         else => @panic("Unknown hash encoding type"),
@@ -695,10 +725,12 @@ const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
 const zset = @import("t_zset.zig");
-const Zset = zset.Zset;
+const SkipListSet = zset.SkipListSet;
+const ZipListSet = zset.ZipListSet;
 const Client = @import("networking.zig").Client;
 const evict = @import("evict.zig");
 const server = &Server.instance;
 const dict = @import("dict.zig");
 const set = @import("t_set.zig");
 const hashtype = @import("t_hash.zig");
+const hasher = @import("hasher.zig");

@@ -680,6 +680,18 @@ pub fn caseCmp(s1: String, s2: String) std.math.Order {
     return std.math.order(lhs.len, rhs.len);
 }
 
+pub fn eql(s1: String, s2: String) bool {
+    return cmp(s1, s2) == .eq;
+}
+
+pub fn eqlCase(s1: String, s2: String) bool {
+    return caseCmp(s1, s2) == .eq;
+}
+
+pub fn hash(s: String) hasher.Hash {
+    return hasher.hash(asBytes(s));
+}
+
 pub fn asLongLong(s: String) ?i64 {
     return std.fmt.parseInt(i64, asBytes(s), 10) catch {
         return null;
@@ -1252,3 +1264,4 @@ const memmove = memzig.memmove;
 const util = @import("util.zig");
 const Allocator = std.mem.Allocator;
 const oom = @import("allocator.zig").oom;
+const hasher = @import("hasher.zig");

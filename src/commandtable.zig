@@ -65,9 +65,9 @@ pub const table = [_]Command{
     .{ .name = "ltrim", .proc = list.ltrimCommand, .arity = 4 },
     .{ .name = "lrem", .proc = list.lremCommand, .arity = 4 },
     .{ .name = "hset", .proc = hash.hsetCommand, .arity = -4 },
+    .{ .name = "hmset", .proc = hash.hsetCommand, .arity = -4 },
     .{ .name = "hincrby", .proc = hash.hincrbyCommand, .arity = 4 },
     .{ .name = "hincrbyfloat", .proc = hash.hincrbyfloatCommand, .arity = 4 },
-    .{ .name = "hmset", .proc = hash.hsetCommand, .arity = -4 },
     .{ .name = "hsetnx", .proc = hash.hsetnxCommand, .arity = 4 },
     .{ .name = "hget", .proc = hash.hgetCommand, .arity = 3 },
     .{ .name = "hmget", .proc = hash.hmgetCommand, .arity = -3 },
@@ -94,6 +94,8 @@ pub const table = [_]Command{
     .{ .name = "sinterstore", .proc = set.sinterstoreCommand, .arity = -3 },
     .{ .name = "spop", .proc = set.spopCommand, .arity = -2 },
     .{ .name = "srandmember", .proc = set.srandmemberCommand, .arity = -2 },
+    .{ .name = "zadd", .proc = zset.zaddCommand, .arity = -4 },
+    .{ .name = "zincrby", .proc = zset.zincrbyCommand, .arity = 4 },
 };
 
 pub const Command = struct {
@@ -109,6 +111,7 @@ const string = @import("t_string.zig");
 const list = @import("t_list.zig");
 const hash = @import("t_hash.zig");
 const set = @import("t_set.zig");
+const zset = @import("t_zset.zig");
 const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");

@@ -169,6 +169,34 @@ pub fn ld2string(buf: []u8, value: f80, humanfriendly: bool) []u8 {
     return output;
 }
 
+/// Convert a double to a string representation. The representation should
+/// always be parsable by std.fmt.parseFloat().
+/// This function does not support human-friendly formatting like ld2string
+/// does. It is intended mainly to be used inside t_zset.zig when writing
+/// scores into a ziplist representing a sorted set.
+pub fn d2string(buf: []u8, value: f64) []const u8 {
+    var len: c_int = undefined;
+    if (isNan(value)) {
+        len = libc.snprintf(buf.ptr, buf.len, "nan");
+    } else if (isInf(value)) {
+        if (value < 0) {
+            len = libc.snprintf(buf.ptr, buf.len, "-inf");
+        } else {
+            len = libc.snprintf(buf.ptr, buf.len, "inf");
+        }
+    } else if (value == 0) {
+        // See: http://en.wikipedia.org/wiki/Signed_zero#Comparisons
+        if (1.0 / value < 0) {
+            len = libc.snprintf(buf.ptr, buf.len, "-0");
+        } else {
+            len = libc.snprintf(buf.ptr, buf.len, "0");
+        }
+    } else {
+        len = libc.snprintf(buf.ptr, buf.len, "%.17g", value);
+    }
+    return buf[0..@intCast(len)];
+}
+
 pub fn ll2string(buf: []u8, value: i64) []u8 {
     assert(buf.len >= 20);
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch {
@@ -267,3 +295,8 @@ const expectEqual = std.testing.expectEqual;
 const sds = @import("sds.zig");
 const allocator = @import("allocator.zig");
 const toLower = std.ascii.toLower;
+const libc = @cImport({
+    @cInclude("stdio.h");
+});
+const isNan = std.math.isNan;
+const isInf = std.math.isInf;

@@ -83,25 +83,33 @@ pub const Client = struct {
         }
 
         fn dupe(reply: *ReplyBlock) *ReplyBlock {
-            const old_bytes = reply.asBytes();
+            const old_bytes = reply.mem();
             const new = ReplyBlock.create(reply.size);
-            const new_bytes = new.asBytes();
+            const new_bytes = new.mem();
             @memcpy(new_bytes, old_bytes);
             return @ptrCast(@alignCast(new_bytes));
         }
 
-        fn free(reply: *ReplyBlock) void {
-            allocator.free(reply.asBytes());
+        fn append(self: *ReplyBlock, src: []const u8) void {
+            assert(src.len <= self.size - self.used);
+            const buf = self.mem()[@sizeOf(ReplyBlock)..];
+            memcpy(buf[self.used..], src, src.len);
+            self.used += src.len;
         }
 
-        fn asBytes(self: *ReplyBlock) []align(@alignOf(ReplyBlock)) u8 {
+        fn slice(self: *ReplyBlock, start: usize, end: usize) []u8 {
+            assert(start <= self.size and end <= self.size);
+            const buf = self.mem()[@sizeOf(ReplyBlock)..];
+            return buf[start..end];
+        }
+
+        inline fn mem(self: *ReplyBlock) []align(@alignOf(ReplyBlock)) u8 {
             const ptr: [*]align(@alignOf(ReplyBlock)) u8 = @ptrCast(@alignCast(self));
             return ptr[0 .. @sizeOf(ReplyBlock) + self.size];
         }
 
-        fn buf(self: *ReplyBlock) []u8 {
-            const hd = @sizeOf(ReplyBlock);
-            return self.asBytes()[hd..];
+        fn destroy(reply: *ReplyBlock) void {
+            allocator.free(reply.mem());
         }
     };
 
@@ -173,7 +181,7 @@ pub const Client = struct {
         cli.authenticated = false;
         cli.lastinteraction = server.unixtime.get();
         cli.reply = .create(&.{
-            .freeVal = ReplyBlock.free,
+            .freeVal = ReplyBlock.destroy,
             .dupVal = ReplyBlock.dupe,
         });
         cli.reply_bytes = 0;
@@ -628,6 +636,18 @@ pub const Client = struct {
         // zig fmt: on
     }
 
+    /// Add a double as a bulk reply
+    pub fn addReplyDouble(self: *Client, d: f64) void {
+        var dbuf: [128]u8 = undefined;
+        var sbuf: [128]u8 = undefined;
+        const str = util.d2string(&dbuf, d);
+        const reply = std.fmt.bufPrint(&sbuf, "${}\r\n{s}\r\n", .{
+            str.len,
+            str,
+        }) catch unreachable;
+        self.addReplyString(reply);
+    }
+
     pub fn addReplyLongLong(self: *Client, ll: i64) void {
         switch (ll) {
             0 => self.addReply(Server.shared.czero),
@@ -661,20 +681,12 @@ pub const Client = struct {
         length: i64,
     ) void {
         const rb = reply orelse return;
-        assert(rb.size == 24);
-
-        const buf = rb.buf();
+        rb.used = 0;
         var mem: [util.MAX_LONG_DOUBLE_CHARS]u8 = undefined;
         const str = util.ll2string(&mem, length);
-        rb.used = 0;
-        buf[rb.used] = '*';
-        rb.used += 1;
-        memcpy(buf[rb.used..], str, str.len);
-        rb.used += str.len;
-        buf[rb.used] = '\r';
-        rb.used += 1;
-        buf[rb.used] = '\n';
-        rb.used += 1;
+        rb.append("*");
+        rb.append(str);
+        rb.append("\r\n");
     }
 
     pub fn addReplyMultiBulkLen(self: *Client, len: i64) void {
@@ -815,9 +827,7 @@ pub const Client = struct {
             // new node
             const avail = rb.size - rb.used;
             const copy = if (avail >= len) len else avail;
-            const buf = rb.buf();
-            memcpy(buf[rb.used..], s, copy);
-            rb.used += copy;
+            rb.append(s[0..copy]);
             len -= copy;
             pos += copy;
         }
@@ -829,9 +839,7 @@ pub const Client = struct {
             else
                 len;
             const rb = ReplyBlock.create(size);
-            const buf = rb.buf();
-            memcpy(buf, s[pos..], len);
-            rb.used = len;
+            rb.append(s[pos .. pos + len]);
             self.reply.append(rb);
             self.reply_bytes += rb.size;
         }
@@ -897,7 +905,7 @@ pub const Client = struct {
                     self.reply.removeNode(first);
                     continue;
                 }
-                const bytes = obj.buf()[self.sentlen..objlen];
+                const bytes = obj.slice(self.sentlen, objlen);
                 const nwritten = posix.write(self.fd, bytes) catch |err| {
                     if (err != posix.WriteError.WouldBlock) {
                         log.debug("Error writing to client: {}", .{err});

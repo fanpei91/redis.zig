@@ -60,21 +60,24 @@ fn getFreeEffort(obj: *Object) u64 {
     const ptr = obj.v.ptr;
 
     if (obj.type == .list) {
-        const ql: *Quicklist = @ptrCast(@alignCast(ptr));
+        const ql: *Quicklist = .cast(ptr);
         return ql.len;
     }
 
     if (obj.type == .set and obj.encoding == .ht) {
-        const dict: *Set.Hash = @ptrCast(@alignCast(ptr));
-        return dict.size();
+        const h: *Set.Hash = .cast(ptr);
+        return h.size();
     }
 
     if (obj.type == .zset and obj.encoding == .skiplist) {
-        const sz: *Zset = @ptrCast(@alignCast(ptr));
+        const sz: *SkipListSet = .cast(ptr);
         return sz.zsl.length;
     }
 
-    // TODO: Hash  = Object.createHash()
+    if (obj.type == .hash and obj.encoding == .ht) {
+        const h: *Hash.Map = .cast(ptr);
+        return h.size();
+    }
 
     // TODO: STREAM
 
@@ -97,7 +100,8 @@ pub fn freeDatabaseFromBioThread(
 const Database = @import("db.zig").Database;
 const Object = @import("Object.zig");
 const Quicklist = @import("QuickList.zig");
-const Zset = @import("t_zset.zig").Zset;
-const bio = @import("bio.zig");
+const SkipListSet = @import("t_zset.zig").SkipListSet;
 const Set = @import("t_set.zig").Set;
+const Hash = @import("t_hash.zig").Hash;
+const bio = @import("bio.zig");
 const sds = @import("sds.zig");

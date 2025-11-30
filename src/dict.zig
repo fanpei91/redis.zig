@@ -1,5 +1,3 @@
-pub const Hash = u64;
-
 pub const HT_INITIAL_SIZE = 4;
 
 const force_resize_ratio = 5;
@@ -14,35 +12,10 @@ pub fn disableResize() void {
     dict_can_resize = false;
 }
 
-var hash_seed: u64 = 0;
-
-pub fn hashSeed(s: ?u64) void {
-    hash_seed = s orelse std.crypto.random.int(u64);
-}
-
-pub fn genHash(key: []const u8) Hash {
-    return std.hash.Wyhash.hash(
-        hash_seed,
-        key,
-    );
-}
-
-pub fn genCaseHash(key: []const u8, comptime max_len: usize) Hash {
-    var stack_impl = std.heap.stackFallback(
-        max_len,
-        allocator.child,
-    );
-    const stack_allocator = stack_impl.get();
-    const s = sds.new(stack_allocator, key);
-    defer sds.free(stack_allocator, s);
-    sds.toLower(s);
-    return genHash(sds.asBytes(s));
-}
-
 pub fn Dict(comptime Key: type, comptime Value: type) type {
     return struct {
         pub const VTable = struct {
-            hash: *const fn (key: Key) Hash,
+            hash: *const fn (key: Key) hasher.Hash,
             eql: ?*const fn (key1: Key, key2: Key) bool = null,
             dupeKey: ?*const fn (key: Key) Key = null,
             dupeVal: ?*const fn (val: Value) Value = null,
@@ -128,7 +101,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
                 return std.meta.eql(key1, key2);
             }
 
-            fn hash(self: *Context, key: Key) Hash {
+            fn hash(self: *Context, key: Key) hasher.Hash {
                 return self.vtable.hash(key);
             }
 
@@ -320,7 +293,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             if (self.ht[0].size == 0) return null;
             if (self.isRehashing()) self.rehashStep();
 
-            const hash: Hash = self.ctx.hash(key);
+            const hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
                 var ht: *HashTable = &self.ht[i];
                 const idx = hash & ht.sizemask;
@@ -549,7 +522,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             if (self.ht[0].used == 0 and self.ht[1].used == 0) return null;
             if (self.isRehashing()) self.rehashStep();
 
-            const hash: Hash = self.ctx.hash(key);
+            const hash = self.ctx.hash(key);
             for (0..self.ht.len) |i| {
                 var prev: ?*Entry = null;
                 var ht: *HashTable = &self.ht[i];
@@ -657,7 +630,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
         fn keyIndex(self: *HashMap, key: Key, existing: ?*?*Entry) ?u64 {
             if (existing) |exit| exit.* = null;
 
-            const hash: Hash = self.ctx.hash(key);
+            const hash = self.ctx.hash(key);
             var idx: ?u64 = null;
             for (0..self.ht.len) |i| {
                 var ht: *HashTable = &self.ht[i];
@@ -714,7 +687,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
                 var entry = h0.get(@intCast(self.rehashidx));
                 while (entry) |ent| {
                     entry = ent.next;
-                    const hash: Hash = self.ctx.hash(ent.key);
+                    const hash = self.ctx.hash(ent.key);
                     const idx = hash & h1.sizemask;
                     ent.next = h1.get(idx);
                     h1.set(idx, ent);
@@ -1003,8 +976,8 @@ const TestDict = struct {
     }
 
     const vtable: *const HashMap.VTable = &.{
-        .hash = hash,
-        .eql = eql,
+        .hash = sds.hash,
+        .eql = sds.eql,
         .dupeKey = null,
         .dupeVal = null,
         .freeKey = freeKey,
@@ -1033,18 +1006,6 @@ const TestDict = struct {
         }
     }
 
-    fn eql(key: sds.String, other: sds.String) bool {
-        return std.mem.eql(
-            u8,
-            sds.asBytes(key),
-            sds.asBytes(other),
-        );
-    }
-
-    fn hash(key: sds.String) Hash {
-        return genHash(sds.asBytes(key));
-    }
-
     fn freeKey(key: sds.String) void {
         sds.free(allocator.child, key);
     }
@@ -1063,3 +1024,4 @@ const expectEqualStrings = testing.expectEqualStrings;
 const expect = testing.expect;
 const sds = @import("sds.zig");
 const assert = std.debug.assert;
+const hasher = @import("hasher.zig");

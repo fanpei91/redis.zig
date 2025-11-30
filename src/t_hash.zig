@@ -822,19 +822,11 @@ pub const Hash = struct {
     pub const Map = dict.Dict(sds.String, sds.String);
 
     const vtable: *const Map.VTable = &.{
-        .hash = hash,
-        .eql = eql,
+        .hash = sds.hash,
+        .eql = sds.eql,
         .freeKey = freeKey,
         .freeVal = freeVal,
     };
-
-    fn hash(key: sds.String) dict.Hash {
-        return dict.genHash(sds.asBytes(key));
-    }
-
-    fn eql(k1: sds.String, k2: sds.String) bool {
-        return sds.cmp(k1, k2) == .eq;
-    }
 
     fn freeKey(key: sds.String) void {
         sds.free(allocator.child, key);
@@ -857,3 +849,4 @@ const dict = @import("dict.zig");
 const util = @import("util.zig");
 const db = @import("db.zig");
 const allocator = @import("allocator.zig");
+const hasher = @import("hasher.zig");

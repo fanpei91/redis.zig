@@ -727,7 +727,7 @@ inline fn entryEnd(self: *const ZipList) [*]u8 {
     return self.addr() + self.bytes.get() - 1;
 }
 
-inline fn addr(self: *const ZipList) [*]align(@alignOf(ZipList)) u8 {
+pub inline fn addr(self: *const ZipList) [*]align(@alignOf(ZipList)) u8 {
     return @ptrCast(@alignCast(@constCast(self)));
 }
 
