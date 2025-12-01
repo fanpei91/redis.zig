@@ -100,6 +100,7 @@ pub const table = [_]Command{
     .{ .name = "zscore", .proc = zset.zscoreCommand, .arity = 3 },
     .{ .name = "zrank", .proc = zset.zrankCommand, .arity = 3 },
     .{ .name = "zrevrank", .proc = zset.zrevrankCommand, .arity = 3 },
+    .{ .name = "zrem", .proc = zset.zremCommand, .arity = -3 },
 };
 
 pub const Command = struct {

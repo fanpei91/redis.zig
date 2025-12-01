@@ -156,6 +156,7 @@ pub fn zcardCommand(cli: *Client) void {
     if (zobj.checkTypeOrReply(cli, .zset)) {
         return;
     }
+
     cli.addReplyLongLong(@intCast(Zset.length(zobj)));
 }
 
@@ -214,6 +215,35 @@ fn zrank(cli: *Client, reverse: bool) void {
         return;
     };
     cli.addReplyLongLong(@intCast(ranking));
+}
+
+/// ZREM key member [member ...]
+pub fn zremCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const zobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    var deleted: i64 = 0;
+    for (argv[2..cli.argc]) |member| {
+        if (Zset.del(zobj, sds.cast(member.v.ptr))) {
+            deleted += 1;
+        }
+        if (Zset.length(zobj) == 0) {
+            const ok = cli.db.delete(key);
+            assert(ok);
+            break;
+        }
+    }
+    cli.addReplyLongLong(deleted);
 }
 
 const Zset = struct {
@@ -344,7 +374,7 @@ const Zset = struct {
                 }
                 // Remove and re-insert when score changes.
                 if (inscore != curscore) {
-                    const node = sl.zsl.updateScore(curscore, ele, inscore);
+                    const node = sl.sl.updateScore(curscore, ele, inscore);
                     // Note that we did not removed the original element from
                     // the hash table representing the sorted set, so we just
                     // update the score.
@@ -354,7 +384,7 @@ const Zset = struct {
                 return true;
             } else if (!xx) {
                 const elm = sds.dupe(allocator.child, ele);
-                const node = sl.zsl.insert(score, elm);
+                const node = sl.sl.insert(score, elm);
                 const ok = sl.dict.add(elm, &node.score);
                 assert(ok);
                 flags.* |= ZADD_ADDED;
@@ -362,6 +392,41 @@ const Zset = struct {
                 return true;
             }
             flags.* |= ZADD_NOP;
+            return true;
+        }
+
+        @panic("Unknown sorted set encoding");
+    }
+
+    /// Delete the element 'ele' from the sorted set, returning TRUE if the
+    /// element existed and was deleted, FALSE otherwise if the element was
+    /// not there.
+    pub fn del(zobj: *Object, ele: sds.String) bool {
+        if (zobj.encoding == .ziplist) {
+            const zl: *ZipListSet = .cast(zobj.v.ptr);
+            const eptr = zl.find(ele, null) orelse {
+                return false;
+            };
+            zl.delete(eptr);
+            return true;
+        }
+
+        if (zobj.encoding == .skiplist) {
+            const sl: *SkipListSet = .cast(zobj.v.ptr);
+            const de = sl.dict.find(ele) orelse {
+                return false;
+            };
+            // Get the score in order to delete from the skiplist later.
+            const score = de.val.*;
+
+            var ok = sl.dict.delete(de.key);
+            assert(ok);
+            ok = sl.sl.delete(score, ele);
+            assert(ok);
+
+            if (Server.needShrinkDictToFit(sl.dict.size(), sl.dict.slots())) {
+                _ = sl.dict.shrinkToFit();
+            }
             return true;
         }
 
@@ -401,9 +466,9 @@ const Zset = struct {
             assert(encoding == .ziplist);
 
             const sl: *SkipListSet = .cast(zobj.v.ptr);
-            var node = sl.zsl.header.level(0).forward;
-            allocator.destroy(sl.zsl.header);
-            allocator.destroy(sl.zsl);
+            var node = sl.sl.header.level(0).forward;
+            allocator.destroy(sl.sl.header);
+            allocator.destroy(sl.sl);
             sl.dict.destroy();
             allocator.destroy(sl);
 
@@ -429,7 +494,7 @@ const Zset = struct {
         }
         if (zobj.encoding == .skiplist) {
             const sl: *SkipListSet = .cast(zobj.v.ptr);
-            return sl.zsl.length;
+            return sl.sl.length;
         }
         @panic("Unknown sorted set encoding");
     }
@@ -478,7 +543,7 @@ const Zset = struct {
                 return null;
             };
             const score = de.val.*;
-            const ranking = sl.zsl.getRank(score, ele);
+            const ranking = sl.sl.getRank(score, ele);
             // Existing elements always have a rank.
             assert(ranking != 0);
             if (reverse) {
@@ -516,9 +581,9 @@ pub const ZipListSet = struct {
     zl: *ZipList,
 
     pub fn create() *ZipListSet {
-        const szl = allocator.create(ZipListSet);
-        szl.zl = ZipList.new();
-        return szl;
+        const zls = allocator.create(ZipListSet);
+        zls.zl = ZipList.new();
+        return zls;
     }
 
     pub fn cast(ptr: *anyopaque) *ZipListSet {
@@ -647,7 +712,7 @@ pub const ZipListSet = struct {
 };
 
 pub const SkipListSet = struct {
-    zsl: *SkipList,
+    sl: *SkipList,
     dict: *dict.Dict(sds.String, *f64),
 
     pub fn create() *SkipListSet {
@@ -656,13 +721,13 @@ pub const SkipListSet = struct {
             .hash = sds.hash,
             .eql = sds.eql,
         });
-        z.zsl = SkipList.create();
+        z.sl = SkipList.create();
         return z;
     }
 
     /// The inside skiplist takes ownership of the passed SDS string 'ele'.
     fn insert(self: *SkipListSet, score: f64, ele: sds.String) void {
-        const node = self.zsl.insert(score, ele);
+        const node = self.sl.insert(score, ele);
         const ok = self.dict.add(ele, &node.score);
         assert(ok);
     }
@@ -673,7 +738,7 @@ pub const SkipListSet = struct {
 
     pub fn destroy(self: *SkipListSet) void {
         self.dict.destroy();
-        self.zsl.free();
+        self.sl.free();
         allocator.destroy(self);
     }
 };

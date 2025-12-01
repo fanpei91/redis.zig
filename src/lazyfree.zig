@@ -71,7 +71,7 @@ fn getFreeEffort(obj: *Object) u64 {
 
     if (obj.type == .zset and obj.encoding == .skiplist) {
         const sz: *SkipListSet = .cast(ptr);
-        return sz.zsl.length;
+        return sz.sl.length;
     }
 
     if (obj.type == .hash and obj.encoding == .ht) {
