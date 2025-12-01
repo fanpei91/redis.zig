@@ -101,6 +101,8 @@ pub const table = [_]Command{
     .{ .name = "zrank", .proc = zset.zrankCommand, .arity = 3 },
     .{ .name = "zrevrank", .proc = zset.zrevrankCommand, .arity = 3 },
     .{ .name = "zrem", .proc = zset.zremCommand, .arity = -3 },
+    .{ .name = "zrange", .proc = zset.zrangeCommand, .arity = -4 },
+    .{ .name = "zrevrange", .proc = zset.zrevrangeCommand, .arity = -4 },
 };
 
 pub const Command = struct {

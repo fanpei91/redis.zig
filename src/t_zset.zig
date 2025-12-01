@@ -246,6 +246,128 @@ pub fn zremCommand(cli: *Client) void {
     cli.addReplyLongLong(deleted);
 }
 
+/// ZRANGE key start stop [WITHSCORES]
+pub fn zrangeCommand(cli: *Client) void {
+    zrange(cli, false);
+}
+
+/// ZREVRANGE key start stop [WITHSCORES]
+pub fn zrevrangeCommand(cli: *Client) void {
+    zrange(cli, true);
+}
+
+/// ZRANGE/ZREVRANGE key start stop [WITHSCORES]
+fn zrange(cli: *Client, reverse: bool) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    var start = argv[2].getLongLongOrReply(cli, null) orelse {
+        return;
+    };
+    var end = argv[3].getLongLongOrReply(cli, null) orelse {
+        return;
+    };
+    var withscores = false;
+    if (cli.argc == 5 and
+        eqlCase(sds.asBytes(sds.cast(argv[4].v.ptr)), "withscores"))
+    {
+        withscores = true;
+    } else if (cli.argc >= 5) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    // Sanitize indexes.
+    const llen: i64 = @intCast(Zset.length(zobj));
+    if (start < 0) start = llen +% start;
+    if (end < 0) end = llen +% end;
+    if (start < 0) start = 0;
+
+    // Invariant: start >= 0, so this test will be true when end < 0.
+    // The range is empty when start > end or start >= length.
+    if (start > end or start >= llen) {
+        cli.addReply(Server.shared.emptymultibulk);
+        return;
+    }
+
+    if (end >= llen) end = llen - 1;
+    var rangelen = (end - start) + 1;
+
+    // Return the result in form of a multi-bulk reply
+    cli.addReplyMultiBulkLen(if (withscores) rangelen * 2 else rangelen);
+
+    if (zobj.encoding == .ziplist) {
+        const zl: *ZipListSet = .cast(zobj.v.ptr);
+        var eptr: ?[*]u8 = undefined;
+        if (reverse) {
+            eptr = zl.zl.index(@intCast(-2 - (2 * start)));
+        } else {
+            eptr = zl.zl.index(@intCast(2 * start));
+        }
+        assert(eptr != null);
+        var sptr = zl.zl.next(eptr.?);
+
+        while (rangelen > 0) : (rangelen -= 1) {
+            assert(eptr != null and sptr != null);
+            const value = ZipList.get(eptr.?).?;
+            switch (value) {
+                .num => |v| cli.addReplyLongLong(v),
+                .str => |v| cli.addReplyBulkString(v),
+            }
+            if (withscores) {
+                cli.addReplyDouble(ZipListSet.getScore(sptr.?));
+            }
+            if (reverse) {
+                zl.prev(&eptr, &sptr);
+            } else {
+                zl.next(&eptr, &sptr);
+            }
+        }
+
+        return;
+    }
+
+    if (zobj.encoding == .skiplist) {
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        var ln: ?*SkipList.Node = undefined;
+        // Check if starting point is trivial, before doing log(N) lookup.
+        if (reverse) {
+            ln = sl.sl.tail;
+            if (start > 0) {
+                ln = sl.sl.getElementByRank(@intCast(llen - start));
+            }
+        } else {
+            ln = sl.sl.header.level(0).forward;
+            if (start > 0) {
+                ln = sl.sl.getElementByRank(@intCast(start + 1));
+            }
+        }
+        while (rangelen > 0) : (rangelen -= 1) {
+            assert(ln != null);
+            const ele = ln.?.ele.?;
+            cli.addReplyBulkString(sds.asBytes(ele));
+            if (withscores) {
+                cli.addReplyDouble(ln.?.score);
+            }
+            ln = if (reverse) ln.?.backward else ln.?.level(0).forward;
+        }
+        return;
+    }
+
+    @panic("Unknown sorted set encoding");
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -628,6 +750,23 @@ pub const ZipListSet = struct {
             const sp = self.zl.next(ptr).?;
             eptr.* = ptr;
             sptr.* = sp;
+            return;
+        }
+        eptr.* = null;
+        sptr.* = null;
+    }
+
+    /// Move to the previous entry based on the values in eptr and sptr. Both are
+    /// set to NULL when there is no next entry.
+    fn prev(self: *ZipListSet, eptr: *?[*]u8, sptr: *?[*]u8) void {
+        assert(eptr.* != null);
+        assert(sptr.* != null);
+
+        const sp = self.zl.prev(eptr.*.?);
+        if (sp) |ptr| {
+            const ep = self.zl.prev(ptr).?;
+            eptr.* = ep;
+            sptr.* = ptr;
             return;
         }
         eptr.* = null;
@@ -1099,6 +1238,26 @@ pub const SkipList = struct {
             self.level -= 1;
         }
         self.length -= 1;
+    }
+
+    /// Finds an element by its rank. The rank argument needs to be 1-based.
+    fn getElementByRank(self: *SkipList, rank: u64) ?*Node {
+        var traversed: u64 = 0;
+        var x = self.header;
+        var i = self.level - 1;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward != null and
+                (traversed + x.level(0).span) <= rank)
+            {
+                traversed += x.level(i).span;
+                x = x.level(i).forward.?;
+            }
+            if (traversed == rank) {
+                return x;
+            }
+            if (i == 0) break;
+        }
+        return null;
     }
 };
 
