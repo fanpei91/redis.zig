@@ -24,7 +24,7 @@ pub fn hsetCommand(cli: *Client) void {
     }
 
     // HMSET (deprecated) and HSET return value is different.
-    const command = sds.asBytes(sds.cast(argv[0].v.ptr));
+    const command = sds.castBytes(argv[0].v.ptr);
     if (command[1] == 's' or command[1] == 'S') {
         // HSET
         cli.addReplyLongLong(created);

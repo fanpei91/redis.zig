@@ -17,7 +17,7 @@ const help: []const []const u8 = &.{
 /// OBJECT <refcount|encoding|idletime|freq> key
 pub fn objectCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    const subcmd = sds.asBytes(sds.cast(argv[1].v.ptr));
+    const subcmd = sds.castBytes(argv[1].v.ptr);
     const eqlCase = std.ascii.eqlIgnoreCase;
 
     if (cli.argc == 2 and eqlCase(subcmd, "help")) {
@@ -269,14 +269,10 @@ pub fn dupeString(self: *const Object) *Object {
 
     switch (self.encoding) {
         .raw => {
-            return createRawString(
-                sds.asBytes(sds.cast(self.v.ptr)),
-            );
+            return createRawString(sds.castBytes(self.v.ptr));
         },
         .embstr => {
-            return createEmbeddedString(
-                sds.asBytes(sds.cast(self.v.ptr)),
-            );
+            return createEmbeddedString(sds.castBytes(self.v.ptr));
         },
         .int => {
             const o = createInt(self.v.int);
@@ -419,7 +415,7 @@ pub fn tryEncoding(self: *Object) *Object {
     if (!self.sdsEncoded()) return self;
     if (self.refcount > 1) return self;
 
-    const slice = sds.asBytes(sds.cast(self.v.ptr));
+    const slice = sds.castBytes(self.v.ptr);
     if (slice.len <= 20) if (util.string2ll(slice)) |value| {
         const use_shared_integers = (Server.instance.maxmemory == 0 or
             (Server.instance.maxmemory_policy & Server.MAXMEMORY_FLAG_NO_SHARED_INTEGERS) == 0);
@@ -516,7 +512,7 @@ pub fn getLongLongOrReply(
 pub fn getLongLong(self: *const Object) ?i64 {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        return util.string2ll(sds.asBytes(sds.cast(self.v.ptr)));
+        return util.string2ll(sds.castBytes(self.v.ptr));
     }
     if (self.encoding == .int) {
         return self.v.int;
@@ -542,10 +538,7 @@ pub fn getLongDoubleOrReply(
 pub fn getLongDouble(self: *const Object) ?f80 {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        return std.fmt.parseFloat(
-            f80,
-            sds.asBytes(sds.cast(self.v.ptr)),
-        ) catch {
+        return std.fmt.parseFloat(f80, sds.castBytes(self.v.ptr)) catch {
             return null;
         };
     }
@@ -573,10 +566,7 @@ pub fn getDoubleOrReply(
 pub fn getDouble(self: *const Object) ?f64 {
     assert(self.type == .string);
     if (self.sdsEncoded()) {
-        return std.fmt.parseFloat(
-            f64,
-            sds.asBytes(sds.cast(self.v.ptr)),
-        ) catch {
+        return std.fmt.parseFloat(f64, sds.castBytes(self.v.ptr)) catch {
             return null;
         };
     }

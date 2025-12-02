@@ -743,6 +743,10 @@ pub inline fn asBytes(s: String) []u8 {
     return s[0..getLen(s)];
 }
 
+pub inline fn castBytes(ptr: *anyopaque) []u8 {
+    return asBytes(cast(ptr));
+}
+
 pub inline fn asSentinelBytes(s: String) [:0]u8 {
     return s[0..getLen(s) :0];
 }

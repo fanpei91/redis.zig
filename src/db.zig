@@ -403,9 +403,7 @@ pub const Database = struct {
         assert(o.type == .string);
         if (o.refcount != 1 or o.encoding != .raw) {
             const decoded = o.getDecoded();
-            const new = Object.createRawString(
-                sds.asBytes(sds.cast(decoded.v.ptr)),
-            );
+            const new = Object.createRawString(sds.castBytes(decoded.v.ptr));
             decoded.decrRefCount();
             self.overwrite(key, new);
             return new;
@@ -641,7 +639,7 @@ pub const Scan = struct {
         // Step 1: Parse options.
         while (i < cli.argc) {
             const j = cli.argc - i;
-            const option = sds.asBytes(sds.cast(argv[i].v.ptr));
+            const option = sds.castBytes(argv[i].v.ptr);
             if (caseEql(option, "count") and j >= 2) {
                 const value = argv[i + 1];
                 count = value.getLongLongOrReply(cli, null) orelse return;
@@ -792,7 +790,7 @@ pub const Scan = struct {
     pub fn parseCursorOrReply(o: *const Object, cli: *Client) ?u64 {
         const cursor = std.fmt.parseInt(
             u64,
-            sds.asBytes(sds.cast(o.v.ptr)),
+            sds.castBytes(o.v.ptr),
             10,
         ) catch {
             cli.addReplyErr("invalid cursor");

@@ -579,7 +579,7 @@ pub const Client = struct {
         const argv = self.argv.?;
         const reply = self.addDeferredMultiBulkLength();
 
-        const cmd = sds.new(allocator.child, sds.asBytes(sds.cast(argv[0].v.ptr)));
+        const cmd = sds.new(allocator.child, sds.castBytes(argv[0].v.ptr));
         defer sds.free(allocator.child, cmd);
         sds.toUpper(cmd);
         self.addReplyStatusFormat(
@@ -621,7 +621,7 @@ pub const Client = struct {
     /// subcommands in response to an unknown subcommand or argument error.
     pub fn addReplySubcommandSyntaxError(self: *Client) void {
         const argv = self.argv.?;
-        const cmd = sds.new(allocator.child, sds.asBytes(sds.cast(argv[0].v.ptr)));
+        const cmd = sds.new(allocator.child, sds.castBytes(argv[0].v.ptr));
         defer sds.free(allocator.child, cmd);
         sds.toUpper(cmd);
         // zig fmt: off
@@ -629,7 +629,7 @@ pub const Client = struct {
             "Unknown subcommand or wrong number of arguments for '{s}'. " ++
             "Try {s} HELP.",
             .{
-                sds.asBytes(sds.cast(argv[1].v.ptr)),
+                sds.castBytes(argv[1].v.ptr),
                 sds.asBytes(cmd),
             },
         );
@@ -750,7 +750,7 @@ pub const Client = struct {
         var s: []u8 = undefined;
 
         if (obj.sdsEncoded()) {
-            s = sds.asBytes(sds.cast(obj.v.ptr));
+            s = sds.castBytes(obj.v.ptr);
         } else if (obj.encoding == .int) {
             s = util.ll2string(&buf, obj.v.int);
         } else {

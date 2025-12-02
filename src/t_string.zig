@@ -8,7 +8,7 @@ pub fn setCommand(cli: *Client) void {
 
     var j: usize = 3;
     while (j < cli.argc) : (j += 1) {
-        const arg = sds.asBytes(sds.cast(argv[j].v.ptr));
+        const arg = sds.castBytes(argv[j].v.ptr);
         const next = if (j == cli.argc - 1) null else argv[j + 1];
 
         if (eqlCase(arg, "nx") and flags & OBJ_SET_XX == 0) {
@@ -232,7 +232,7 @@ pub fn appendCommand(cli: *Client) void {
             .ptr = sds.cat(
                 allocator.child,
                 sds.cast(o.v.ptr),
-                sds.asBytes(sds.cast(append.v.ptr)),
+                sds.castBytes(append.v.ptr),
             ),
         };
         totlen = sds.getLen(sds.cast(o.v.ptr));
@@ -329,7 +329,7 @@ pub fn getrangeCommand(cli: *Client) void {
     if (obj.encoding == .int) {
         str = util.ll2string(&buf, obj.v.int);
     } else {
-        str = sds.asBytes(sds.cast(obj.v.ptr));
+        str = sds.castBytes(obj.v.ptr);
     }
 
     // Convert negative indexes

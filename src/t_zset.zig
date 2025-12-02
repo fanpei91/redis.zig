@@ -40,7 +40,7 @@ fn zadd(cli: *Client, flags: i32) void {
     var scoreidx: usize = 2;
     var newflags = flags;
     while (scoreidx < cli.argc) {
-        const opt = sds.asBytes(sds.cast(argv[scoreidx].v.ptr));
+        const opt = sds.castBytes(argv[scoreidx].v.ptr);
         if (eqlCase(opt, "nx")) {
             newflags |= ZADD_NX;
         } else if (eqlCase(opt, "xx")) {
@@ -115,15 +115,14 @@ fn zadd(cli: *Client, flags: i32) void {
         for (0..elements) |i| {
             score = scores[i];
             const ele = sds.cast(argv[scoreidx + i * 2 + 1].v.ptr);
-            var retflags = newflags;
             var newscore: f64 = undefined;
-            if (!Zset.add(zobj, score, ele, &retflags, &newscore)) {
+            if (!Zset.add(zobj, score, ele, &newflags, &newscore)) {
                 cli.addReplyErr("resulting score is not a number (NaN)");
                 return;
             }
-            if (retflags & ZADD_ADDED != 0) added += 1;
-            if (retflags & ZADD_UPDATED != 0) updated += 1;
-            if (retflags & ZADD_NOP == 0) processed += 1;
+            if (newflags & ZADD_ADDED != 0) added += 1;
+            if (newflags & ZADD_UPDATED != 0) updated += 1;
+            if (newflags & ZADD_NOP == 0) processed += 1;
             score = newscore;
         }
     }
@@ -269,7 +268,7 @@ fn zrange(cli: *Client, reverse: bool) void {
     };
     var withscores = false;
     if (cli.argc == 5 and
-        eqlCase(sds.asBytes(sds.cast(argv[4].v.ptr)), "withscores"))
+        eqlCase(sds.castBytes(argv[4].v.ptr), "withscores"))
     {
         withscores = true;
     } else if (cli.argc >= 5) {
@@ -366,6 +365,203 @@ fn zrange(cli: *Client, reverse: bool) void {
     }
 
     @panic("Unknown sorted set encoding");
+}
+
+/// ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]
+pub fn zrangebyscoreCommand(cli: *Client) void {
+    zrangebyscore(cli, false);
+}
+
+/// ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
+pub fn zrevrangebyscoreCommand(cli: *Client) void {
+    zrangebyscore(cli, true);
+}
+
+/// Implements ZRANGEBYSCORE and ZREVRANGEBYSCORE.
+fn zrangebyscore(cli: *Client, reverse: bool) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    var withscores = false;
+    var limit: i64 = -1;
+    var offset: i64 = 0;
+    var rangelen: i64 = 0;
+
+    // Range is given as [min,max]
+    var minidx: usize = 2;
+    var maxidx: usize = 3;
+    // Range is given as [max,min]
+    if (reverse) {
+        maxidx = 2;
+        minidx = 3;
+    }
+    const range = Range.parse(argv[minidx], argv[maxidx]) orelse {
+        cli.addReplyErr("min or max is not a float");
+        return;
+    };
+
+    // Parse optional extra arguments.
+    if (cli.argc > 4) {
+        var pos: usize = 4;
+        var remaining = cli.argc - 4;
+        while (remaining > 0) {
+            if (remaining >= 1 and
+                eqlCase(sds.castBytes(argv[pos].v.ptr), "withscores"))
+            {
+                pos += 1;
+                remaining -= 1;
+                withscores = true;
+            } else if (remaining >= 3 and
+                eqlCase(sds.castBytes(argv[pos].v.ptr), "limit"))
+            {
+                offset = argv[pos + 1].getLongLongOrReply(cli, null) orelse {
+                    return;
+                };
+                limit = argv[pos + 2].getLongLongOrReply(cli, null) orelse {
+                    return;
+                };
+                pos += 3;
+                remaining -= 3;
+            } else {
+                cli.addReply(Server.shared.syntaxerr);
+                return;
+            }
+        }
+    }
+
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    var replylen: ?*Client.ReplyBlock = null;
+
+    if (zobj.encoding == .ziplist) {
+        const zl: *ZipListSet = .cast(zobj.v.ptr);
+        // If reversed, get the last node in range as starting point.
+        var eptr = blk: {
+            if (reverse) {
+                break :blk zl.lastInRange(range);
+            }
+            break :blk zl.firstInRange(range);
+        };
+        if (eptr == null) {
+            cli.addReply(Server.shared.emptymultibulk);
+            return;
+        }
+        assert(eptr != null);
+
+        // Get score pointer for the first element.
+        var sptr = zl.zl.next(eptr.?);
+        assert(sptr != null);
+
+        // We don't know in advance how many matching elements there are in the
+        // list, so we push this object that will represent the multi-bulk
+        // length in the output buffer, and will "fix" it later
+        replylen = cli.addDeferredMultiBulkLength();
+
+        // If there is an offset, just traverse the number of elements without
+        // checking the score because that is done in the next loop.
+        while (eptr != null and offset > 0) : (offset -= 1) {
+            if (reverse) {
+                zl.prev(&eptr, &sptr);
+            } else {
+                zl.next(&eptr, &sptr);
+            }
+        }
+
+        while (eptr != null and limit != 0) : (limit -= 1) {
+            const score = ZipListSet.getScore(sptr.?);
+            // Abort when the node is no longer in range.
+            if (reverse) {
+                if (!range.valueGteMin(score)) break;
+            } else {
+                if (!range.valueLteMax(score)) break;
+            }
+
+            // We know the element exists, so ZipList.get() should always succeed
+            const value = ZipList.get(eptr.?).?;
+            rangelen += 1;
+            switch (value) {
+                .num => |v| cli.addReplyBulkLongLong(v),
+                .str => |v| cli.addReplyBulkString(v),
+            }
+            if (withscores) {
+                cli.addReplyDouble(score);
+            }
+
+            // Move to next node
+            if (reverse) {
+                zl.prev(&eptr, &sptr);
+            } else {
+                zl.next(&eptr, &sptr);
+            }
+        }
+    } else if (zobj.encoding == .skiplist) {
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        var ln = blk: {
+            if (reverse) {
+                // If reversed, get the last node in range as starting point.
+                break :blk sl.sl.lastInRange(range);
+            }
+            break :blk sl.sl.firstInRange(range);
+        };
+        // No "first" element in the specified interval.
+        if (ln == null) {
+            cli.addReply(Server.shared.emptymultibulk);
+            return;
+        }
+
+        // We don't know in advance how many matching elements there are in the
+        // list, so we push this object that will represent the multi-bulk
+        // length in the output buffer, and will "fix" it later
+        replylen = cli.addDeferredMultiBulkLength();
+
+        // If there is an offset, just traverse the number of elements without
+        // checking the score because that is done in the next loop.
+        while (ln != null and offset > 0) : (offset -= 1) {
+            if (reverse) {
+                ln = ln.?.backward;
+            } else {
+                ln = ln.?.level(0).forward;
+            }
+        }
+
+        while (ln != null and limit != 0) : (limit -= 1) {
+            if (reverse) {
+                if (!range.valueGteMin(ln.?.score)) break;
+            } else {
+                if (!range.valueLteMax(ln.?.score)) break;
+            }
+
+            rangelen += 1;
+            cli.addReplyBulkString(sds.asBytes(ln.?.ele.?));
+            if (withscores) {
+                cli.addReplyDouble(ln.?.score);
+            }
+
+            // Move to next node
+            if (reverse) {
+                ln = ln.?.backward;
+            } else {
+                ln = ln.?.level(0).forward;
+            }
+        }
+    } else {
+        @panic("Unknown sorted set encoding");
+    }
+
+    if (withscores) {
+        rangelen *= 2;
+    }
+
+    cli.setDeferredMultiBulkLength(replylen, rangelen);
 }
 
 const Zset = struct {
@@ -739,6 +935,90 @@ pub const ZipListSet = struct {
         return @divExact(self.zl.len.get(), 2);
     }
 
+    /// Find pointer to the last element contained in the specified range.
+    /// Returns NULL when no element is contained in the range.
+    pub fn lastInRange(self: *ZipListSet, range: Range) ?[*]u8 {
+        // If everything is out of range, return early.
+        if (!self.isInRange(range)) {
+            return null;
+        }
+
+        var eptr = self.zl.index(-2);
+        while (eptr) |ep| {
+            var sptr = self.zl.next(ep).?;
+            const score = getScore(sptr);
+            if (range.valueLteMax(score)) {
+                // Check if score >= min.
+                if (range.valueGteMin(score)) {
+                    return ep;
+                }
+                return null;
+            }
+            // Move to previous element by moving to the score of previous
+            // element. When this returns NULL, we know there also is no
+            // element.
+            sptr = self.zl.prev(ep) orelse {
+                return null;
+            };
+            eptr = self.zl.prev(sptr);
+        }
+
+        return null;
+    }
+
+    /// Find pointer to the first element contained in the specified range.
+    /// Returns NULL when no element is contained in the range.
+    pub fn firstInRange(self: *ZipListSet, range: Range) ?[*]u8 {
+        // If everything is out of range, return early.
+        if (!self.isInRange(range)) {
+            return null;
+        }
+
+        var eptr = self.zl.index(0);
+        while (eptr) |ep| {
+            const sptr = self.zl.next(ep).?;
+            const score = getScore(sptr);
+            if (range.valueGteMin(score)) {
+                // Check if score <= max.
+                if (range.valueLteMax(score)) {
+                    return ep;
+                }
+                return null;
+            }
+            // Move to next element.
+            eptr = self.zl.next(sptr);
+        }
+
+        return null;
+    }
+
+    /// Returns if there is a part of the zset is in range.
+    fn isInRange(self: *ZipListSet, range: Range) bool {
+        if (range.min > range.max or
+            (range.min == range.max and (range.minex or range.maxex)))
+        {
+            return false;
+        }
+
+        // Last score
+        var sptr = self.zl.index(-1) orelse {
+            return false;
+        };
+        var score = getScore(sptr);
+        if (!range.valueGteMin(score)) {
+            return false;
+        }
+
+        // First Score
+        sptr = self.zl.index(1).?;
+        score = getScore(sptr);
+        if (!range.valueLteMax(score)) {
+            return false;
+        }
+
+        return true;
+    }
+
     /// Move to next entry based on the values in eptr and sptr. Both are set to
     /// NULL when there is no next entry.
     pub fn next(self: *ZipListSet, eptr: *?[*]u8, sptr: *?[*]u8) void {
@@ -877,7 +1157,7 @@ pub const SkipListSet = struct {
 
     pub fn destroy(self: *SkipListSet) void {
         self.dict.destroy();
-        self.sl.free();
+        self.sl.destroy();
         allocator.destroy(self);
     }
 };
@@ -928,6 +1208,9 @@ pub const SkipList = struct {
             return @ptrFromInt(@intFromPtr(self) + offset);
         }
 
+        /// Free the specified skiplist node. The referenced SDS string
+        /// representation of the element is freed too, unless node.ele
+        /// is set to NULL before calling this function.
         pub fn free(self: *Node) void {
             if (self.ele) |ele| {
                 sds.free(allocator.child, ele);
@@ -1082,6 +1365,9 @@ pub const SkipList = struct {
         return newnode;
     }
 
+    /// Delete an element with matching score/element from the skiplist.
+    /// The function returns TRUE if the node was found and deleted, otherwise
+    /// FALSE is returned.
     pub fn delete(self: *SkipList, score: f64, ele: sds.String) bool {
         var update: [ZSKIPLIST_MAXLEVEL]*Node = undefined;
         var x = self.header;
@@ -1144,14 +1430,16 @@ pub const SkipList = struct {
         return rank;
     }
 
-    pub fn firstInRange(self: *const SkipList, range: *const Range) ?*Node {
+    /// Find the first node that is contained in the specified range.
+    /// Returns NULL when no element is contained in the range.
+    pub fn firstInRange(self: *const SkipList, range: Range) ?*Node {
         if (!self.isInRange(range)) return null;
 
         var x = self.header;
         var i = self.level - 1;
         while (i >= 0) : (i -= 1) {
             while (x.level(i).forward) |forward| {
-                if (!range.minLte(forward.score)) {
+                if (!range.valueGteMin(forward.score)) {
                     x = forward;
                     continue;
                 }
@@ -1162,18 +1450,20 @@ pub const SkipList = struct {
 
         // This is an inner range, so the next node cannot be NULL.
         x = x.level(0).forward.?;
-        if (!range.maxGte(x.score)) return null;
+        if (!range.valueLteMax(x.score)) return null;
         return x;
     }
 
-    pub fn lastInRange(self: *const SkipList, range: *const Range) ?*Node {
+    /// Find the last node that is contained in the specified range.
+    /// Returns NULL when no element is contained in the range.
+    pub fn lastInRange(self: *const SkipList, range: Range) ?*Node {
         if (!self.isInRange(range)) return null;
 
         var x = self.header;
         var i = self.level - 1;
         while (i >= 0) : (i -= 1) {
             while (x.level(i).forward) |forward| {
-                if (range.maxGte(forward.score)) {
+                if (range.valueLteMax(forward.score)) {
                     x = forward;
                     continue;
                 }
@@ -1182,11 +1472,11 @@ pub const SkipList = struct {
             if (i == 0) break;
         }
 
-        if (!range.minLte(x.score)) return null;
+        if (!range.valueGteMin(x.score)) return null;
         return x;
     }
 
-    pub fn free(self: *SkipList) void {
+    pub fn destroy(self: *SkipList) void {
         var node = self.header.level(0).forward;
         self.header.free();
         while (node) |n| {
@@ -1197,17 +1487,17 @@ pub const SkipList = struct {
     }
 
     /// Returns if there is a part of the skiplist is in range.
-    fn isInRange(self: *const SkipList, range: *const Range) bool {
+    fn isInRange(self: *const SkipList, range: Range) bool {
         if (range.min > range.max) return false;
         if (range.min == range.max and (range.minex or range.maxex)) {
             return false;
         }
 
         const last = self.tail;
-        if (last == null or !range.minLte(last.?.score)) return false;
+        if (last == null or !range.valueGteMin(last.?.score)) return false;
 
         const first = self.header.level(0).forward;
-        if (first == null or !range.maxGte(first.?.score)) return false;
+        if (first == null or !range.valueLteMax(first.?.score)) return false;
 
         return true;
     }
@@ -1279,18 +1569,66 @@ pub const Range = struct {
     minex: bool,
     maxex: bool,
 
-    pub fn minLte(range: *const Range, value: f64) bool {
+    pub fn valueGteMin(range: *const Range, value: f64) bool {
         return if (range.minex)
-            range.min < value
+            value > range.min
         else
-            range.min <= value;
+            value >= range.min;
     }
 
-    pub fn maxGte(range: *const Range, value: f64) bool {
+    pub fn valueLteMax(range: *const Range, value: f64) bool {
         return if (range.maxex)
-            range.max > value
+            value < range.max
         else
-            range.max >= value;
+            value <= range.max;
+    }
+
+    fn parse(min: *Object, max: *Object) ?Range {
+        var range: Range = .{
+            .min = 0,
+            .max = 0,
+            .minex = false,
+            .maxex = false,
+        };
+
+        // Parse the min-max interval. If one of the values is prefixed
+        // by the "(" character, it's considered "open". For instance
+        // ZRANGEBYSCORE zset (1.5 (2.5 will match min < x < max
+        // ZRANGEBYSCORE zset 1.5 2.5 will instead match min <= x <= max
+        if (min.encoding == .int) {
+            range.min = @floatFromInt(min.v.int);
+        } else {
+            const s = sds.castBytes(min.v.ptr);
+            var i: usize = 0;
+            if (s[0] == '(') {
+                i = 1;
+                range.minex = true;
+            }
+            range.min = std.fmt.parseFloat(f64, s[i..]) catch {
+                return null;
+            };
+            if (isNan(range.min)) {
+                return null;
+            }
+        }
+        if (max.encoding == .int) {
+            range.max = @floatFromInt(max.v.int);
+        } else {
+            const s = sds.castBytes(max.v.ptr);
+            var i: usize = 0;
+            if (s[0] == '(') {
+                i = 1;
+                range.maxex = true;
+            }
+            range.max = std.fmt.parseFloat(f64, s[i..]) catch {
+                return null;
+            };
+            if (isNan(range.max)) {
+                return null;
+            }
+        }
+
+        return range;
     }
 };
 
@@ -1301,7 +1639,7 @@ test zslRandomLevel {
 
 test SkipList {
     var sl = SkipList.create();
-    defer sl.free();
+    defer sl.destroy();
 
     var ele = sds.new(allocator.child, "score 1");
     try expect(sl.getRank(1, ele) == 0);
@@ -1328,14 +1666,14 @@ test SkipList {
         .minex = false,
         .maxex = false,
     };
-    const first = sl.firstInRange(&range);
+    const first = sl.firstInRange(range);
     try expect(first != null);
     try expect(first.? == score1);
-    var last = sl.lastInRange(&range);
+    var last = sl.lastInRange(range);
     try expect(last != null);
     try expect(last.? == score2);
     range.maxex = true;
-    last = sl.lastInRange(&range);
+    last = sl.lastInRange(range);
     try expect(last != null);
     try expect(last.? == score1);
 
@@ -1345,6 +1683,11 @@ test SkipList {
     );
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
+
+    var node = sl.getElementByRank(2);
+    try expectEqualStrings(sds.asBytes(node.?.ele.?), "score 2");
+    node = sl.getElementByRank(5);
+    try expect(node == null);
 
     ele = sds.new(allocator.child, "deleted");
     _ = sl.insert(3, ele);
@@ -1360,6 +1703,7 @@ const allocator = @import("allocator.zig");
 const testing = std.testing;
 const expect = testing.expect;
 const expectEqual = testing.expectEqual;
+const expectEqualStrings = testing.expectEqualStrings;
 const assert = std.debug.assert;
 const random = @import("random.zig");
 const isNan = std.math.isNan;
@@ -1375,3 +1719,4 @@ const Object = @import("Object.zig");
 const server = &Server.instance;
 const ZipList = @import("ZipList.zig");
 const util = @import("util.zig");
+const log = std.log.scoped(.zset);

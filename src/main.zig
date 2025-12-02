@@ -61,7 +61,7 @@ pub fn main() void {
             },
         );
     } else {
-        log.warn("Configuration loaded", .{});
+        log.info("Configuration loaded", .{});
     }
 
     try Server.create(configfile, options);

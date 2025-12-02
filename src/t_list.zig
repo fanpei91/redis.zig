@@ -63,7 +63,7 @@ pub fn linsertCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
     var where: Where = undefined;
-    const arg2 = sds.asBytes(sds.cast(argv[2].v.ptr));
+    const arg2 = sds.castBytes(argv[2].v.ptr);
     if (std.ascii.eqlIgnoreCase(arg2, "after")) {
         where = .tail;
     } else if (std.ascii.eqlIgnoreCase(arg2, "before")) {
@@ -160,7 +160,7 @@ pub fn lsetCommand(cli: *Client) void {
     }
 
     const ql = QuickList.cast(lobj.v.ptr);
-    const element = sds.asBytes(sds.cast(argv[3].v.ptr));
+    const element = sds.castBytes(argv[3].v.ptr);
     if (ql.replaceAtIndex(index, element)) {
         cli.addReply(Server.shared.ok);
         return;
@@ -560,10 +560,7 @@ pub const List = struct {
                 @branchHint(.unlikely);
                 @panic("Unknown list encoding");
             }
-            return QuickList.eql(
-                self.entry.zi.?,
-                sds.asBytes(sds.cast(obj.v.ptr)),
-            );
+            return QuickList.eql(self.entry.zi.?, sds.castBytes(obj.v.ptr));
         }
 
         pub fn delete(self: *Entry) void {
@@ -582,7 +579,7 @@ pub const List = struct {
             const value = obj.getDecoded();
             defer value.decrRefCount();
             const ql = self.entry.quicklist.?;
-            const str = sds.asBytes(sds.cast(value.v.ptr));
+            const str = sds.castBytes(value.v.ptr);
             if (where == .tail) {
                 ql.insertAfter(&self.entry, str);
             } else {
@@ -660,7 +657,7 @@ pub const List = struct {
         const value = element.getDecoded();
         defer value.decrRefCount();
         ql.push(
-            sds.asBytes(sds.cast(value.v.ptr)),
+            sds.castBytes(value.v.ptr),
             if (where == .head) .head else .tail,
         );
     }
