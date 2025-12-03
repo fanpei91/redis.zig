@@ -245,6 +245,118 @@ pub fn zremCommand(cli: *Client) void {
     cli.addReplyLongLong(deleted);
 }
 
+/// ZREMRANGEBYRANK key start stop
+pub fn zremrangebyrankCommand(cli: *Client) void {
+    zremrangeby(cli, .rank);
+}
+
+/// ZREMRANGEBYSCORE key min max
+pub fn zremrangebyscoreCommand(cli: *Client) void {
+    zremrangeby(cli, .score);
+}
+
+/// ZREMRANGEBYLEX key min max
+pub fn zremrangebylexCommand(cli: *Client) void {
+    zremrangeby(cli, .lex);
+}
+
+/// Implements ZREMRANGEBYRANK, ZREMRANGEBYSCORE and ZREMRANGEBYLEX.
+fn zremrangeby(cli: *Client, rangetype: RangeType) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    var start: i64 = undefined;
+    var end: i64 = undefined;
+    var range: Range = undefined;
+    var lexrange: LexRange = undefined;
+    defer if (rangetype == .lex) {
+        lexrange.free();
+    };
+
+    switch (rangetype) {
+        .rank => {
+            start = argv[2].getLongLongOrReply(cli, null) orelse {
+                return;
+            };
+            end = argv[3].getLongLongOrReply(cli, null) orelse {
+                return;
+            };
+        },
+        .score => {
+            range = Range.parse(argv[2], argv[3]) orelse {
+                cli.addReplyErr("min or max is not a float");
+                return;
+            };
+        },
+        .lex => {
+            lexrange = LexRange.parse(argv[2], argv[3]) orelse {
+                cli.addReplyErr("min or max not valid string range item");
+                return;
+            };
+        },
+    }
+
+    const zobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    // Sanitize indexes.
+    if (rangetype == .rank) {
+        const llen: i64 = @intCast(Zset.length(zobj));
+        if (start < 0) start = llen +% start;
+        if (end < 0) end = llen +% end;
+        if (start < 0) start = 0;
+
+        // Invariant: start >= 0, so this test will be true when end < 0.
+        // The range is empty when start > end or start >= length.
+        if (start > end or start >= llen) {
+            cli.addReply(Server.shared.czero);
+            return;
+        }
+        if (end >= llen) end = llen - 1;
+    }
+
+    // Perform the range deletion operation.
+    var deleted: u64 = 0;
+    if (zobj.encoding == .ziplist) {
+        const zl: *ZipListSet = .cast(zobj.v.ptr);
+        deleted = switch (rangetype) {
+            .rank => zl.deleteRangeByRank(@intCast(start + 1), @intCast(end + 1)),
+            .score => zl.deleteRangeByScore(range),
+            .lex => zl.deleteRangeByLex(lexrange),
+        };
+        if (zl.length() == 0) {
+            const ok = cli.db.delete(key);
+            assert(ok);
+        }
+    } else if (zobj.encoding == .skiplist) {
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        deleted = switch (rangetype) {
+            .rank => sl.deleteRangeByRank(@intCast(start + 1), @intCast(end + 1)),
+            .score => sl.deleteRangeByScore(range),
+            .lex => sl.deleteRangeByLex(lexrange),
+        };
+        if (Server.needShrinkDictToFit(sl.dict.size(), sl.dict.slots())) {
+            _ = sl.dict.shrinkToFit();
+        }
+        if (sl.sl.length == 0) {
+            const ok = cli.db.delete(key);
+            assert(ok);
+        }
+    } else {
+        @panic("Unknown sorted set encoding");
+    }
+
+    cli.addReplyLongLong(@intCast(deleted));
+}
+
 /// ZRANGE key start stop [WITHSCORES]
 pub fn zrangeCommand(cli: *Client) void {
     zrange(cli, false);
@@ -648,7 +760,7 @@ const Zset = struct {
                 }
                 // Remove and re-insert when score changed.
                 if (inscore != curscore) {
-                    zl.delete(eptr);
+                    _ = zl.delete(eptr);
                     zl.insert(ele, inscore);
                     flags.* |= ZADD_UPDATED;
                 }
@@ -725,7 +837,7 @@ const Zset = struct {
             const eptr = zl.find(ele, null) orelse {
                 return false;
             };
-            zl.delete(eptr);
+            _ = zl.delete(eptr);
             return true;
         }
 
@@ -961,6 +1073,39 @@ pub const ZipListSet = struct {
                 return null;
             };
             eptr = self.zl.prev(sptr);
+            assert(eptr != null);
+        }
+
+        return null;
+    }
+
+    /// Find pointer to the last element contained in the specified lex range.
+    /// Returns NULL when no element is contained in the lex range.
+    pub fn lastInLexRange(self: *ZipListSet, range: LexRange) ?[*]u8 {
+        // If everything is out of range, return early.
+        if (!self.isInLexRange(range)) {
+            return null;
+        }
+
+        var eptr = self.zl.index(-2);
+        while (eptr) |ep| {
+            const value = ZipList.getObject(ep);
+            defer sds.free(allocator.child, value);
+            if (range.valueLteMax(value)) {
+                // Check if value >= min.
+                if (range.valueGteMin(value)) {
+                    return ep;
+                }
+                return null;
+            }
+            // Move to previous element by moving to the score of previous
+            // element. When this returns NULL, we know there also is no
+            // element.
+            const sptr = self.zl.prev(ep) orelse {
+                return null;
+            };
+            eptr = self.zl.prev(sptr);
+            assert(eptr != null);
         }
 
         return null;
@@ -992,6 +1137,33 @@ pub const ZipListSet = struct {
         return null;
     }
 
+    /// Find pointer to the first element contained in the specified lex range.
+    /// Returns NULL when no element is contained in the lex range.
+    pub fn firstInLexRange(self: *ZipListSet, range: LexRange) ?[*]u8 {
+        // If everything is out of range, return early.
+        if (!self.isInLexRange(range)) {
+            return null;
+        }
+
+        var eptr = self.zl.index(0);
+        while (eptr) |ep| {
+            const value = ZipList.getObject(ep);
+            defer sds.free(allocator.child, value);
+            if (range.valueGteMin(value)) {
+                // Check if value <= max.
+                if (range.valueLteMax(value)) {
+                    return ep;
+                }
+                return null;
+            }
+            // Move to next element.
+            const sptr = self.zl.next(ep).?; // This element score. Skip it.
+            eptr = self.zl.next(sptr);
+        }
+
+        return null;
+    }
+
     /// Returns if there is a part of the zset is in range.
     fn isInRange(self: *ZipListSet, range: Range) bool {
         if (range.min > range.max or
@@ -1013,6 +1185,39 @@ pub const ZipListSet = struct {
         sptr = self.zl.index(1).?;
         score = getScore(sptr);
         if (!range.valueLteMax(score)) {
+            return false;
+        }
+
+        return true;
+    }
+    /// Returns if there is a part of the zset is in lex range.
+    fn isInLexRange(self: *ZipListSet, range: LexRange) bool {
+        //  Test for ranges that will always be empty.
+        const order = sds.cmplex(
+            range.min.?,
+            range.max.?,
+            Server.shared.minstring,
+            Server.shared.maxstring,
+        );
+        if (order == .gt or (order == .eq and (range.minex or range.maxex))) {
+            return false;
+        }
+
+        // Last element
+        var eptr = self.zl.index(-2) orelse {
+            return false;
+        };
+        const last = ZipList.getObject(eptr);
+        defer sds.free(allocator.child, last);
+        if (!range.valueGteMin(last)) {
+            return false;
+        }
+
+        // First Element
+        eptr = self.zl.index(0).?;
+        const first = ZipList.getObject(eptr);
+        defer sds.free(allocator.child, first);
+        if (!range.valueLteMax(first)) {
             return false;
         }
 
@@ -1053,11 +1258,71 @@ pub const ZipListSet = struct {
         sptr.* = null;
     }
 
-    /// Delete (element,score) pair from ziplist.
-    fn delete(self: *ZipListSet, eptr: [*]u8) void {
+    /// Delete (element,score) pair from ziplist. Return the element pointer
+    /// next to the deleted score pointer.
+    fn delete(self: *ZipListSet, eptr: [*]u8) [*]u8 {
         var p = eptr;
         self.zl = self.zl.delete(&p);
         self.zl = self.zl.delete(&p);
+        return p;
+    }
+
+    /// Delete all the elements with rank between start and end from the ziplist.
+    /// Start and end are inclusive. Note that start and end need to be 1-based.
+    /// Return the number of deleted elements.
+    fn deleteRangeByRank(self: *ZipListSet, start: u64, end: u64) u64 {
+        const num: u32 = @intCast((end - start) + 1);
+        self.zl = self.zl.deleteRange(@intCast(2 * (start - 1)), num * 2);
+        return num;
+    }
+
+    /// Delete all the elements in the range from the ziplist.
+    /// Return the number of deleted elements.
+    fn deleteRangeByScore(self: *ZipListSet, range: Range) u64 {
+        var eptr = self.firstInRange(range) orelse {
+            return 0;
+        };
+
+        var num: u64 = 0;
+        // When the tail of the ziplist is deleted, eptr will point to the
+        // sentinel byte and ZipList.Next() will return NULL.
+        while (self.zl.next(eptr)) |sptr| {
+            const score = getScore(sptr);
+            if (range.valueLteMax(score)) {
+                // Delete both the element and the score.
+                eptr = self.delete(eptr);
+                num += 1;
+            } else {
+                // No longer in range.
+                break;
+            }
+        }
+        return num;
+    }
+
+    /// Delete all the elements in the lex range from the ziplist.
+    /// Return the number of deleted elements.
+    fn deleteRangeByLex(self: *ZipListSet, range: LexRange) u64 {
+        var eptr = self.firstInLexRange(range) orelse {
+            return 0;
+        };
+
+        var num: u64 = 0;
+        // When the tail of the ziplist is deleted, eptr will point to the
+        // sentinel byte and ZipList.Next() will return NULL.
+        while (self.zl.next(eptr)) |_| {
+            const value = ZipList.getObject(eptr);
+            defer sds.free(allocator.child, value);
+            if (range.valueLteMax(value)) {
+                // Delete both the element and the score.
+                eptr = self.delete(eptr);
+                num += 1;
+            } else {
+                // No longer in range.
+                break;
+            }
+        }
+        return num;
     }
 
     /// Insert (element,score) pair in ziplist. This function assumes the
@@ -1149,6 +1414,112 @@ pub const SkipListSet = struct {
         const node = self.sl.insert(score, ele);
         const ok = self.dict.add(ele, &node.score);
         assert(ok);
+    }
+
+    /// Delete all the elements with rank between start and end from the skiplist.
+    /// Start and end are inclusive. Note that start and end need to be 1-based.
+    fn deleteRangeByRank(self: *SkipListSet, start: u64, end: u64) u64 {
+        var update: [ZSKIPLIST_MAXLEVEL]*SkipList.Node = undefined;
+        var x = self.sl.header;
+        var i = self.sl.level - 1;
+        var traversed: usize = 0;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward != null and
+                (traversed + x.level(i).span < start))
+            {
+                traversed += x.level(i).span;
+                x = x.level(i).forward.?;
+            }
+            update[i] = x;
+            if (i == 0) break;
+        }
+
+        var removed: u64 = 0;
+        traversed += 1;
+        var f = x.level(0).forward;
+        while (f != null and traversed <= end) {
+            const next = f.?.level(0).forward;
+            self.sl.deleteNode(f.?, &update);
+            const ok = self.dict.delete(f.?.ele.?);
+            assert(ok);
+            f.?.free();
+            removed += 1;
+            traversed += 1;
+            f = next;
+        }
+        return removed;
+    }
+
+    /// Delete all the elements with score between min and max from the skiplist.
+    fn deleteRangeByScore(self: *SkipListSet, range: Range) u64 {
+        var update: [ZSKIPLIST_MAXLEVEL]*SkipList.Node = undefined;
+        var x = self.sl.header;
+        var i = self.sl.level - 1;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward != null and
+                if (range.minex)
+                    x.level(i).forward.?.score <= range.min
+                else
+                    x.level(i).forward.?.score < range.min)
+            {
+                x = x.level(i).forward.?;
+            }
+            update[i] = x;
+            if (i == 0) break;
+        }
+
+        // Current node is the last with score < or <= min.
+        var f = x.level(0).forward;
+
+        // Delete nodes while in range.
+        var removed: u64 = 0;
+        while (f != null and
+            if (range.maxex)
+                f.?.score < range.max
+            else
+                f.?.score <= range.max)
+        {
+            const next = f.?.level(0).forward;
+            self.sl.deleteNode(f.?, &update);
+            const ok = self.dict.delete(f.?.ele.?);
+            assert(ok);
+            f.?.free();
+            removed += 1;
+            f = next;
+        }
+        return removed;
+    }
+
+    /// Delete all the elements with lex order between min and max from the skiplist.
+    fn deleteRangeByLex(self: *SkipListSet, range: LexRange) u64 {
+        var update: [ZSKIPLIST_MAXLEVEL]*SkipList.Node = undefined;
+        var x = self.sl.header;
+        var i = self.sl.level - 1;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward != null and
+                !range.valueGteMin(x.level(0).forward.?.ele.?))
+            {
+                x = x.level(i).forward.?;
+            }
+            update[i] = x;
+            if (i == 0) break;
+        }
+
+        // Current node is the last with lex order < or <= min.
+        var f = x.level(0).forward;
+
+        // Delete nodes while in range.
+        var removed: u64 = 0;
+        while (f != null and range.valueLteMax(f.?.ele.?)) {
+            const next = f.?.level(0).forward;
+            self.sl.deleteNode(f.?, &update);
+            const ok = self.dict.delete(f.?.ele.?);
+            assert(ok);
+            f.?.free();
+            removed += 1;
+            f = next;
+        }
+        return removed;
     }
 
     pub fn cast(ptr: *anyopaque) *SkipListSet {
@@ -1560,7 +1931,13 @@ fn zslRandomLevel() u32 {
     return @min(level, ZSKIPLIST_MAXLEVEL);
 }
 
-/// Hold a inclusive/exclusive range by score comparison.
+const RangeType = enum {
+    rank,
+    score,
+    lex,
+};
+
+/// Hold an inclusive/exclusive range by score comparison.
 pub const Range = struct {
     min: f64,
     max: f64,
@@ -1629,6 +2006,134 @@ pub const Range = struct {
         }
 
         return range;
+    }
+};
+
+/// Hold an inclusive/exclusive range spec by lexicographic comparison.
+pub const LexRange = struct {
+    min: ?sds.String,
+    max: ?sds.String,
+
+    // Are min or max exclusive?
+    minex: bool,
+    maxex: bool,
+
+    /// Parse the lex range according to the objects min and max.
+    /// The returned structure must be freed with LexRange.free().
+    pub fn parse(min: *Object, max: *Object) ?LexRange {
+        // The range can't be valid if objects are integer encoded.
+        // Every item must start with ( or [.
+        if (min.encoding == .int or max.encoding == .int) {
+            return null;
+        }
+        var range: LexRange = .{
+            .min = null,
+            .max = null,
+            .minex = false,
+            .maxex = false,
+        };
+        if (!parseItem(min, &range.min, &range.minex) or
+            !parseItem(max, &range.max, &range.maxex))
+        {
+            range.free();
+            return null;
+        }
+        return range;
+    }
+
+    /// Parse max or min argument of ZRANGEBYLEX.
+    /// (foo means foo (open interval)
+    /// [foo means foo (closed interval)
+    /// - means the min string possible
+    /// + means the max string possible
+    ///
+    /// If the string is valid the *dest pointer is set to the redis object
+    /// that will be used for the comparison, and ex will be set to 0 or 1
+    /// respectively if the item is exclusive or inclusive. TRUE will be
+    /// returned.
+    ///
+    /// If the string is not a valid range FALSE is returned, and the value
+    /// of *dest and *ex is undefined.
+    fn parseItem(item: *Object, dest: *?sds.String, ex: *bool) bool {
+        var c = sds.castBytes(item.v.ptr);
+
+        switch (c[0]) {
+            '+' => {
+                if (c.len != 1) return false;
+                ex.* = true;
+                dest.* = Server.shared.maxstring;
+                return true;
+            },
+            '-' => {
+                if (c.len != 1) return false;
+                ex.* = true;
+                dest.* = Server.shared.minstring;
+                return true;
+            },
+            '(' => {
+                ex.* = true;
+                dest.* = sds.new(allocator.child, c[1..]);
+                return true;
+            },
+            '[' => {
+                ex.* = false;
+                dest.* = sds.new(allocator.child, c[1..]);
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    pub fn valueGteMin(self: *const LexRange, value: sds.String) bool {
+        if (self.minex) {
+            return sds.cmplex(
+                value,
+                self.min.?,
+                Server.shared.minstring,
+                Server.shared.maxstring,
+            ).compare(.gt);
+        }
+        return sds.cmplex(
+            value,
+            self.min.?,
+            Server.shared.minstring,
+            Server.shared.maxstring,
+        ).compare(.gte);
+    }
+
+    pub fn valueLteMax(self: *const LexRange, value: sds.String) bool {
+        if (self.maxex) {
+            return sds.cmplex(
+                value,
+                self.max.?,
+                Server.shared.minstring,
+                Server.shared.maxstring,
+            ).compare(.lt);
+        }
+        return sds.cmplex(
+            value,
+            self.max.?,
+            Server.shared.minstring,
+            Server.shared.maxstring,
+        ).compare(.lte);
+    }
+
+    /// Free a lex range structure, must be called only after LexRange.parse().
+    pub fn free(self: *const LexRange) void {
+        if (self.min != Server.shared.minstring and
+            self.min != Server.shared.maxstring)
+        {
+            if (self.min) |s| {
+                sds.free(allocator.child, s);
+            }
+        }
+        if (self.max != Server.shared.maxstring and
+            self.max != Server.shared.minstring)
+        {
+            if (self.max) |s| {
+                sds.free(allocator.child, s);
+            }
+        }
     }
 };
 

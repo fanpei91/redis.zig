@@ -652,6 +652,19 @@ pub fn cmp(s1: String, s2: String) std.math.Order {
     return std.mem.order(u8, lhs, rhs);
 }
 
+/// This is just a wrapper to cmp() that is able to handle min and max as the
+/// equivalent of -inf and +inf for strings.
+pub fn cmplex(a: String, b: String, min: String, max: String) std.math.Order {
+    if (a == b) return .eq;
+    if (a == min or b == max) {
+        return .lt;
+    }
+    if (a == max or b == min) {
+        return .gt;
+    }
+    return cmp(a, b);
+}
+
 /// Compare two sds strings s1 and s2  in a case–insensitive way.
 ///
 /// Return value:
