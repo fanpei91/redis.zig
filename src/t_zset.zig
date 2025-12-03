@@ -451,7 +451,7 @@ fn zrange(cli: *Client, reverse: bool) void {
 
     if (zobj.encoding == .skiplist) {
         const sl: *SkipListSet = .cast(zobj.v.ptr);
-        var ln: ?*SkipList.Node = undefined;
+        var ln: ?*SkipList.Node = null;
         // Check if starting point is trivial, before doing log(N) lookup.
         if (reverse) {
             ln = sl.sl.tail;
@@ -494,11 +494,6 @@ fn zrangebyscore(cli: *Client, reverse: bool) void {
     const argv = cli.argv.?;
     const key = argv[1];
 
-    var withscores = false;
-    var limit: i64 = -1;
-    var offset: i64 = 0;
-    var rangelen: i64 = 0;
-
     // Range is given as [min,max]
     var minidx: usize = 2;
     var maxidx: usize = 3;
@@ -513,6 +508,9 @@ fn zrangebyscore(cli: *Client, reverse: bool) void {
     };
 
     // Parse optional extra arguments.
+    var withscores = false;
+    var limit: i64 = -1;
+    var offset: i64 = 0;
     if (cli.argc > 4) {
         var pos: usize = 4;
         var remaining = cli.argc - 4;
@@ -553,11 +551,11 @@ fn zrangebyscore(cli: *Client, reverse: bool) void {
     }
 
     var replylen: ?*Client.ReplyBlock = null;
-
+    var rangelen: i64 = 0;
     if (zobj.encoding == .ziplist) {
         const zl: *ZipListSet = .cast(zobj.v.ptr);
-        // If reversed, get the last node in range as starting point.
         var eptr = blk: {
+            // If reversed, get the last node in range as starting point.
             if (reverse) {
                 break :blk zl.lastInRange(range);
             }
@@ -673,6 +671,184 @@ fn zrangebyscore(cli: *Client, reverse: bool) void {
         rangelen *= 2;
     }
 
+    cli.setDeferredMultiBulkLength(replylen, rangelen);
+}
+
+/// ZRANGEBYLEX key min max [LIMIT offset count]
+pub fn zrangebylexCommand(cli: *Client) void {
+    zrangebylex(cli, false);
+}
+
+/// ZREVRANGEBYLEX key max min [LIMIT offset count]
+pub fn zrevrangebylexCommand(cli: *Client) void {
+    zrangebylex(cli, true);
+}
+
+/// Implements ZRANGEBYLEX and ZREVRANGEBYLEX
+fn zrangebylex(cli: *Client, reverse: bool) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    // Range is given as [min,max]
+    var minidx: usize = 2;
+    var maxidx: usize = 3;
+    if (reverse) {
+        // Range is given as [max,min]
+        maxidx = 2;
+        minidx = 3;
+    }
+    const lexrange = LexRange.parse(argv[minidx], argv[maxidx]) orelse {
+        cli.addReplyErr("min or max not valid string range item");
+        return;
+    };
+    defer lexrange.free();
+
+    // Parse optional extra arguments.
+    var offset: i64 = 0;
+    var limit: i64 = -1;
+    if (cli.argc > 4) {
+        var pos: usize = 4;
+        var remaining = cli.argc - 4;
+        while (remaining > 0) {
+            if (remaining >= 3 and
+                eqlCase(sds.castBytes(argv[pos].v.ptr), "limit"))
+            {
+                offset = argv[pos + 1].getLongLongOrReply(cli, null) orelse {
+                    return;
+                };
+                limit = argv[pos + 2].getLongLongOrReply(cli, null) orelse {
+                    return;
+                };
+                pos += 3;
+                remaining -= 3;
+            } else {
+                cli.addReply(Server.shared.syntaxerr);
+                return;
+            }
+        }
+    }
+
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptymultibulk,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    var replylen: ?*Client.ReplyBlock = null;
+    var rangelen: i64 = 0;
+    if (zobj.encoding == .ziplist) {
+        const zl: *ZipListSet = .cast(zobj.v.ptr);
+        var eptr = blk: {
+            // If reversed, get the last node in range as starting point.
+            if (reverse) {
+                break :blk zl.lastInLexRange(lexrange);
+            }
+            break :blk zl.firstInLexRange(lexrange);
+        };
+        if (eptr == null) {
+            cli.addReply(Server.shared.emptymultibulk);
+            return;
+        }
+        assert(eptr != null);
+        // Get score pointer for the first element.
+        var sptr = zl.zl.next(eptr.?);
+        assert(sptr != null);
+
+        // We don't know in advance how many matching elements there are in the
+        // list, so we push this object that will represent the multi-bulk
+        // length in the output buffer, and will "fix" it later
+        replylen = cli.addDeferredMultiBulkLength();
+
+        // If there is an offset, just traverse the number of elements without
+        // checking the score because that is done in the next loop.
+        while (eptr != null and offset > 0) : (offset -= 1) {
+            if (reverse) {
+                zl.prev(&eptr, &sptr);
+            } else {
+                zl.next(&eptr, &sptr);
+            }
+        }
+
+        while (eptr != null and limit != 0) : (limit -= 1) {
+            const epo = ZipList.getObject(eptr.?);
+            defer sds.free(allocator.child, epo);
+            // Abort when the node is no longer in range.
+            if (reverse) {
+                if (!lexrange.valueGteMin(epo)) break;
+            } else {
+                if (!lexrange.valueLteMax(epo)) break;
+            }
+
+            // We know the element exists, so ZipList.get() should always succeed
+            const value = ZipList.get(eptr.?).?;
+            rangelen += 1;
+            switch (value) {
+                .num => |v| cli.addReplyBulkLongLong(v),
+                .str => |v| cli.addReplyBulkString(v),
+            }
+
+            // Move to next node
+            if (reverse) {
+                zl.prev(&eptr, &sptr);
+            } else {
+                zl.next(&eptr, &sptr);
+            }
+        }
+    } else if (zobj.encoding == .skiplist) {
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        var ln = blk: {
+            if (reverse) {
+                // If reversed, get the last node in lex range as starting point.
+                break :blk sl.sl.lastInLexRange(lexrange);
+            }
+            break :blk sl.sl.firstInLexRange(lexrange);
+        };
+        // No "first" element in the specified interval.
+        if (ln == null) {
+            cli.addReply(Server.shared.emptymultibulk);
+            return;
+        }
+
+        // We don't know in advance how many matching elements there are in the
+        // list, so we push this object that will represent the multi-bulk
+        // length in the output buffer, and will "fix" it later
+        replylen = cli.addDeferredMultiBulkLength();
+
+        // If there is an offset, just traverse the number of elements without
+        // checking the score because that is done in the next loop.
+        while (ln != null and offset > 0) : (offset -= 1) {
+            if (reverse) {
+                ln = ln.?.backward;
+            } else {
+                ln = ln.?.level(0).forward;
+            }
+        }
+
+        while (ln != null and limit != 0) : (limit -= 1) {
+            if (reverse) {
+                if (!lexrange.valueGteMin(ln.?.ele.?)) break;
+            } else {
+                if (!lexrange.valueLteMax(ln.?.ele.?)) break;
+            }
+
+            rangelen += 1;
+            cli.addReplyBulkString(sds.asBytes(ln.?.ele.?));
+
+            // Move to next node
+            if (reverse) {
+                ln = ln.?.backward;
+            } else {
+                ln = ln.?.level(0).forward;
+            }
+        }
+    } else {
+        @panic("Unknown sorted set encoding");
+    }
     cli.setDeferredMultiBulkLength(replylen, rangelen);
 }
 
@@ -1567,7 +1743,7 @@ pub const SkipListSet = struct {
         var i = self.sl.level - 1;
         while (i >= 0) : (i -= 1) {
             while (x.level(i).forward != null and
-                !range.valueGteMin(x.level(0).forward.?.ele.?))
+                !range.valueGteMin(x.level(i).forward.?.ele.?))
             {
                 x = x.level(i).forward.?;
             }
@@ -1891,12 +2067,40 @@ pub const SkipList = struct {
 
         // This is an inner range, so the next node cannot be NULL.
         x = x.level(0).forward.?;
+
+        // Check if score <= max.
         if (!range.valueLteMax(x.score)) return null;
         return x;
     }
 
-    /// Find the last node that is contained in the specified range.
+    /// Find the first node that is contained in the specified range.
     /// Returns NULL when no element is contained in the range.
+    pub fn firstInLexRange(self: *const SkipList, range: LexRange) ?*Node {
+        if (!self.isInLexRange(range)) return null;
+
+        var x = self.header;
+        var i = self.level - 1;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward) |forward| {
+                if (!range.valueGteMin(forward.ele.?)) {
+                    x = forward;
+                    continue;
+                }
+                break;
+            }
+            if (i == 0) break;
+        }
+
+        // This is an inner range, so the next node cannot be NULL.
+        x = x.level(0).forward.?;
+
+        // Check if lex order <= max.
+        if (!range.valueLteMax(x.ele.?)) return null;
+        return x;
+    }
+
+    /// Find the last node that is contained in the specified range.
+    /// Returns NULL when no element is contained in the lex range.
     pub fn lastInRange(self: *const SkipList, range: Range) ?*Node {
         if (!self.isInRange(range)) return null;
 
@@ -1914,6 +2118,29 @@ pub const SkipList = struct {
         }
 
         if (!range.valueGteMin(x.score)) return null;
+        return x;
+    }
+
+    /// Find the last node that is contained in the specified lex range.
+    /// Returns NULL when no element is contained in the lex range.
+    pub fn lastInLexRange(self: *const SkipList, range: LexRange) ?*Node {
+        if (!self.isInLexRange(range)) return null;
+
+        var x = self.header;
+        var i = self.level - 1;
+        while (i >= 0) : (i -= 1) {
+            while (x.level(i).forward) |forward| {
+                if (range.valueLteMax(forward.ele.?)) {
+                    x = forward;
+                    continue;
+                }
+                break;
+            }
+            if (i == 0) break;
+        }
+
+        // Check if lex order >= min.
+        if (!range.valueGteMin(x.ele.?)) return null;
         return x;
     }
 
@@ -1939,6 +2166,36 @@ pub const SkipList = struct {
 
         const first = self.header.level(0).forward;
         if (first == null or !range.valueLteMax(first.?.score)) return false;
+
+        return true;
+    }
+
+    /// /// Returns if there is a part of the skiplist is in lex range.
+    fn isInLexRange(self: *const SkipList, range: LexRange) bool {
+        //  Test for ranges that will always be empty.
+        const order = sds.cmplex(
+            range.min.?,
+            range.max.?,
+            Server.shared.minstring,
+            Server.shared.maxstring,
+        );
+        if (order == .gt or (order == .eq and (range.minex or range.maxex))) {
+            return false;
+        }
+
+        const last = self.tail orelse {
+            return false;
+        };
+        if (!range.valueGteMin(last.ele.?)) {
+            return false;
+        }
+
+        const first = self.header.level(0).forward orelse {
+            return false;
+        };
+        if (!range.valueLteMax(first.ele.?)) {
+            return false;
+        }
 
         return true;
     }
@@ -1978,7 +2235,7 @@ pub const SkipList = struct {
         var i = self.level - 1;
         while (i >= 0) : (i -= 1) {
             while (x.level(i).forward != null and
-                (traversed + x.level(0).span) <= rank)
+                (traversed + x.level(i).span) <= rank)
             {
                 traversed += x.level(i).span;
                 x = x.level(i).forward.?;
