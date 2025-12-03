@@ -993,6 +993,34 @@ pub fn zlexcountCommand(cli: *Client) void {
     cli.addReplyLongLong(count);
 }
 
+/// ZSCAN key cursor [MATCH pattern] [COUNT count]
+pub fn zscanCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const cursor = db.Scan.parseCursorOrReply(argv[2], cli) orelse {
+        return;
+    };
+
+    const key = argv[1];
+    const sobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.emptyscan,
+    ) orelse {
+        return;
+    };
+    if (sobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    db.Scan.scan(cli, sobj, cursor, SkipListSet.HashMap, zscanCallback);
+}
+
+fn zscanCallback(privdata: ?*anyopaque, entry: *const SkipListSet.HashMap.Entry) void {
+    const keys: *db.Scan.Keys = @ptrCast(@alignCast(privdata.?));
+    keys.append(Object.createString(sds.asBytes(entry.key)));
+    keys.append(Object.createStringFromLongDouble(entry.val.*, true));
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -1713,12 +1741,14 @@ pub const ZipListSet = struct {
 };
 
 pub const SkipListSet = struct {
+    pub const HashMap = dict.Dict(sds.String, *f64);
+
     sl: *SkipList,
-    dict: *dict.Dict(sds.String, *f64),
+    dict: *HashMap,
 
     pub fn create() *SkipListSet {
         const z = allocator.create(SkipListSet);
-        z.dict = .create(&.{
+        z.dict = HashMap.create(&.{
             .hash = sds.hash,
             .eql = sds.eql,
         });
@@ -2623,3 +2653,4 @@ const server = &Server.instance;
 const ZipList = @import("ZipList.zig");
 const util = @import("util.zig");
 const log = std.log.scoped(.zset);
+const db = @import("db.zig");

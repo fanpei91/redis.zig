@@ -677,8 +677,11 @@ pub const Scan = struct {
             count *= 2; // We return key / value for this type.
         } else if (o.?.type == .set and o.?.encoding == .ht) {
             map = @ptrCast(@alignCast(o.?.v.ptr));
+        } else if (o.?.type == .zset and o.?.encoding == .skiplist) {
+            const sl: *zset.SkipListSet = .cast(o.?.v.ptr);
+            map = @ptrCast(@alignCast(sl.dict));
+            count *= 2; // We return key / value for this type.
         }
-        // TODO: ZSET
 
         var cur = cursor;
         if (map) |ht| {
@@ -705,7 +708,12 @@ pub const Scan = struct {
             }
             cur = 0;
         } else if (o.?.type == .hash or o.?.type == .zset) {
-            const zl = ZipList.cast(o.?.v.ptr);
+            const zl = blk: {
+                if (o.?.type == .hash) {
+                    break :blk ZipList.cast(o.?.v.ptr);
+                }
+                break :blk zset.ZipListSet.cast(o.?.v.ptr).zl;
+            };
             var p = zl.index(ZipList.HEAD);
             while (p) |entry| {
                 const value = ZipList.get(entry).?;
@@ -819,3 +827,4 @@ const caseEql = std.ascii.eqlIgnoreCase;
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const hasher = @import("hasher.zig");
+const zset = @import("t_zset.zig");
