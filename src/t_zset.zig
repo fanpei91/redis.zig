@@ -676,6 +676,76 @@ fn zrangebyscore(cli: *Client, reverse: bool) void {
     cli.setDeferredMultiBulkLength(replylen, rangelen);
 }
 
+/// ZCOUNT key min max
+pub fn zcountCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    const range = Range.parse(argv[2], argv[3]) orelse {
+        cli.addReplyErr("min or max is not a float");
+        return;
+    };
+
+    const zobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (zobj.checkTypeOrReply(cli, .zset)) {
+        return;
+    }
+
+    var count: i64 = 0;
+    if (zobj.encoding == .ziplist) {
+        const zl: *ZipListSet = .cast(zobj.v.ptr);
+        var eptr = zl.firstInRange(range);
+        if (eptr == null) {
+            cli.addReply(Server.shared.czero);
+            return;
+        }
+
+        var sptr = zl.zl.next(eptr.?);
+        assert(sptr != null);
+
+        // Iterate over elements in range
+        while (eptr != null) {
+            const score = ZipListSet.getScore(sptr.?);
+            // Abort when the node is no longer in range.
+            if (!range.valueLteMax(score)) {
+                break;
+            } else {
+                count += 1;
+                zl.next(&eptr, &sptr);
+            }
+        }
+        assert(count > 0);
+    } else if (zobj.encoding == .skiplist) {
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        // Find first element in range
+        if (sl.sl.firstInRange(range)) |first| {
+            // Use rank of first element, if any, to determine
+            // preliminary count
+            var rank = sl.sl.getRank(first.score, first.ele.?);
+            var cnt = sl.sl.length - (rank - 1);
+
+            // Find last element in range
+            if (sl.sl.lastInRange(range)) |last| {
+                // Use rank of last element, if any, to determine the
+                // actual count
+                rank = sl.sl.getRank(last.score, last.ele.?);
+                cnt -= (sl.sl.length - rank);
+            }
+            count = @intCast(cnt);
+            assert(count > 0);
+        }
+    } else {
+        @panic("Unknown sorted set encoding");
+    }
+    cli.addReplyLongLong(count);
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -1774,7 +1844,7 @@ pub const SkipList = struct {
     /// Returns 0 when the element cannot be found, rank otherwise.
     /// Note that the rank is 1-based due to the span of SkipList.header
     /// to the first element.
-    pub fn getRank(self: *const SkipList, score: f64, ele: sds.String) usize {
+    pub fn getRank(self: *const SkipList, score: f64, ele: sds.String) u64 {
         var rank: u64 = 0;
         var x = self.header;
         var i = self.level - 1;
