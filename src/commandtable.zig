@@ -113,6 +113,8 @@ pub const table = [_]Command{
     .{ .name = "zcount", .proc = zset.zcountCommand, .arity = 4 },
     .{ .name = "zlexcount", .proc = zset.zlexcountCommand, .arity = 4 },
     .{ .name = "zscan", .proc = zset.zscanCommand, .arity = -3 },
+    .{ .name = "zpopmin", .proc = zset.zpopminCommand, .arity = -2 },
+    .{ .name = "zpopmax", .proc = zset.zpopmaxCommand, .arity = -2 },
 };
 
 pub const Command = struct {

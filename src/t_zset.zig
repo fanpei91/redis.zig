@@ -1021,6 +1021,138 @@ fn zscanCallback(privdata: ?*anyopaque, entry: *const SkipListSet.HashMap.Entry)
     keys.append(Object.createStringFromLongDouble(entry.val.*, true));
 }
 
+/// ZPOPMIN key [count]
+pub fn zpopminCommand(cli: *Client) void {
+    if (cli.argc > 3) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    const argv = cli.argv.?;
+    zpop(
+        cli,
+        argv[1..2],
+        .min,
+        false,
+        if (cli.argc == 3) argv[2] else null,
+    );
+}
+
+/// ZPOPMAX key [count]
+pub fn zpopmaxCommand(cli: *Client) void {
+    if (cli.argc > 3) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    const argv = cli.argv.?;
+    zpop(
+        cli,
+        argv[1..2],
+        .max,
+        false,
+        if (cli.argc == 3) argv[2] else null,
+    );
+}
+
+/// Implements the generic zpop operation, used by: ZPOPMIN, ZPOPMAX, BZPOPMIN
+/// and BZPOPMAX. This function is also used inside blocked.zig in the unblocking
+/// stage of BZPOPMIN and BZPOPMAX.
+/// If 'emitkey' is true also the key name is emitted, useful for the blocking
+/// behavior of BZPOP[MIN|MAX], since we can block into multiple keys.
+///
+/// The synchronous version instead does not need to emit the key, but may
+/// use the 'count' argument to return multiple items if available.
+fn zpop(
+    cli: *Client,
+    keys: []*Object,
+    where: Where,
+    emitkey: bool,
+    countarg: ?*Object,
+) void {
+    var count: i64 = 1;
+    // If a count argument as passed, parse it or return an error.
+    if (countarg) |arg| {
+        count = arg.getLongLongOrReply(cli, null) orelse {
+            return;
+        };
+        if (count <= 0) {
+            cli.addReply(Server.shared.syntaxerr);
+            return;
+        }
+    }
+    var key: *Object = undefined;
+    var zobj: ?*Object = null;
+    // Check type and break on the first error, otherwise identify candidate.
+    for (keys) |k| {
+        zobj = cli.db.lookupKeyWrite(k) orelse {
+            continue;
+        };
+        if (zobj.?.checkTypeOrReply(cli, .zset)) {
+            return;
+        }
+        key = k;
+        break;
+    }
+
+    // No candidate for zpopping, return empty.
+    if (zobj == null) {
+        cli.addReply(Server.shared.emptymultibulk);
+        return;
+    }
+
+    const replylen = cli.addDeferredMultiBulkLength();
+    var arraylen: i64 = 0;
+
+    // We emit the key only for the blocking variant.
+    if (emitkey) cli.addReplyBulk(key);
+
+    // Remove the element.
+    const zset = zobj.?;
+    while (count > 0) : (count -= 1) {
+        var ele: sds.String = undefined;
+        defer sds.free(allocator.child, ele);
+        var score: f64 = undefined;
+
+        if (zset.encoding == .ziplist) {
+            const zl: *ZipListSet = .cast(zset.v.ptr);
+            // Get the first or last element in the sorted set.
+            const eptr = zl.zl.index(if (where == .max) -2 else 0).?;
+            ele = ZipList.getObject(eptr);
+            // Get the score.
+            const sptr = zl.zl.next(eptr).?;
+            score = ZipListSet.getScore(sptr);
+        } else if (zset.encoding == .skiplist) {
+            const sl: *SkipListSet = .cast(zset.v.ptr);
+            // Get the first or last element in the sorted set.
+            const ln = if (where == .max)
+                sl.sl.tail.?
+            else
+                sl.sl.header.level(0).forward.?;
+            // There must be an element in the sorted set.
+            ele = sds.dupe(allocator.child, ln.ele.?);
+            score = ln.score;
+        } else {
+            @panic("Unknown sorted set encoding");
+        }
+        assert(Zset.del(zset, ele));
+
+        cli.addReplyBulkString(sds.asBytes(ele));
+        cli.addReplyDouble(score);
+        arraylen += 2;
+
+        // Remove the key, if indeed needed.
+        if (Zset.length(zset) == 0) {
+            assert(cli.db.delete(key));
+            break;
+        }
+    }
+    cli.setDeferredMultiBulkLength(
+        replylen,
+        arraylen + @intFromBool(emitkey),
+    );
+}
+
 const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
@@ -1223,10 +1355,7 @@ const Zset = struct {
             const sl = SkipListSet.create();
             while (eptr) |ep| {
                 const score = ZipListSet.getScore(sptr.?);
-                const ele = switch (ZipList.get(ep).?) {
-                    .num => |v| sds.fromLonglong(allocator.child, v),
-                    .str => |v| sds.new(allocator.child, v),
-                };
+                const ele = ZipList.getObject(ep);
                 sl.insert(score, ele);
                 zl.next(&eptr, &sptr);
             }
@@ -2358,6 +2487,11 @@ fn zslRandomLevel() u32 {
     }
     return @min(level, ZSKIPLIST_MAXLEVEL);
 }
+
+pub const Where = enum {
+    min,
+    max,
+};
 
 const RangeType = enum {
     rank,

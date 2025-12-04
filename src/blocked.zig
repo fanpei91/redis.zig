@@ -172,6 +172,13 @@ pub fn handleClientsBlockedOnKeys() void {
                 assert(deleted);
             }
         }
+        // TODO:
+        // else if (coll.type == .zset) {
+
+        // }
+        // else if (coll.type == .stream) {
+
+        // }
     }
 }
 
