@@ -297,9 +297,8 @@ pub const Database = struct {
 
     /// Add the key to the DB. The program is aborted if the key already exists.
     pub fn add(self: *Database, key: *Object, val: *Object) void {
-        const added = self.dict.add(sds.cast(key.v.ptr), val);
-        assert(added);
-        if (val.type == .list) {
+        assert(self.dict.add(sds.cast(key.v.ptr), val));
+        if (val.type == .list or val.type == .zset) {
             blocked.signalKeyAsReady(self, key);
         }
     }

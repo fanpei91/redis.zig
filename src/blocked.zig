@@ -70,8 +70,7 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
     // We also add the key in the db->ready_keys dictionary in order
     // to avoid adding it multiple times into a list with a simple O(1)
     // check.
-    const added = db.ready_keys.add(key, {});
-    assert(added);
+    assert(db.ready_keys.add(key, {}));
 }
 
 /// This function should be called by Redis every time a single command,
@@ -119,63 +118,92 @@ pub fn handleClientsBlockedOnKeys() void {
             @branchHint(.unlikely);
             continue;
         };
+
+        // Serve clients blocked on list key.
         if (coll.type == .list) {
-            if (rl.db.blocking_keys.find(rl.key)) |de| {
-                const clients: *ClientList = de.val;
-                var numclients = clients.len;
-                while (numclients > 0) : (numclients -= 1) {
-                    const clientnode = clients.first.?;
-                    const receiver = clientnode.value;
-                    if (receiver.btype != Server.BLOCKED_LIST) {
-                        // Put at the tail, so that at the next call
-                        // we'll not run into it again.
-                        clients.rotateHeadToTail();
-                        continue;
-                    }
-                    const dstkey = receiver.bpop.target;
-                    const where = blk: {
-                        if (receiver.lastcmd) |cmd| {
-                            if (cmd.proc == list.blpopCommand) {
-                                break :blk list.Where.head;
-                            }
+            const de = rl.db.blocking_keys.find(rl.key) orelse {
+                continue;
+            };
+            const clients: *ClientList = de.val;
+            var numclients = clients.len;
+            while (numclients > 0) : (numclients -= 1) {
+                const clientnode = clients.first.?;
+                const receiver = clientnode.value;
+                if (receiver.btype != Server.BLOCKED_LIST) {
+                    // Put at the tail, so that at the next call
+                    // we'll not run into it again.
+                    clients.rotateHeadToTail();
+                    continue;
+                }
+                const dstkey = receiver.bpop.target;
+                const where = blk: {
+                    if (receiver.lastcmd) |cmd| {
+                        if (cmd.proc == list.blpopCommand) {
+                            break :blk list.Where.head;
                         }
-                        break :blk list.Where.tail;
-                    };
-                    const value = List.pop(coll, where).?;
-                    defer value.decrRefCount();
-
-                    // Protect receiver.bpop.target, that will be
-                    // freed by the next unblockClient()
-                    // call.
-                    if (dstkey) |dst| dst.incrRefCount();
-                    defer if (dstkey) |dst| dst.decrRefCount();
-
-                    unblockClient(receiver);
-
-                    if (!list.serveClientBlockedOnList(
-                        receiver,
-                        rl.key,
-                        dstkey,
-                        rl.db,
-                        value,
-                        where,
-                    )) {
-                        // If we failed serving the client we need
-                        // to also undo the POP operation.
-                        @branchHint(.unlikely);
-                        List.push(coll, value, where);
                     }
+                    break :blk list.Where.tail;
+                };
+                const value = List.pop(coll, where).?;
+                defer value.decrRefCount();
+
+                // Protect receiver.bpop.target, that will be
+                // freed by the next unblockClient()
+                // call.
+                if (dstkey) |dst| dst.incrRefCount();
+                defer if (dstkey) |dst| dst.decrRefCount();
+
+                unblockClient(receiver);
+
+                if (!list.serveClientBlockedOnList(
+                    receiver,
+                    rl.key,
+                    dstkey,
+                    rl.db,
+                    value,
+                    where,
+                )) {
+                    // If we failed serving the client we need
+                    // to also undo the POP operation.
+                    @branchHint(.unlikely);
+                    List.push(coll, value, where);
                 }
             }
             if (List.length(coll) == 0) {
-                const deleted = rl.db.delete(rl.key);
-                assert(deleted);
+                assert(rl.db.delete(rl.key));
             }
         }
-        // TODO:
-        // else if (coll.type == .zset) {
-
-        // }
+        // Serve clients blocked on sorted set key.
+        else if (coll.type == .zset) {
+            const de = rl.db.blocking_keys.find(rl.key) orelse {
+                continue;
+            };
+            const clients: *ClientList = de.val;
+            var numclients = clients.len;
+            var zcard = Zset.length(coll);
+            while (numclients > 0 and zcard > 0) : (numclients -= 1) {
+                const clientnode = clients.first.?;
+                const receiver = clientnode.value;
+                if (receiver.btype != Server.BLOCKED_ZSET) {
+                    // Put at the tail, so that at the next call
+                    // we'll not run into it again.
+                    clients.rotateHeadToTail();
+                    continue;
+                }
+                const where = blk: {
+                    if (receiver.lastcmd) |cmd| {
+                        if (cmd.proc == zset.bzpopminCommand) {
+                            break :blk zset.Where.min;
+                        }
+                    }
+                    break :blk zset.Where.max;
+                };
+                unblockClient(receiver);
+                zset.zpop(receiver, &.{rl.key}, where, true, null);
+                zcard -= 1;
+            }
+        }
+        // TODO: Stream
         // else if (coll.type == .stream) {
 
         // }
@@ -183,7 +211,10 @@ pub fn handleClientsBlockedOnKeys() void {
 }
 
 pub fn unblockClient(cli: *Client) void {
-    if (cli.btype == Server.BLOCKED_LIST) {
+    // TODO: BLOCKED_STREAM, BLOCKED_WAIT, BLOCKED_MODULE
+    if (cli.btype == Server.BLOCKED_LIST or
+        cli.btype == Server.BLOCKED_ZSET)
+    {
         unblockClientWaitingData(cli);
     } else {
         @panic("Unknown btype in unblockClient().");
@@ -208,8 +239,7 @@ fn unblockClientWaitingData(cli: *Client) void {
         const clients = cli.db.blocking_keys.fetchValue(key).?;
         clients.removeNode(bki.listNode);
         if (clients.len == 0) {
-            const deleted = cli.db.blocking_keys.delete(key);
-            assert(deleted);
+            _ = cli.db.blocking_keys.delete(key);
         }
     }
     di.release();
@@ -247,7 +277,10 @@ pub fn queueClientForReprocessing(cli: *Client) void {
 /// send it a reply of some kind. After this function is called,
 /// unblockClient() will be called with the same client as argument.
 pub fn replyToBlockedClientTimedOut(cli: *Client) void {
-    if (cli.btype == Server.BLOCKED_LIST) {
+    // TODO: BLOCKED_STREAM, BLOCKED_WAIT, BLOCKED_MODULE
+    if (cli.btype == Server.BLOCKED_LIST or
+        cli.btype == Server.BLOCKED_ZSET)
+    {
         cli.addReply(Server.shared.nullmultibulk);
     } else {
         @panic("Unknown btype in replyToBlockedClientTimedOut().");
@@ -330,3 +363,5 @@ const List = list.List;
 const sds = @import("sds.zig");
 const log = std.log.scoped(.blocked);
 const assert = std.debug.assert;
+const zset = @import("t_zset.zig");
+const Zset = zset.Zset;

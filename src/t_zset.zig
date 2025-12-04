@@ -1063,9 +1063,9 @@ pub fn zpopmaxCommand(cli: *Client) void {
 ///
 /// The synchronous version instead does not need to emit the key, but may
 /// use the 'count' argument to return multiple items if available.
-fn zpop(
+pub fn zpop(
     cli: *Client,
-    keys: []*Object,
+    keys: []const *Object,
     where: Where,
     emitkey: bool,
     countarg: ?*Object,
@@ -1153,7 +1153,44 @@ fn zpop(
     );
 }
 
-const Zset = struct {
+// BZPOPMIN key [key ...] timeout
+pub fn bzpopminCommand(cli: *Client) void {
+    bzpop(cli, .min);
+}
+
+// BZPOPMAX key [key ...] timeout
+pub fn bzpopmaxCommand(cli: *Client) void {
+    bzpop(cli, .max);
+}
+
+fn bzpop(cli: *Client, where: Where) void {
+    const argv = cli.argv.?;
+    const timeout = blocked.getTimeoutFromObjectOrReply(
+        cli,
+        argv[cli.argc - 1],
+        Server.UNIT_SECONDS,
+    ) orelse {
+        return;
+    };
+
+    const keys = argv[1 .. cli.argc - 1];
+    for (keys, 0..) |key, i| {
+        const o = cli.db.lookupKeyWrite(key) orelse {
+            continue;
+        };
+        if (o.checkTypeOrReply(cli, .zset)) {
+            return;
+        }
+        // Non empty zset, this is like a normal ZPOP[MIN|MAX].
+        assert(Zset.length(o) != 0);
+        zpop(cli, keys[i .. i + 1], where, true, null);
+        return;
+    }
+    // If the keys do not exist we must block
+    blocked.blockForKeys(cli, Server.BLOCKED_ZSET, keys, timeout, null);
+}
+
+pub const Zset = struct {
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
     ///
@@ -2788,3 +2825,4 @@ const ZipList = @import("ZipList.zig");
 const util = @import("util.zig");
 const log = std.log.scoped(.zset);
 const db = @import("db.zig");
+const blocked = @import("blocked.zig");
