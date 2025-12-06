@@ -1190,7 +1190,293 @@ fn bzpop(cli: *Client, where: Where) void {
     blocked.blockForKeys(cli, Server.BLOCKED_ZSET, keys, timeout, null);
 }
 
+/// ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS weight
+/// [weight ...]] [AGGREGATE <SUM | MIN | MAX>]
+pub fn zunionstoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    unionInter(cli, argv[1], .@"union");
+}
+
+/// ZINTERSTORE destination numkeys key [key ...] [WEIGHTS weight
+/// [weight ...]] [AGGREGATE <SUM | MIN | MAX>]
+pub fn zinterstoreCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    unionInter(cli, argv[1], .inter);
+}
+
+fn unionInter(cli: *Client, destkey: *Object, op: Operation) void {
+    const argv = cli.argv.?;
+    var aggregator: Operation.Aggregator = .sum;
+    var maxelelen: usize = 0;
+    var totelelen: usize = 0;
+
+    // expect setnum input keys to be given
+    const setnum = argv[2].getLongLongOrReply(cli, null) orelse {
+        return;
+    };
+    if (setnum < 1) {
+        cli.addReplyErr("at least 1 input key is needed for ZUNIONSTORE/ZINTERSTORE");
+        return;
+    }
+    // test if the expected number of keys would overflow
+    if (setnum > cli.argc - 3) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    // read keys to be used for input
+    var src = std.ArrayList(Operation.Source).initCapacity(
+        allocator.child,
+        @intCast(setnum),
+    ) catch oom();
+    const items = src.addManyAsSliceAssumeCapacity(@intCast(setnum));
+    defer src.deinit(allocator.child);
+
+    var idx: usize = 3;
+    for (0..@as(usize, @intCast(setnum))) |i| {
+        if (cli.db.lookupKeyWrite(argv[idx])) |obj| {
+            if (obj.type != .zset and obj.type != .set) {
+                cli.addReply(Server.shared.wrongtypeerr);
+                return;
+            }
+            items[i].subject = obj;
+            items[i].type = obj.type;
+            items[i].encoding = obj.encoding;
+        } else {
+            items[i].subject = null;
+        }
+        // Default all weights to 1.
+        items[i].weight = 1.0;
+        idx += 1;
+    }
+
+    // parse optional extra arguments
+    if (idx < cli.argc) {
+        var remaining = cli.argc - idx;
+        while (remaining > 0) {
+            if (remaining >= (setnum + 1) and
+                eqlCase(sds.castBytes(argv[idx].v.ptr), "weights"))
+            {
+                idx += 1;
+                remaining -= 1;
+                for (0..@as(usize, @intCast(setnum))) |i| {
+                    items[i].weight = argv[idx].getDoubleOrReply(
+                        cli,
+                        "weight value is not a float",
+                    ) orelse {
+                        return;
+                    };
+                    idx += 1;
+                    remaining -= 1;
+                }
+            } else if (remaining >= 2 and
+                eqlCase(sds.castBytes(argv[idx].v.ptr), "aggregate"))
+            {
+                idx += 1;
+                remaining -= 1;
+                if (eqlCase(sds.castBytes(argv[idx].v.ptr), "sum")) {
+                    aggregator = .sum;
+                } else if (eqlCase(sds.castBytes(argv[idx].v.ptr), "min")) {
+                    aggregator = .min;
+                } else if (eqlCase(sds.castBytes(argv[idx].v.ptr), "max")) {
+                    aggregator = .max;
+                } else {
+                    cli.addReply(Server.shared.syntaxerr);
+                    return;
+                }
+                idx += 1;
+                remaining -= 1;
+            } else {
+                cli.addReply(Server.shared.syntaxerr);
+                return;
+            }
+        }
+    }
+
+    // sort sets from the smallest to largest, this will improve our
+    // algorithm's performance
+    std.mem.sort(Operation.Source, items, {}, sortSetsByCardinality);
+
+    const dstobj = Object.createZset();
+    defer dstobj.decrRefCount();
+    const dstset: *SkipListSet = .cast(dstobj.v.ptr);
+
+    var val: Operation.Source.Value = undefined;
+    @memset(std.mem.asBytes(&val), 0);
+
+    if (op == .inter) {
+        // Skip everything if the smallest input is empty.
+        if (items[0].length() > 0) {
+            // Precondition: as src[0] is non-empty and the inputs are ordered
+            // by size, all src[i > 0] are non-empty too.
+            var it = items[0].iterator();
+            defer it.release();
+            inter: while (it.next(&val)) {
+                var score = items[0].weight * val.score;
+                if (isNan(score)) score = 0;
+
+                for (1..@as(usize, @intCast(setnum))) |i| {
+                    // It is not safe to access the zset we are
+                    // iterating, so explicitly check for equal object.
+                    if (items[i].subject == items[0].subject) {
+                        aggregator.aggregate(
+                            &score,
+                            val.score * items[i].weight,
+                        );
+                    } else if (items[i].find(&val)) |s| {
+                        aggregator.aggregate(
+                            &score,
+                            s * items[i].weight,
+                        );
+                    } else {
+                        continue :inter;
+                    }
+                }
+
+                // Only continue when present in every input.
+                const tmp = val.newSds();
+                dstset.insert(score, tmp);
+                totelelen += sds.getLen(tmp);
+                maxelelen = @max(sds.getLen(tmp), maxelelen);
+            }
+        }
+    } else if (op == .@"union") {
+        const UnionMap = dict.Dict(sds.String, f64);
+        const accumulator: *UnionMap = UnionMap.create(&.{
+            .hash = sds.hash,
+            .eql = sds.eql,
+        });
+        defer accumulator.destroy();
+
+        if (setnum > 0) {
+            // Our union is at least as large as the largest set.
+            // Resize the dictionary ASAP to avoid useless rehashing.
+            _ = accumulator.expand(items[@intCast(setnum - 1)].length());
+        }
+
+        // Step 1: Create a dictionary of elements -> aggregated-scores
+        // by iterating one sorted set after the other.
+        for (0..@as(usize, @intCast(setnum))) |i| {
+            if (items[i].length() == 0) continue;
+            var it = items[i].iterator();
+            defer it.release();
+            while (it.next(&val)) {
+                // Initialize value
+                var score = items[i].weight * val.score;
+                if (isNan(score)) score = 0;
+                // Search for this element in the accumulating dictionary.
+                var existing: ?*UnionMap.Entry = null;
+                const de = accumulator.addRaw(val.getSds(), &existing);
+                // If we don't have it, we need to create a new entry.
+                if (existing == null) {
+                    const tmp = val.newSds();
+                    // Remember the longest single element encountered,
+                    // to understand if it's possible to convert to ziplist
+                    // at the end.
+                    totelelen += sds.getLen(tmp);
+                    maxelelen = @max(sds.getLen(tmp), maxelelen);
+                    // Update the element with its initial score.
+                    de.?.key = tmp;
+                    de.?.val = score;
+                } else {
+                    // Update the score with the score of the new instance
+                    // of the element found in the current sorted set.
+                    aggregator.aggregate(&existing.?.val, score);
+                }
+            }
+        }
+        // Step 2: convert the dictionary into the final sorted set.
+        var di = accumulator.iterator(false);
+        defer di.release();
+        while (di.next()) |de| {
+            dstset.insert(de.val, de.key);
+        }
+    } else {
+        @panic("Unknown operator");
+    }
+
+    _ = cli.db.delete(destkey);
+    if (dstset.sl.length > 0) {
+        Zset.convertToZipListIfNeeded(dstobj, maxelelen, totelelen);
+        cli.db.add(destkey, dstobj);
+        cli.addReplyLongLong(@intCast(Zset.length(dstobj)));
+    } else {
+        cli.addReply(Server.shared.czero);
+    }
+}
+
+fn sortSetsByCardinality(_: void, lhs: Operation.Source, rhs: Operation.Source) bool {
+    return lhs.length() < rhs.length();
+}
+
 pub const Zset = struct {
+    const Iterator = struct {
+        subject: *Object,
+        encoding: Object.Encoding,
+
+        zl: ?*ZipListSet = null,
+        eptr: ?[*]u8 = null,
+        sptr: ?[*]u8 = null,
+
+        sl: ?*SkipListSet = null,
+        node: ?*SkipList.Node = null,
+
+        fn create(zobj: *Object) Iterator {
+            assert(zobj.type == .zset);
+
+            var it: Iterator = .{
+                .subject = zobj,
+                .encoding = zobj.encoding,
+            };
+            if (it.encoding == .skiplist) {
+                it.sl = SkipListSet.cast(zobj.v.ptr);
+                it.node = it.sl.?.sl.header.level(0).forward;
+            } else if (it.encoding == .ziplist) {
+                it.zl = ZipListSet.cast(zobj.v.ptr);
+                it.eptr = it.zl.?.zl.index(ZipList.HEAD);
+                if (it.eptr) |eptr| {
+                    it.sptr = it.zl.?.zl.next(eptr);
+                    assert(it.sptr != null);
+                }
+            } else {
+                @panic("Unknown set encoding");
+            }
+            return it;
+        }
+
+        fn next(self: *Iterator, out: *Operation.Source.Value) bool {
+            if (self.encoding == .ziplist) {
+                if (self.eptr == null or self.sptr == null) {
+                    return false;
+                }
+                const value = ZipList.get(self.eptr.?).?;
+                switch (value) {
+                    .num => |v| out.ll = v,
+                    .str => |v| out.str = v,
+                }
+                out.score = ZipListSet.getScore(self.sptr.?);
+
+                // Move to next element.
+                self.zl.?.next(&self.eptr, &self.sptr);
+                return true;
+            }
+            if (self.encoding == .skiplist) {
+                const node = self.node orelse return false;
+                out.ele = node.ele.?;
+                out.score = node.score;
+
+                // Move to next element.
+                self.node = node.level(0).forward;
+                return true;
+            }
+            @panic("Unknown sorted set encoding");
+        }
+
+        fn release(self: *Iterator) void {
+            _ = self;
+        }
+    };
+
     /// Add a new element or update the score of an existing element in a sorted
     /// set, regardless of its encoding.
     ///
@@ -1408,7 +1694,7 @@ pub const Zset = struct {
 
             const sl: *SkipListSet = .cast(zobj.v.ptr);
             var node = sl.sl.header.level(0).forward;
-            allocator.destroy(sl.sl.header);
+            sl.sl.header.free();
             allocator.destroy(sl.sl);
             sl.dict.destroy();
             allocator.destroy(sl);
@@ -1417,7 +1703,7 @@ pub const Zset = struct {
             while (node) |n| {
                 zl.insertAt(null, n.ele.?, n.score);
                 node = n.level(0).forward;
-                allocator.destroy(n);
+                n.free();
             }
 
             zobj.v = .{ .ptr = zl };
@@ -1426,6 +1712,26 @@ pub const Zset = struct {
         }
 
         @panic("Unknown sorted set encoding");
+    }
+
+    /// Convert the sorted set object into a ziplist if it is not already a ziplist
+    /// and if the number of elements and the maximum element size and total
+    /// elements size are within the expected ranges.
+    pub fn convertToZipListIfNeeded(
+        zobj: *Object,
+        maxelelen: usize,
+        totelelen: usize,
+    ) void {
+        if (zobj.encoding == .ziplist) {
+            return;
+        }
+        const sl: *SkipListSet = .cast(zobj.v.ptr);
+        if (sl.sl.length <= server.zset_max_ziplist_entries and
+            maxelelen <= server.zset_max_ziplist_value and
+            ZipList.safeToAdd(null, totelelen))
+        {
+            convert(zobj, .ziplist);
+        }
     }
 
     pub fn length(zobj: *Object) u64 {
@@ -1925,8 +2231,7 @@ pub const SkipListSet = struct {
     /// The inside skiplist takes ownership of the passed SDS string 'ele'.
     fn insert(self: *SkipListSet, score: f64, ele: sds.String) void {
         const node = self.sl.insert(score, ele);
-        const ok = self.dict.add(ele, &node.score);
-        assert(ok);
+        assert(self.dict.add(ele, &node.score));
     }
 
     /// Delete all the elements with rank between start and end from the skiplist.
@@ -1953,8 +2258,7 @@ pub const SkipListSet = struct {
         while (f != null and traversed <= end) {
             const next = f.?.level(0).forward;
             self.sl.deleteNode(f.?, &update);
-            const ok = self.dict.delete(f.?.ele.?);
-            assert(ok);
+            assert(self.dict.delete(f.?.ele.?));
             f.?.free();
             removed += 1;
             traversed += 1;
@@ -2525,6 +2829,224 @@ fn zslRandomLevel() u32 {
     return @min(level, ZSKIPLIST_MAXLEVEL);
 }
 
+const Operation = enum {
+    @"union",
+    inter,
+
+    const Aggregator = enum {
+        sum,
+        min,
+        max,
+
+        fn aggregate(self: Aggregator, target: *f64, val: f64) void {
+            switch (self) {
+                .sum => {
+                    target.* = target.* + val;
+                    // The result of adding two doubles is NaN when one variable
+                    // is +inf and the other is -inf. When these numbers are added,
+                    // we maintain the convention of the result being 0.0.
+                    if (isNan(target.*)) target.* = 0.0;
+                },
+                .min => target.* = @min(target.*, val),
+                .max => target.* = @max(target.*, val),
+            }
+        }
+    };
+
+    const Source = struct {
+        subject: ?*Object,
+        type: Object.Type,
+        encoding: Object.Encoding,
+        weight: f64,
+
+        const Value = struct {
+            /// Use dirty flags for pointers that need to be cleaned up in the
+            /// next iteration over the Value. The dirty flag for the long long
+            /// value is special, since long long values don't need cleanup.
+            /// Instead, it means that we already checked that "ll" holds a
+            /// long long, or tried to convert another representation into a
+            /// long long value. When this was successful, VALID_LL is set as
+            /// well.
+            const Flags = struct {
+                const DIRTY_SDS = 1;
+                const DIRTY_LL = 2;
+                const VALID_LL = 4;
+            };
+
+            flags: i32,
+            ele: ?sds.String,
+            str: ?[]u8,
+            ll: i64,
+            score: f64,
+
+            fn getLongLong(self: *Value) bool {
+                if (self.flags & Flags.DIRTY_LL == 0) {
+                    self.flags |= Flags.DIRTY_LL;
+                    if (self.ele) |ele| {
+                        if (util.string2ll(sds.castBytes(ele))) |ll| {
+                            self.ll = ll;
+                            self.flags |= Flags.VALID_LL;
+                        }
+                    } else if (self.str) |str| {
+                        if (util.string2ll(str)) |ll| {
+                            self.ll = ll;
+                            self.flags |= Flags.VALID_LL;
+                        }
+                    } else {
+                        // he long long was already set, flag as valid.
+                        self.flags |= Flags.VALID_LL;
+                    }
+                }
+                return self.flags & Flags.VALID_LL != 0;
+            }
+
+            fn getSds(self: *Value) sds.String {
+                if (self.ele == null) {
+                    if (self.str) |str| {
+                        self.ele = sds.new(allocator.child, str);
+                    } else {
+                        self.ele = sds.fromLonglong(allocator.child, self.ll);
+                    }
+                    self.flags |= Flags.DIRTY_SDS;
+                }
+                return self.ele.?;
+            }
+
+            /// This is different from getSds() since returns a new SDS string
+            /// which is up to the caller to free.
+            fn newSds(self: *Value) sds.String {
+                if (self.flags & Flags.DIRTY_SDS != 0) {
+                    // We have already one to return!
+                    const ele = self.ele.?;
+                    self.flags &= ~@as(i32, Flags.DIRTY_SDS);
+                    self.ele = null;
+                    return ele;
+                }
+                if (self.ele) |ele| {
+                    return sds.dupe(allocator.child, ele);
+                }
+                if (self.str) |str| {
+                    return sds.new(allocator.child, str);
+                }
+                return sds.fromLonglong(allocator.child, self.ll);
+            }
+        };
+
+        const Iterator = struct {
+            src: *Source,
+            set: ?Set.Iterator = null,
+            zset: ?Zset.Iterator = null,
+
+            /// Check if the current value is valid. If so, store it in the
+            /// passed structure and move to the next element. If not valid,
+            /// this means we have reached the end of the structure and can
+            /// abort.
+            fn next(self: *Iterator, val: *Value) bool {
+                if (self.src.subject == null) {
+                    return false;
+                }
+                if (val.flags & Value.Flags.DIRTY_SDS != 0) {
+                    sds.free(allocator.child, val.ele.?);
+                }
+                @memset(std.mem.asBytes(val), 0);
+
+                if (self.src.type == .zset) {
+                    return self.zset.?.next(val);
+                }
+                if (self.src.type == .set) {
+                    const value = self.set.?.next() orelse {
+                        return false;
+                    };
+                    switch (value) {
+                        .num => |v| val.ll = v,
+                        .s => |s| val.ele = s,
+                    }
+                    val.score = 1.0;
+                    return true;
+                }
+                @panic("Unsupported type");
+            }
+
+            fn release(self: *Iterator) void {
+                if (self.src.subject == null) {
+                    return;
+                }
+                if (self.src.type == .set) {
+                    self.set.?.release();
+                } else if (self.src.type == .zset) {
+                    self.zset.?.release();
+                } else {
+                    @panic("Unsupported type");
+                }
+            }
+        };
+
+        fn iterator(self: *Source) Iterator {
+            if (self.subject == null) {
+                return .{ .src = self };
+            }
+            const subject = self.subject.?;
+            if (self.type == .set) {
+                return .{
+                    .src = self,
+                    .set = Set.Iterator.create(subject),
+                };
+            }
+            if (self.type == .zset) {
+                return .{
+                    .src = self,
+                    .zset = Zset.Iterator.create(subject),
+                };
+            }
+            @panic("Unsupported type");
+        }
+
+        fn length(self: *const Source) u64 {
+            if (self.subject == null) return 0;
+            const subject = self.subject.?;
+            if (self.type == .set) {
+                return Set.size(subject);
+            }
+            if (self.type == .zset) {
+                return Zset.length(subject);
+            }
+            @panic("Unknown sorted set encoding");
+        }
+
+        /// Find value pointed to by val in the source pointer. When found,
+        /// return its score, return NULL otherwise.
+        fn find(self: *const Source, val: *Value) ?f64 {
+            const subject = self.subject orelse {
+                return null;
+            };
+            if (self.type == .set) {
+                if (self.encoding == .intset) {
+                    const is: *IntSet = .cast(subject.v.ptr);
+                    if (val.getLongLong() and is.find(val.ll)) {
+                        return 1.0;
+                    }
+                    return 0;
+                }
+                if (self.encoding == .ht) {
+                    const ht: *Set.Hash = .cast(subject.v.ptr);
+                    const ele = val.getSds();
+                    if (ht.find(ele) != null) {
+                        return 1.0;
+                    }
+                    return 0;
+                }
+                @panic("Unknown set encoding");
+            }
+
+            if (self.type == .zset) {
+                const ele = val.getSds();
+                return Zset.scoreOf(subject, ele) orelse 0;
+            }
+            @panic("Unsupported type");
+        }
+    };
+};
+
 pub const Where = enum {
     min,
     max,
@@ -2826,3 +3348,6 @@ const util = @import("util.zig");
 const log = std.log.scoped(.zset);
 const db = @import("db.zig");
 const blocked = @import("blocked.zig");
+const IntSet = @import("IntSet.zig");
+const Set = @import("t_set.zig").Set;
+const oom = allocator.oom;

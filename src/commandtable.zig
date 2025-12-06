@@ -117,6 +117,8 @@ pub const table = [_]Command{
     .{ .name = "zpopmax", .proc = zset.zpopmaxCommand, .arity = -2 },
     .{ .name = "bzpopmin", .proc = zset.bzpopminCommand, .arity = -3 },
     .{ .name = "bzpopmax", .proc = zset.bzpopmaxCommand, .arity = -3 },
+    .{ .name = "zunionstore", .proc = zset.zunionstoreCommand, .arity = -4 },
+    .{ .name = "zinterstore", .proc = zset.zinterstoreCommand, .arity = -4 },
 };
 
 pub const Command = struct {

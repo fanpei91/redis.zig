@@ -477,7 +477,6 @@ pub fn sdiffstoreCommand(cli: *Client) void {
 const Op = enum {
     @"union",
     diff,
-    inter,
 };
 fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     var sets = std.ArrayList(?*Object).initCapacity(
@@ -974,7 +973,7 @@ pub const Set = struct {
         @panic("Unknown set encoding");
     }
 
-    fn size(sobj: *const Object) u64 {
+    pub fn size(sobj: *const Object) u64 {
         if (sobj.encoding == .ht) {
             const h = Hash.cast(sobj.v.ptr);
             return h.size();
@@ -986,13 +985,14 @@ pub const Set = struct {
         @panic("Unknown set encoding");
     }
 
-    const Iterator = struct {
+    pub const Iterator = struct {
         subject: *Object,
         encoding: Object.Encoding,
         ii: ?u32 = null, // intset iterator
         di: ?Hash.Iterator = null,
 
         pub fn create(sobj: *Object) Iterator {
+            assert(sobj.type == .set);
             var it: Iterator = .{
                 .subject = sobj,
                 .encoding = sobj.encoding,
