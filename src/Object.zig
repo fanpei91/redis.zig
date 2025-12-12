@@ -108,13 +108,225 @@ pub const Encoding = enum(u4) {
             .raw => "raw",
             .int => "int",
             .ht => "hashtable",
+            .zipmap => "zipmap",
+            .linkedlist => "linkedlist",
             .ziplist => "ziplist",
             .intset => "intset",
             .skiplist => "skiplist",
             .embstr => "embstr",
             .quicklist => "quicklist",
-            else => "unknown",
+            .stream => "stream",
         };
+    }
+};
+
+pub const Shared = struct {
+    crlf: *Object,
+    ok: *Object,
+    err: *Object,
+    emptybulk: *Object,
+    czero: *Object,
+    cone: *Object,
+    cnegone: *Object,
+    nullbulk: *Object,
+    nullmultibulk: *Object,
+    emptymultibulk: *Object,
+    pong: *Object,
+    queued: *Object,
+    emptyscan: *Object,
+    wrongtypeerr: *Object,
+    nokeyerr: *Object,
+    syntaxerr: *Object,
+    sameobjecterr: *Object,
+    outofrangeerr: *Object,
+    noautherr: *Object,
+    oomerr: *Object,
+    execaborterr: *Object,
+    busykeyerr: *Object,
+    space: *Object,
+    colon: *Object,
+    plus: *Object,
+    integers: [Server.OBJ_SHARED_INTEGERS]*Object,
+    bulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // $<value>\r\n
+    mbulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // *<value>\r\n
+    minstring: sds.String,
+    maxstring: sds.String,
+
+    pub fn create() Shared {
+        var self: Shared = undefined;
+        self.crlf = Object.create(
+            .string,
+            sds.new(allocator.child, "\r\n"),
+        );
+        self.ok = Object.create(
+            .string,
+            sds.new(allocator.child, "+OK\r\n"),
+        );
+        self.err = Object.create(
+            .string,
+            sds.new(allocator.child, "-ERR\r\n"),
+        );
+        self.emptybulk = Object.create(
+            .string,
+            sds.new(allocator.child, "$0\r\n\r\n"),
+        );
+        self.czero = Object.create(
+            .string,
+            sds.new(allocator.child, ":0\r\n"),
+        );
+        self.cone = Object.create(
+            .string,
+            sds.new(allocator.child, ":1\r\n"),
+        );
+        self.cnegone = Object.create(
+            .string,
+            sds.new(allocator.child, ":-1\r\n"),
+        );
+        self.nullbulk = Object.create(
+            .string,
+            sds.new(allocator.child, "$-1\r\n"),
+        );
+        self.nullmultibulk = Object.create(
+            .string,
+            sds.new(allocator.child, "*-1\r\n"),
+        );
+        self.emptymultibulk = Object.create(
+            .string,
+            sds.new(allocator.child, "*0\r\n"),
+        );
+        self.pong = Object.create(
+            .string,
+            sds.new(allocator.child, "+PONG\r\n"),
+        );
+        self.queued = Object.create(
+            .string,
+            sds.new(allocator.child, "+QUEUED\r\n"),
+        );
+        self.emptyscan = Object.create(
+            .string,
+            sds.new(allocator.child, "*2\r\n$1\r\n0\r\n*0\r\n"),
+        );
+        self.wrongtypeerr = Object.create(
+            .string,
+            sds.new(
+                allocator.child,
+                "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+            ),
+        );
+        self.nokeyerr = Object.create(
+            .string,
+            sds.new(allocator.child, "-ERR no such key\r\n"),
+        );
+        self.syntaxerr = Object.create(
+            .string,
+            sds.new(allocator.child, "-ERR syntax error\r\n"),
+        );
+        self.sameobjecterr = Object.create(
+            .string,
+            sds.new(
+                allocator.child,
+                "-ERR source and destination objects are the same\r\n",
+            ),
+        );
+        self.outofrangeerr = Object.create(
+            .string,
+            sds.new(allocator.child, "-ERR index out of range\r\n"),
+        );
+        self.noautherr = Object.create(
+            .string,
+            sds.new(allocator.child, "-NOAUTH Authentication required.\r\n"),
+        );
+        self.oomerr = Object.create(
+            .string,
+            sds.new(
+                allocator.child,
+                "-OOM command not allowed when used memory > 'maxmemory'.\r\n",
+            ),
+        );
+        self.execaborterr = Object.create(
+            .string,
+            sds.new(
+                allocator.child,
+                "-EXECABORT Transaction discarded because of previous errors.\r\n",
+            ),
+        );
+        self.busykeyerr = Object.create(
+            .string,
+            sds.new(allocator.child, "-BUSYKEY Target key name already exists.\r\n"),
+        );
+        self.space = Object.create(
+            .string,
+            sds.new(allocator.child, " "),
+        );
+        self.colon = Object.create(
+            .string,
+            sds.new(allocator.child, ":"),
+        );
+        self.plus = Object.create(
+            .string,
+            sds.new(allocator.child, "+"),
+        );
+        for (0..Server.OBJ_SHARED_INTEGERS) |i| {
+            var obj = Object.createInt(@intCast(i));
+            self.integers[i] = obj.makeShared();
+        }
+        for (0..Server.OBJ_SHARED_BULKHDR_LEN) |i| {
+            self.bulkhdr[i] = Object.create(
+                .string,
+                sds.catPrintf(
+                    allocator.child,
+                    sds.empty(allocator.child),
+                    "${}\r\n",
+                    .{i},
+                ),
+            );
+            self.mbulkhdr[i] = Object.create(
+                .string,
+                sds.catPrintf(
+                    allocator.child,
+                    sds.empty(allocator.child),
+                    "*{}\r\n",
+                    .{i},
+                ),
+            );
+        }
+        self.minstring = sds.new(allocator.child, "minstring");
+        self.maxstring = sds.new(allocator.child, "maxstring");
+        return self;
+    }
+
+    pub fn destroy(self: *Shared) void {
+        self.crlf.decrRefCount();
+        self.ok.decrRefCount();
+        self.err.decrRefCount();
+        self.emptybulk.decrRefCount();
+        self.czero.decrRefCount();
+        self.cone.decrRefCount();
+        self.cnegone.decrRefCount();
+        self.nullbulk.decrRefCount();
+        self.nullmultibulk.decrRefCount();
+        self.emptymultibulk.decrRefCount();
+        self.pong.decrRefCount();
+        self.queued.decrRefCount();
+        self.emptyscan.decrRefCount();
+        self.wrongtypeerr.decrRefCount();
+        self.nokeyerr.decrRefCount();
+        self.syntaxerr.decrRefCount();
+        self.sameobjecterr.decrRefCount();
+        self.outofrangeerr.decrRefCount();
+        self.noautherr.decrRefCount();
+        self.oomerr.decrRefCount();
+        self.execaborterr.decrRefCount();
+        self.busykeyerr.decrRefCount();
+        self.space.decrRefCount();
+        self.colon.decrRefCount();
+        self.plus.decrRefCount();
+        for (self.integers) |obj| obj.free();
+        for (self.bulkhdr) |obj| obj.decrRefCount();
+        for (self.mbulkhdr) |obj| obj.decrRefCount();
+        sds.free(allocator.child, self.minstring);
+        sds.free(allocator.child, self.maxstring);
+        self.* = undefined;
     }
 };
 
@@ -359,6 +571,13 @@ pub fn createZsetZipList() *Object {
     return obj;
 }
 
+pub fn createStream() *Object {
+    const s = Stream.create();
+    const obj = create(.stream, s);
+    obj.encoding = .stream;
+    return obj;
+}
+
 pub fn decrRefCount(self: *Object) void {
     if (self.refcount == 1) {
         switch (self.type) {
@@ -367,7 +586,8 @@ pub fn decrRefCount(self: *Object) void {
             .set => self.freeSet(),
             .zset => self.freeZset(),
             .hash => self.freeHash(),
-            else => unreachable, // TODO: complete all branch
+            .stream => self.freeStream(),
+            else => unreachable, // TODO: module
         }
         self.free();
         return;
@@ -687,6 +907,11 @@ fn freeHash(self: *Object) void {
     }
 }
 
+fn freeStream(self: *Object) void {
+    const s: *Stream = .cast(self.v.ptr);
+    s.destroy();
+}
+
 test createEmbeddedString {
     try Server.create(null, null);
     defer Server.destroy();
@@ -714,6 +939,7 @@ const util = @import("util.zig");
 const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const QuickList = @import("QuickList.zig");
+const Stream = @import("Stream.zig");
 const zset = @import("t_zset.zig");
 const SkipListSet = zset.SkipListSet;
 const ZipListSet = zset.ZipListSet;

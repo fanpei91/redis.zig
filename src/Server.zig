@@ -104,6 +104,8 @@ pub const OBJ_HASH_MAX_ZIPLIST_VALUE = 64;
 pub const OBJ_SET_MAX_INTSET_ENTRIES = 512;
 pub const OBJ_ZSET_MAX_ZIPLIST_ENTRIES = 128;
 pub const OBJ_ZSET_MAX_ZIPLIST_VALUE = 64;
+pub const OBJ_STREAM_NODE_MAX_BYTES = 4096;
+pub const OBJ_STREAM_NODE_MAX_ENTRIES = 100;
 
 // Hash data type
 pub const HASH_SET_TAKE_FIELD = (1 << 0);
@@ -118,7 +120,7 @@ pub fn needShrinkDictToFit(used: u64, size: u64) bool {
         @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;
 }
 
-pub var shared: SharedObjects = undefined;
+pub var shared: Object.Shared = undefined;
 
 pub var instance: Server = undefined;
 
@@ -174,7 +176,7 @@ db: []Database,
 commands: *Commands.HashMap, // Command table
 // Networking
 clients: *ClientList, // List of active clients
-clients_index: Rax, // Active clients dictionary by client ID.
+clients_index: [*c]raxlib.rax, // Active clients dictionary by client ID.
 clients_to_close: *ClientList, // Clients to close asynchronously
 clients_pending_write: *ClientList, // There is to write or install handler.
 next_client_id: atomic.Value(usize), // Next client unique ID. Incremental.
@@ -218,6 +220,8 @@ hash_max_ziplist_entries: usize,
 set_max_intset_entries: usize,
 zset_max_ziplist_entries: usize,
 zset_max_ziplist_value: usize,
+stream_node_max_bytes: usize,
+stream_node_max_entries: i64,
 // Blocked clients
 ready_keys: *ReadyKeys.List, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
@@ -274,6 +278,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.set_max_intset_entries = OBJ_SET_MAX_INTSET_ENTRIES;
     server.zset_max_ziplist_entries = OBJ_ZSET_MAX_ZIPLIST_ENTRIES;
     server.zset_max_ziplist_value = OBJ_ZSET_MAX_ZIPLIST_VALUE;
+    server.stream_node_max_bytes = OBJ_STREAM_NODE_MAX_BYTES;
+    server.stream_node_max_entries = OBJ_STREAM_NODE_MAX_ENTRIES;
     server.ready_keys = ReadyKeys.List.create(ReadyKeys.vtable);
     errdefer server.ready_keys.release();
     server.unblocked_clients = ClientList.create(&.{});
@@ -286,14 +292,14 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
 
     server.clients = ClientList.create(&.{});
     errdefer server.clients.release();
-    server.clients_index = Rax.new();
+    server.clients_index = raxlib.raxNew();
     server.clients_pending_write = ClientList.create(&.{});
     errdefer server.clients_pending_write.release();
     server.clients_to_close = ClientList.create(&.{});
     errdefer server.clients_to_close.release();
     server.next_client_id = .init(1);
 
-    shared = SharedObjects.create();
+    shared = Object.Shared.create();
     errdefer shared.destroy();
 
     try server.adjustOpenFilesLimit();
@@ -875,7 +881,7 @@ pub fn destroy() void {
         cli.free();
     }
     server.clients.release();
-    server.clients_index.free();
+    raxlib.raxFree(server.clients_index);
     server.clients_pending_write.release();
     server.clients_to_close.release();
     server.ready_keys.release();
@@ -986,9 +992,8 @@ const posix = std.posix;
 const atomic = @import("atomic.zig");
 const Client = networking.Client;
 const Database = @import("db.zig").Database;
-const Rax = @import("rax/Rax.zig");
+const raxlib = @import("rax/rax.zig").rax;
 const bio = @import("bio.zig");
-const SharedObjects = @import("SharedObjects.zig");
 const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
 pub const ClientList = LinkedList(*Client, *Client);

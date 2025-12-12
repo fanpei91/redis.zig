@@ -88,7 +88,7 @@ fn buildRax(b: *std.Build, mod: *std.Build.Module) void {
     // TODO: use Allocator(-Dmalloc=my_malloc -Dfree=my_free)
     mod.addCSourceFiles(.{
         .files = &.{
-            "src/rax/art.c",
+            "src/rax/rax.c",
         },
     });
     mod.addIncludePath(b.path("src/rax"));

@@ -119,6 +119,7 @@ pub const table = [_]Command{
     .{ .name = "bzpopmax", .proc = zset.bzpopmaxCommand, .arity = -3 },
     .{ .name = "zunionstore", .proc = zset.zunionstoreCommand, .arity = -4 },
     .{ .name = "zinterstore", .proc = zset.zinterstoreCommand, .arity = -4 },
+    .{ .name = "xadd", .proc = stream.xaddCommand, .arity = -5 },
 };
 
 pub const Command = struct {
@@ -135,6 +136,7 @@ const list = @import("t_list.zig");
 const hash = @import("t_hash.zig");
 const set = @import("t_set.zig");
 const zset = @import("t_zset.zig");
+const stream = @import("t_stream.zig");
 const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");

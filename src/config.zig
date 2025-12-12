@@ -404,6 +404,22 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "stream-node-max-bytes") and argc == 2) {
+                server.stream_node_max_bytes = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
+                continue;
+            }
+
+            if (eql(option, "stream-node-max-entries") and argc == 2) {
+                server.stream_node_max_entries = std.fmt.parseInt(
+                    i64,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }

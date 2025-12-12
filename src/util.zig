@@ -205,7 +205,14 @@ pub fn ll2string(buf: []u8, value: i64) []u8 {
 }
 
 pub fn string2ll(str: []const u8) ?i64 {
-    const v = std.fmt.parseInt(i64, str, 0) catch {
+    const v = std.fmt.parseInt(i64, str, 10) catch {
+        return null;
+    };
+    return v;
+}
+
+pub fn string2ull(str: []const u8) ?u64 {
+    const v = std.fmt.parseInt(u64, str, 10) catch {
         return null;
     };
     return v;

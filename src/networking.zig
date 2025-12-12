@@ -199,7 +199,14 @@ pub const Client = struct {
     pub fn link(self: *Client) void {
         server.clients.append(self);
         self.client_list_node = server.clients.last;
-        _ = server.clients_index.insert(std.mem.asBytes(&self.id), self);
+        const key: []u8 = std.mem.asBytes(&self.id);
+        _ = raxlib.raxInsert(
+            server.clients_index,
+            key.ptr,
+            key.len,
+            self,
+            null,
+        );
     }
 
     pub fn unlink(self: *Client) void {
@@ -209,7 +216,13 @@ pub const Client = struct {
         if (self.fd != -1) {
             // Remove from the list of active clients.
             if (self.client_list_node) |node| {
-                _ = server.clients_index.remove(std.mem.asBytes(&self.id));
+                const key: []u8 = std.mem.asBytes(&self.id);
+                _ = raxlib.raxRemove(
+                    server.clients_index,
+                    key.ptr,
+                    key.len,
+                    null,
+                );
                 server.clients.removeNode(node);
                 self.client_list_node = null;
             }
@@ -573,6 +586,20 @@ pub const Client = struct {
         self.argv = null;
         self.argc = 0;
         self.cmd = null;
+    }
+
+    /// Emit a reply in the client output buffer by formatting a Stream ID
+    /// in the standard <ms>-<seq> format, using the simple string protocol
+    /// of REPL.
+    pub fn addReplyStreamID(self: *Client, id: *Stream.Id) void {
+        const replyid = sds.catPrintf(
+            allocator.child,
+            sds.empty(allocator.child),
+            "{}-{}",
+            .{ id.ms, id.seq },
+        );
+        defer sds.free(allocator.child, replyid);
+        self.addReplyBulkString(sds.asBytes(replyid));
     }
 
     pub fn addReplyHelp(self: *Client, help: []const []const u8) void {
@@ -1211,3 +1238,5 @@ const memcpy = memzig.memcpy;
 const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const assert = std.debug.assert;
+const raxlib = @import("rax/rax.zig").rax;
+const Stream = @import("Stream.zig");
