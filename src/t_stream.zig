@@ -98,8 +98,47 @@ pub fn xaddCommand(cli: *CLient) void {
     cli.addReplyStreamID(&id);
 
     if (maxlen >= 0) {
-        _ = stream.trimByLength(@intCast(maxlen), approx_maxlen);
+        _ = stream.trim(@intCast(maxlen), approx_maxlen);
     }
+}
+
+/// XDEL <key> [<ID1> <ID2> ... <IDN>]
+///
+/// Removes the specified entries from the stream. Returns the number
+/// of items actually deleted, that may be different from the number
+/// of IDs passed in case certain IDs do not exist.
+pub fn xdelCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const xobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+
+    // We need to sanity check the IDs passed to start. Even if not
+    // a big issue, it is not great that the command is only partially
+    // executed because at some point an invalid ID is parsed.
+    var id: Stream.Id = undefined;
+    for (argv[2..cli.argc]) |arg| {
+        if (!parseIdOrReply(cli, arg, &id, 0, true)) {
+            return;
+        }
+    }
+
+    // Actually apply the command.
+    const stream: *Stream = .cast(xobj.v.ptr);
+    var deleted: i64 = 0;
+    for (argv[2..cli.argc]) |arg| {
+        assert(parseIdOrReply(null, arg, &id, 0, true));
+        deleted += @intFromBool(stream.delete(&id));
+    }
+    cli.addReplyLongLong(deleted);
 }
 
 // XLEN key
@@ -208,3 +247,4 @@ const server = &Server.instance;
 const blocked = @import("blocked.zig");
 const raxlib = @import("rax/rax.zig").rax;
 const ListPack = @import("ListPack.zig");
+const assert = std.debug.assert;

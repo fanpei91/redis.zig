@@ -266,7 +266,7 @@ pub const Iterator = struct {
     /// Current listpack cursor.
     lp_ele: ?[*]u8,
     /// Current entry flags pointer.
-    lp_flags: [*]u8,
+    lp_flags: ?[*]u8,
     /// Buffers used to hold the string of ListPack.get() when the element is
     /// integer encoded, so that there is no string representation of the
     /// element inside the listpack itself.
@@ -407,8 +407,8 @@ pub const Iterator = struct {
                 }
 
                 // Get the flags entry.
-                self.lp_flags = self.lp_ele.?;
-                const flags: i32 = @intCast(ListPack.getInteger(self.lp_flags));
+                self.lp_flags = self.lp_ele;
+                const flags: i32 = @intCast(ListPack.getInteger(self.lp_flags.?));
                 self.lp_ele = self.lp.?.next(self.lp_ele.?); // Seek ID.
 
                 // Get the ID: it is encoded as difference between the master
@@ -533,6 +533,77 @@ pub const Iterator = struct {
     /// allocated.
     pub fn stop(self: *Iterator) void {
         raxlib.raxStop(&self.ri);
+    }
+
+    /// Remove the current entry from the stream: can be called after the
+    /// getId() API or after any detField() call, however we need to iterate
+    /// a valid entry while calling this function. Moreover the function
+    /// requires the entry ID we are currently iterating, that was previously
+    /// returned by getId().
+    ///
+    /// Note that after calling this function, next calls to getField() can't
+    /// be performed: the entry is now deleted. Instead the iterator will
+    /// automatically re-seek to the next entry, so the caller should continue
+    /// with getId().
+    fn removeEntry(self: *Iterator, current: *Id) void {
+        var lp = self.lp.?;
+
+        // We do not really delete the entry here. Instead we mark it as
+        // deleted flagging it, and also incrementing the count of the
+        // deleted entries in the listpack header.
+        //
+        // We start flagging:
+        var flags = ListPack.getInteger(self.lp_flags.?);
+        flags |= ITEM_FLAG_DELETED;
+        lp = lp.replaceInteger(&self.lp_flags, flags).?;
+
+        // Change the valid/deleted entries count in the master entry.
+        var p = lp.first();
+        var aux = ListPack.getInteger(p.?);
+        if (aux == 1) {
+            // If this is the last element in the listpack, we can remove the whole
+            // node.
+            lp.free();
+            _ = raxlib.raxRemove(
+                self.stream.rax,
+                self.ri.key,
+                self.ri.key_len,
+                null,
+            );
+        } else {
+            // In the base case we alter the counters of valid/deleted entries.
+            lp = lp.replaceInteger(&p, aux - 1).?;
+            p = lp.next(p.?); // Seek deleted field.
+            aux = ListPack.getInteger(p.?);
+            lp = lp.replaceInteger(&p, aux + 1).?;
+
+            // Update the listpack with the new pointer.
+            if (self.lp != lp) {
+                _ = raxlib.raxInsert(
+                    self.stream.rax,
+                    self.ri.key,
+                    self.ri.key_len,
+                    lp,
+                    null,
+                );
+            }
+        }
+
+        // Update the number of entries counter.
+        self.stream.length -= 1;
+
+        // Re-seek the iterator to fix the now messed up state.
+        var start_id: Id = undefined;
+        var end_id: Id = undefined;
+        if (self.rev) {
+            start_id.decode(sliceAsBytes(&self.start_key));
+            end_id = current.*;
+        } else {
+            start_id = current.*;
+            end_id.decode(sliceAsBytes(&self.end_key));
+        }
+        self.stop();
+        self.start(self.stream, &start_id, &end_id, self.rev);
     }
 };
 
@@ -786,6 +857,24 @@ pub fn append(
     if (added_id) |aid| aid.* = id;
 }
 
+/// Delete the specified item ID from the stream, returning TRUE if the item
+/// was deleted FALSE otherwise (if it does not exist).
+pub fn delete(self: *Stream, id: *Id) bool {
+    var deleted = false;
+
+    var it: Iterator = undefined;
+    it.start(self, id, id, false);
+    defer it.stop();
+
+    var myid: Id = undefined;
+    var numfields: i64 = undefined;
+    if (it.getId(&myid, &numfields)) {
+        it.removeEntry(&myid);
+        deleted = true;
+    }
+    return deleted;
+}
+
 /// Trim the stream to have no more than maxlen elements, and return the
 /// number of elements removed from the stream. The 'approx' option, if true,
 /// specifies that the trimming must be performed in a approximated way in
@@ -799,7 +888,7 @@ pub fn append(
 /// 1) The stream is already shorter or equal to the specified max length.
 /// 2) The 'approx' option is true and the head node had not enough elements
 ///    to be deleted, leaving the stream with a number of elements >= maxlen.
-pub fn trimByLength(self: *Stream, maxlen: usize, approx: bool) usize {
+pub fn trim(self: *Stream, maxlen: usize, approx: bool) usize {
     if (self.length <= maxlen) {
         return 0;
     }
