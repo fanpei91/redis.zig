@@ -120,6 +120,7 @@ pub const table = [_]Command{
     .{ .name = "zunionstore", .proc = zset.zunionstoreCommand, .arity = -4 },
     .{ .name = "zinterstore", .proc = zset.zinterstoreCommand, .arity = -4 },
     .{ .name = "xadd", .proc = stream.xaddCommand, .arity = -5 },
+    .{ .name = "xlen", .proc = stream.xlenCommand, .arity = 2 },
 };
 
 pub const Command = struct {

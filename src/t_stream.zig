@@ -102,6 +102,25 @@ pub fn xaddCommand(cli: *CLient) void {
     }
 }
 
+// XLEN key
+pub fn xlenCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const xobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+
+    const s: *Stream = .cast(xobj.v.ptr);
+    cli.addReplyLongLong(@bitCast(s.length));
+}
+
 /// Return the length of a stream.
 pub fn length(o: *const Object) u64 {
     const s: *Stream = .cast(o.v.ptr);
