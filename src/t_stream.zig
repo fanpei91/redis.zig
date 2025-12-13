@@ -239,6 +239,45 @@ fn xrange(cli: *CLient, rev: bool) void {
     );
 }
 
+/// XSETID key last-id
+///
+/// Set the internal "last ID" of a stream.
+pub fn xsetidCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const xobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nokeyerr,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+
+    var id: Stream.Id = undefined;
+    if (!parseIdOrReply(cli, argv[2], &id, 0, true)) {
+        return;
+    }
+
+    const stream: *Stream = .cast(xobj.v.ptr);
+    // If the stream has at least one item, we want to check that the user
+    // is setting a last ID that is equal or greater than the current top
+    // item, otherwise the fundamental ID monotonicity assumption is violated.
+    if (stream.length > 0) {
+        var maxid: Stream.Id = undefined;
+        stream.lastValidId(&maxid);
+        if (id.compare(&maxid) == .lt) {
+            cli.addReplyErr("The ID specified in XSETID is smaller than the " ++
+                "target stream top item");
+            return;
+        }
+    }
+    stream.last_id = id;
+    cli.addReply(Server.shared.ok);
+}
+
 /// Parse a stream ID in the format given by clients to Redis, that is
 /// <ms>-<seq>, and converts it into a Stream.Id structure. If
 /// the specified ID is invalid FALSE is returned and an error is reported
@@ -951,6 +990,15 @@ pub const Stream = struct {
             return null;
         }
         return @ptrCast(@alignCast(o.v.ptr));
+    }
+
+    /// Get the last valid (non-tombstone) streamID.
+    fn lastValidId(self: *Stream, maxid: *Id) void {
+        var it: Iterator = undefined;
+        it.start(self, null, null, true);
+        defer it.stop();
+        var numfields: i64 = undefined;
+        _ = it.getId(maxid, &numfields);
     }
 
     /// Adds a new item into the stream 's' having the specified number of
