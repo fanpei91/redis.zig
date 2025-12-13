@@ -122,6 +122,8 @@ pub const table = [_]Command{
     .{ .name = "xadd", .proc = stream.xaddCommand, .arity = -5 },
     .{ .name = "xdel", .proc = stream.xdelCommand, .arity = -3 },
     .{ .name = "xlen", .proc = stream.xlenCommand, .arity = 2 },
+    .{ .name = "xrange", .proc = stream.xrangeCommand, .arity = -4 },
+    .{ .name = "xrevrange", .proc = stream.xrevrangeCommand, .arity = -4 },
 };
 
 pub const Command = struct {

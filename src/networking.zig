@@ -1239,4 +1239,4 @@ const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const assert = std.debug.assert;
 const raxlib = @import("rax/rax.zig").rax;
-const Stream = @import("Stream.zig");
+const Stream = @import("t_stream.zig").Stream;
