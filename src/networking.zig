@@ -609,20 +609,16 @@ pub const Client = struct {
         const cmd = sds.new(allocator.child, sds.castBytes(argv[0].v.ptr));
         defer sds.free(allocator.child, cmd);
         sds.toUpper(cmd);
+
         self.addReplyStatusFormat(
             "{s} <subcommand> arg arg ... arg. Subcommands are:",
             .{sds.asBytes(cmd)},
         );
         var blen: i64 = 1;
-
         for (help) |h| {
             self.addReplyStatus(h);
             blen += 1;
         }
-
-        self.addReplyStatus("HELP");
-        self.addReplyStatus("    Print this help.");
-        blen += 2;
         self.setDeferredMultiBulkLength(reply, blen);
     }
 

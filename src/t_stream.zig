@@ -278,6 +278,149 @@ pub fn xsetidCommand(cli: *CLient) void {
     cli.addReply(Server.shared.ok);
 }
 
+/// XINFO CONSUMERS <key> <group>
+/// XINFO GROUPS <key>
+/// XINFO STREAM <key>
+/// XINFO HELP
+pub fn xinfoCommand(cli: *CLient) void {
+    const help: []const []const u8 = &.{
+        "CONSUMERS <key> <groupname>  -- Show consumer groups of group <groupname>.",
+        "GROUPS <key>                 -- Show the stream consumer groups.",
+        "STREAM <key>                 -- Show information about the stream.",
+        "HELP                         -- Print this help.",
+    };
+
+    const argv = cli.argv.?;
+    const opt = sds.castBytes(argv[1].v.ptr);
+    if (eqlCase(opt, "HELP")) {
+        cli.addReplyHelp(help);
+        return;
+    } else if (cli.argc < 3) {
+        cli.addReplyErr("syntax error, try 'XINFO HELP'");
+        return;
+    }
+
+    // With the exception of HELP handled before any other sub commands, all
+    // the ones are in the form of "<subcommand> <key>".
+    const key = argv[2];
+    const xobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.nokeyerr,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+    const stream: *Stream = .cast(xobj.v.ptr);
+
+    if (eqlCase(opt, "CONSUMERS") and cli.argc == 4) {
+        const groupname = sds.cast(argv[3].v.ptr);
+        const cg: *Stream.CG = stream.lookupCG(groupname) orelse {
+            cli.addReplyErrFormat(
+                "-NOGROUP No such consumer group '{s}' for key name '{s}'",
+                .{
+                    sds.asBytes(groupname),
+                    sds.castBytes(key.v.ptr),
+                },
+            );
+            return;
+        };
+
+        cli.addReplyMultiBulkLen(@intCast(raxlib.raxSize(cg.consumers)));
+        var ri: raxlib.raxIterator = undefined;
+        raxlib.raxStart(&ri, cg.consumers);
+        defer raxlib.raxStop(&ri);
+        _ = raxlib.raxSeek(&ri, "^", null, 0);
+        const now = std.time.milliTimestamp();
+        while (raxlib.raxNext(&ri) != 0) {
+            const consumer: *Stream.Consumer = .cast(ri.data.?);
+            var idle = now - consumer.seen_time;
+            if (idle < 0) idle = 0;
+            cli.addReplyMultiBulkLen(6);
+            cli.addReplyBulkString("name");
+            cli.addReplyBulkString(sds.asBytes(consumer.name));
+            cli.addReplyBulkString("pending");
+            cli.addReplyLongLong(@intCast(raxlib.raxSize(consumer.pel)));
+            cli.addReplyBulkString("idle");
+            cli.addReplyLongLong(idle);
+        }
+    } else if (eqlCase(opt, "GROUPS") and cli.argc == 3) {
+        const cgroups = stream.cgroups orelse {
+            cli.addReplyMultiBulkLen(0);
+            return;
+        };
+
+        cli.addReplyMultiBulkLen(@intCast(raxlib.raxSize(cgroups)));
+        var ri: raxlib.raxIterator = undefined;
+        raxlib.raxStart(&ri, cgroups);
+        defer raxlib.raxStop(&ri);
+        _ = raxlib.raxSeek(&ri, "^", null, 0);
+        while (raxlib.raxNext(&ri) != 0) {
+            const cg: *Stream.CG = .cast(ri.data.?);
+            cli.addReplyMultiBulkLen(8);
+            cli.addReplyBulkString("name");
+            cli.addReplyBulkString(ri.key[0..ri.key_len]);
+            cli.addReplyBulkString("consumers");
+            cli.addReplyLongLong(@intCast(raxlib.raxSize(cg.consumers)));
+            cli.addReplyBulkString("pending");
+            cli.addReplyLongLong(@intCast(raxlib.raxSize(cg.pel)));
+            cli.addReplyBulkString("last-delivered-id");
+            cli.addReplyStreamID(&cg.last_id);
+        }
+    } else if (eqlCase(opt, "STREAM") and cli.argc == 3) {
+        cli.addReplyMultiBulkLen(14);
+        cli.addReplyBulkString("length");
+        cli.addReplyLongLong(@intCast(stream.length));
+        cli.addReplyBulkString("radix-tree-keys");
+        cli.addReplyLongLong(@intCast(raxlib.raxSize(stream.rax)));
+        cli.addReplyBulkString("radix-tree-nodes");
+        cli.addReplyLongLong(@intCast(stream.rax.*.numnodes));
+        cli.addReplyBulkString("groups");
+        cli.addReplyLongLong(@intCast(
+            if (stream.cgroups) |cgroups|
+                raxlib.raxSize(cgroups)
+            else
+                0,
+        ));
+        cli.addReplyBulkString("last-generated-id");
+        cli.addReplyStreamID(&stream.last_id);
+        // To emit the first/last entry we us the replyWithRange() API.
+
+        var start: Stream.Id = .{ .ms = 0, .seq = 0 };
+        var end: Stream.Id = .{ .ms = maxInt(u64), .seq = maxInt(u64) };
+        cli.addReplyBulkString("first-entry");
+        var count = stream.replyWithRange(
+            cli,
+            &start,
+            &end,
+            1,
+            false,
+            null,
+            null,
+            Stream.RWR_RAWENTRIES,
+            null,
+        );
+        if (count == 0) cli.addReply(Server.shared.nullbulk);
+        cli.addReplyBulkString("last-entry");
+        count = stream.replyWithRange(
+            cli,
+            &start,
+            &end,
+            1,
+            true,
+            null,
+            null,
+            Stream.RWR_RAWENTRIES,
+            null,
+        );
+        if (count == 0) cli.addReply(Server.shared.nullbulk);
+    } else {
+        cli.addReplySubcommandSyntaxError();
+    }
+}
+
 /// Parse a stream ID in the format given by clients to Redis, that is
 /// <ms>-<seq>, and converts it into a Stream.Id structure. If
 /// the specified ID is invalid FALSE is returned and an error is reported
@@ -486,6 +629,10 @@ pub const Stream = struct {
             return consumer;
         }
 
+        fn cast(ptr: *anyopaque) *Consumer {
+            return @ptrCast(@alignCast(ptr));
+        }
+
         /// Destroy a consumer and associated data structures. Note that this function
         /// will not reassign the pending messages associated with this consumer
         /// nor will delete them from the stream, so when this function is called
@@ -526,6 +673,10 @@ pub const Stream = struct {
             cg.consumers = raxlib.raxNew();
             cg.last_id = id;
             return cg;
+        }
+
+        fn cast(ptr: *anyopaque) *CG {
+            return @ptrCast(@alignCast(ptr));
         }
 
         /// Lookup the consumer with the specified name in the group: if the
