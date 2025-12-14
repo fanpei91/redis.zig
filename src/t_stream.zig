@@ -366,6 +366,59 @@ pub fn xgroupCommand(cli: *CLient) void {
     }
 }
 
+/// XACK <key> <group> <id> <id> ... <id>
+///
+/// Acknowledge a message as processed. In practical terms we just check the
+/// pendine entries list (PEL) of the group, and delete the PEL entry both from
+/// the group and the consumer (pending messages are referenced in both places).
+///
+/// Return value of the command is the number of messages successfully
+/// acknowledged, that is, the IDs we were actually able to resolve in the PEL.
+pub fn xackCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const xobj = cli.db.lookupKeyReadOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+
+    const stream: *Stream = .cast(xobj.v.ptr);
+    const cg = stream.lookupCG(sds.cast(argv[2])) orelse {
+        cli.addReply(Server.shared.czero);
+        return;
+    };
+
+    var acknowledged: i64 = 0;
+    for (argv[3..cli.argc]) |arg| {
+        var id: Stream.Id = undefined;
+        if (!parseIdOrReply(cli, arg, &id, 0, true)) {
+            return;
+        }
+
+        var buf: [@sizeOf(Stream.Id)]u8 = undefined;
+        id.decode(&buf);
+
+        // Lookup the ID in the group PEL: it will have a reference to the
+        // NACK structure that will have a reference to the consumer, so that
+        // we are able to remove the entry from both PELs.
+        const found = raxlib.raxFind(cg.pel, &buf, buf.len);
+        if (found != raxlib.raxNotFound) {
+            const nack: *Stream.NACK = .cast(found.?);
+            _ = raxlib.raxRemove(cg.pel, &buf, buf.len, null);
+            _ = raxlib.raxRemove(nack.consumer.pel, &buf, buf.len, null);
+            nack.destroy();
+            acknowledged += 1;
+        }
+    }
+    cli.addReplyLongLong(acknowledged);
+}
+
 /// XSETID key last-id
 ///
 /// Set the internal "last ID" of a stream.
