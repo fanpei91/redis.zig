@@ -45,7 +45,7 @@ pub fn xaddCommand(cli: *CLient) void {
             i += 1;
         } else {
             // If we are here is a syntax error or a valid ID.
-            if (!parseIdOrReply(cli, argv[i], &id, 0, true)) return;
+            if (!Stream.Id.parseOrReply(cli, argv[i], &id, 0, true)) return;
             id_given = true;
             break;
         }
@@ -129,7 +129,7 @@ pub fn xdelCommand(cli: *CLient) void {
     // executed because at some point an invalid ID is parsed.
     var id: Stream.Id = undefined;
     for (argv[2..cli.argc]) |arg| {
-        if (!parseIdOrReply(cli, arg, &id, 0, true)) {
+        if (!Stream.Id.parseOrReply(cli, arg, &id, 0, true)) {
             return;
         }
     }
@@ -138,7 +138,7 @@ pub fn xdelCommand(cli: *CLient) void {
     const stream: *Stream = .cast(xobj.v.ptr);
     var deleted: i64 = 0;
     for (argv[2..cli.argc]) |arg| {
-        assert(parseIdOrReply(null, arg, &id, 0, true));
+        assert(Stream.Id.parseOrReply(null, arg, &id, 0, true));
         deleted += @intFromBool(stream.delete(&id));
     }
     cli.addReplyLongLong(deleted);
@@ -180,10 +180,10 @@ fn xrange(cli: *CLient, rev: bool) void {
     var endid: Stream.Id = undefined;
     const startarg = if (rev) argv[3] else argv[2];
     const endarg = if (rev) argv[2] else argv[3];
-    if (!parseIdOrReply(cli, startarg, &startid, 0, false)) {
+    if (!Stream.Id.parseOrReply(cli, startarg, &startid, 0, false)) {
         return;
     }
-    if (!parseIdOrReply(cli, endarg, &endid, maxInt(u64), false)) {
+    if (!Stream.Id.parseOrReply(cli, endarg, &endid, maxInt(u64), false)) {
         return;
     }
 
@@ -237,6 +237,79 @@ fn xrange(cli: *CLient, rev: bool) void {
         0,
         null,
     );
+}
+
+// XTRIM <key> [... options ...]
+// List of options:
+// MAXLEN [~|=] <count>     -- Trim so that the stream will be capped at
+//                             the specified length. Use ~ before the
+//                             count in order to demand approximated trimming
+//                             (like XADD MAXLEN option).
+const TRIM_STRATEGY_NONE = 0;
+const TRIM_STRATEGY_MAXLEN = 1;
+pub fn xtrimCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+
+    // If the key does not exist, we are ok returning zero, that is, the
+    // number of elements removed from the stream.
+    const xobj = cli.db.lookupKeyWriteOrReply(
+        cli,
+        key,
+        Server.shared.czero,
+    ) orelse {
+        return;
+    };
+    if (xobj.checkTypeOrReply(cli, .stream)) {
+        return;
+    }
+
+    const stream: *Stream = .cast(xobj.v.ptr);
+    var trim_strategy: i32 = TRIM_STRATEGY_NONE;
+    // If left to -1 no trimming is performed.
+    var maxlen: i64 = -1;
+    // If TRUE only delete whole radix tree nodes, so
+    // the maxium length is not applied verbatim.
+    var approx_maxlen = false;
+
+    // Parse options.
+    var i: usize = 2; // Start of options.
+    while (i < cli.argc) : (i += 1) {
+        const moreargs = cli.argc - 1 - i;
+        const opt = sds.castBytes(argv[i].v.ptr);
+        if (eqlCase(opt, "MAXLEN") and moreargs > 0) {
+            trim_strategy = TRIM_STRATEGY_MAXLEN;
+            const next = sds.castBytes(argv[i + 1].v.ptr);
+            // Check for the form MAXLEN ~ <count>.
+            if (moreargs >= 2 and next[0] == '~' and next.len == 1) {
+                approx_maxlen = true;
+                i += 1;
+            } else if (moreargs >= 2 and next[0] == '=' and next.len == 1) {
+                i += 1;
+            }
+            maxlen = argv[i + 1].getLongLongOrReply(cli, null) orelse {
+                return;
+            };
+            if (maxlen < 0) {
+                cli.addReplyErr("The MAXLEN argument must be >= 0.");
+                return;
+            }
+            i += 1;
+        } else {
+            cli.addReply(Server.shared.syntaxerr);
+            return;
+        }
+    }
+
+    // Perform the trimming.
+    var deleted: u64 = 0;
+    if (trim_strategy == TRIM_STRATEGY_MAXLEN) {
+        deleted = stream.trim(@intCast(maxlen), approx_maxlen);
+    } else {
+        cli.addReplyErr("XTRIM called without an option to trim the stream");
+        return;
+    }
+    cli.addReplyLongLong(@intCast(deleted));
 }
 
 /// XGROUP CREATE <key> <groupname> <id or $> [MKSTREAM]
@@ -314,7 +387,7 @@ pub fn xgroupCommand(cli: *CLient) void {
                 id.ms = 0;
                 id.seq = 0;
             }
-        } else if (!parseIdOrReply(cli, argv[4], &id, 0, true)) {
+        } else if (!Stream.Id.parseOrReply(cli, argv[4], &id, 0, true)) {
             return;
         }
         // Handle the MKSTREAM option now that the command can no longer fail.
@@ -336,7 +409,7 @@ pub fn xgroupCommand(cli: *CLient) void {
         var id: Stream.Id = undefined;
         if (eqlCase(sds.castBytes(argv[4].v.ptr), "$")) {
             id = stream.?.last_id;
-        } else if (!parseIdOrReply(cli, argv[4], &id, 0, true)) {
+        } else if (!Stream.Id.parseOrReply(cli, argv[4], &id, 0, true)) {
             return;
         }
         cg.?.last_id = id;
@@ -397,7 +470,7 @@ pub fn xackCommand(cli: *CLient) void {
     var acknowledged: i64 = 0;
     for (argv[3..cli.argc]) |arg| {
         var id: Stream.Id = undefined;
-        if (!parseIdOrReply(cli, arg, &id, 0, true)) {
+        if (!Stream.Id.parseOrReply(cli, arg, &id, 0, true)) {
             return;
         }
 
@@ -437,7 +510,7 @@ pub fn xsetidCommand(cli: *CLient) void {
     }
 
     var id: Stream.Id = undefined;
-    if (!parseIdOrReply(cli, argv[2], &id, 0, true)) {
+    if (!Stream.Id.parseOrReply(cli, argv[2], &id, 0, true)) {
         return;
     }
 
@@ -567,7 +640,6 @@ pub fn xinfoCommand(cli: *CLient) void {
         cli.addReplyBulkString("last-generated-id");
         cli.addReplyStreamID(&stream.last_id);
         // To emit the first/last entry we us the replyWithRange() API.
-
         var start: Stream.Id = .{ .ms = 0, .seq = 0 };
         var end: Stream.Id = .{ .ms = maxInt(u64), .seq = maxInt(u64) };
         cli.addReplyBulkString("first-entry");
@@ -601,58 +673,13 @@ pub fn xinfoCommand(cli: *CLient) void {
     }
 }
 
-/// Parse a stream ID in the format given by clients to Redis, that is
-/// <ms>-<seq>, and converts it into a Stream.Id structure. If
-/// the specified ID is invalid FALSE is returned and an error is reported
-/// to the client, otherwise TRUE is returned. The ID may be in incomplete
-/// form, just stating the milliseconds time part of the stream. In such a case
-/// the missing part is set according to the value of 'missing_seq' parameter.
-///
-/// The IDs "-" and "+" specify respectively the minimum and maximum IDs
-/// that can be represented. If 'strict' is set to TRUE, "-" and "+" will be
-/// treated as an invalid ID.
-///
-/// If 'cli' is set to NULL, no reply is sent to the client.
-fn parseIdOrReply(
-    cli: ?*CLient,
-    arg: *Object,
-    id: *Stream.Id,
-    missing_seq: u64,
-    strict: bool,
-) bool {
-    biz: {
-        const o = sds.castBytes(arg.v.ptr);
-        if (o.len > 128) break :biz;
-        if (strict and o.len == 1 and (o[0] == '-' or o[0] == '+')) {
-            break :biz;
-        }
-        // Handle the "-" and "+" special cases.
-        if (o.len == 1 and o[0] == '-') {
-            id.ms = 0;
-            id.seq = 0;
-            return true;
-        } else if (o.len == 1 and o[0] == '+') {
-            id.ms = maxInt(u64);
-            id.seq = maxInt(u64);
-            return true;
-        }
-        // Parse <ms>-<seq> form.
-        const dot = std.mem.indexOf(u8, o, "-");
-        id.ms = util.string2ull(o[0 .. dot orelse o.len]) orelse break :biz;
-        if (dot) |i| {
-            id.seq = util.string2ull(o[i + 1 ..]) orelse break :biz;
-        } else {
-            id.seq = missing_seq;
-        }
-        return true;
-    }
-    if (cli) |c| {
-        c.addReplyErr("Invalid stream ID specified as stream command argument");
-    }
-    return false;
-}
-
 pub const Stream = struct {
+    /// Don't let listpacks grow too big, even if the user config allows it.
+    /// Doing so can lead to an overflow (trying to store more than 32bit length
+    /// into the listpack header), or actually an assertion since LispPask.insert()
+    /// will return NULL.
+    pub const LISTPACK_MAX_SIZE = (1 << 30);
+
     // Every stream item inside the listpack, has a flags field that is used to
     // mark the entry as deleted, or having the same field as the "master"
     // entry at the start of the listpack> */
@@ -675,12 +702,6 @@ pub const Stream = struct {
     /// Only serve consumer local PEL.
     const RWR_HISTORY = (1 << 2);
 
-    /// Don't let listpacks grow too big, even if the user config allows it.
-    /// Doing so can lead to an overflow (trying to store more than 32bit length
-    /// into the listpack header), or actually an assertion since LispPask.insert()
-    /// will return NULL.
-    pub const LISTPACK_MAX_SIZE = (1 << 30);
-
     /// Stream item ID: a 128 bit number composed of a milliseconds time and
     /// a sequence counter. IDs generated in the same millisecond (or in a past
     /// millisecond if the clock jumped backward) will use the millisecond time
@@ -690,6 +711,62 @@ pub const Stream = struct {
         ms: u64,
         /// Sequence number.
         seq: u64,
+
+        /// Parse a stream ID in the format given by clients to Redis, that is
+        /// <ms>-<seq>, and converts it into a Stream.Id structure. If the
+        /// specified ID is invalid FALSE is returned and an error is reported
+        /// to the client, otherwise TRUE is returned. The ID may be in incomplete
+        /// form, just stating the milliseconds time part of the stream. In such
+        /// a case the missing part is set according to the value of 'missing_seq'
+        /// parameter.
+        ///
+        /// The IDs "-" and "+" specify respectively the minimum and maximum IDs
+        /// that can be represented. If 'strict' is set to TRUE, "-" and "+" will
+        /// be treated as an invalid ID.
+        ///
+        /// If 'cli' is set to NULL, no reply is sent to the client.
+        fn parseOrReply(
+            cli: ?*CLient,
+            arg: *Object,
+            id: *Stream.Id,
+            missing_seq: u64,
+            strict: bool,
+        ) bool {
+            biz: {
+                const o = sds.castBytes(arg.v.ptr);
+                if (o.len > 128) break :biz;
+                if (strict and o.len == 1 and (o[0] == '-' or o[0] == '+')) {
+                    break :biz;
+                }
+                // Handle the "-" and "+" special cases.
+                if (o.len == 1 and o[0] == '-') {
+                    id.ms = 0;
+                    id.seq = 0;
+                    return true;
+                } else if (o.len == 1 and o[0] == '+') {
+                    id.ms = maxInt(u64);
+                    id.seq = maxInt(u64);
+                    return true;
+                }
+                // Parse <ms>-<seq> form.
+                const dot = std.mem.indexOf(u8, o, "-");
+                id.ms = util.string2ull(o[0 .. dot orelse o.len]) orelse {
+                    break :biz;
+                };
+                if (dot) |i| {
+                    id.seq = util.string2ull(o[i + 1 ..]) orelse {
+                        break :biz;
+                    };
+                } else {
+                    id.seq = missing_seq;
+                }
+                return true;
+            }
+            if (cli) |c| {
+                c.addReplyErr("Invalid stream ID specified as stream command argument");
+            }
+            return false;
+        }
 
         /// Convert the specified stream entry ID as a 128 bit big endian number, so
         /// that the IDs can be sorted lexicographically.
@@ -774,7 +851,7 @@ pub const Stream = struct {
             return nack;
         }
 
-        pub fn cast(ptr: *anyopaque) *NACK {
+        pub inline fn cast(ptr: *anyopaque) *NACK {
             return @ptrCast(@alignCast(ptr));
         }
 
@@ -809,7 +886,7 @@ pub const Stream = struct {
             return consumer;
         }
 
-        fn cast(ptr: *anyopaque) *Consumer {
+        pub inline fn cast(ptr: *anyopaque) *Consumer {
             return @ptrCast(@alignCast(ptr));
         }
 
@@ -855,7 +932,7 @@ pub const Stream = struct {
             return cg;
         }
 
-        fn cast(ptr: *anyopaque) *CG {
+        pub inline fn cast(ptr: *anyopaque) *CG {
             return @ptrCast(@alignCast(ptr));
         }
 
