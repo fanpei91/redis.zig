@@ -239,6 +239,133 @@ fn xrange(cli: *CLient, rev: bool) void {
     );
 }
 
+/// XGROUP CREATE <key> <groupname> <id or $> [MKSTREAM]
+/// XGROUP SETID <key> <groupname> <id or $>
+/// XGROUP DESTROY <key> <groupname>
+/// XGROUP DELCONSUMER <key> <groupname> <consumername>
+/// XGROUP HELP
+pub fn xgroupCommand(cli: *CLient) void {
+    const help: []const []const u8 = &.{
+        "CREATE      <key> <groupname> <id or $> [opt] -- Create a new consumer group.",
+        "            option MKSTREAM: create the empty stream if it does not exist.",
+        "SETID       <key> <groupname> <id or $>  -- Set the current group ID.",
+        "DESTROY     <key> <groupname>            -- Remove the specified group.",
+        "DELCONSUMER <key> <groupname> <consumer> -- Remove the specified consumer.",
+        "HELP                                     -- Prints this help.",
+    };
+
+    const argv = cli.argv.?;
+    const opt = sds.castBytes(argv[1].v.ptr);
+    var groupname: sds.String = undefined;
+
+    // CREATE has an MKSTREAM option that creates the stream if it
+    // does not exist.
+    var mkstream = false;
+    if (cli.argc == 6 and eqlCase(opt, "CREATE")) {
+        if (!eqlCase(sds.castBytes(argv[5].v.ptr), "MKSTREAM")) {
+            cli.addReplySubcommandSyntaxError();
+            return;
+        }
+        mkstream = true;
+    }
+
+    var stream: ?*Stream = null;
+    // Everything but the "HELP" option requires a key and group name.
+    if (cli.argc >= 4) {
+        if (cli.db.lookupKeyWrite(argv[2])) |xobj| {
+            if (xobj.checkTypeOrReply(cli, .stream)) {
+                return;
+            }
+            stream = Stream.cast(xobj.v.ptr);
+        }
+        groupname = sds.cast(argv[3].v.ptr);
+    }
+
+    // Check for missing key/group.
+    var cg: ?*Stream.CG = null;
+    if (cli.argc >= 4 and !mkstream) {
+        // At this point key must exist, or there is an error.
+        if (stream == null) {
+            cli.addReplyErr("The XGROUP subcommand requires the key to exist. " ++
+                "Note that for CREATE you may want to use the MKSTREAM " ++
+                "option to create an empty stream automatically.");
+            return;
+        }
+        cg = stream.?.lookupCG(groupname);
+        if (cg == null and (eqlCase(opt, "SETID") or eqlCase(opt, "DELCONSUMER"))) {
+            cli.addReplyErrFormat(
+                "-NOGROUP No such consumer group '{s}' for key name '{s}'",
+                .{
+                    sds.asBytes(groupname),
+                    sds.castBytes(argv[2].v.ptr),
+                },
+            );
+            return;
+        }
+    }
+
+    // Dispatch the different subcommands.
+    if (eqlCase(opt, "CREATE") and (cli.argc == 5 or cli.argc == 6)) {
+        var id: Stream.Id = undefined;
+        if (eqlCase(sds.castBytes(argv[4].v.ptr), "$")) {
+            if (stream) |s| {
+                id = s.last_id;
+            } else {
+                id.ms = 0;
+                id.seq = 0;
+            }
+        } else if (!parseIdOrReply(cli, argv[4], &id, 0, true)) {
+            return;
+        }
+        // Handle the MKSTREAM option now that the command can no longer fail.
+        if (stream == null) {
+            assert(mkstream);
+            const xobj = Object.createStream();
+            defer xobj.decrRefCount();
+            cli.db.add(argv[2], xobj);
+            stream = Stream.cast(xobj.v.ptr);
+        }
+
+        cg = stream.?.createCG(sds.asBytes(groupname), &id);
+        if (cg != null) {
+            cli.addReply(Server.shared.ok);
+        } else {
+            cli.addReplyBulkString("-BUSYGROUP Consumer Group name already exists");
+        }
+    } else if (eqlCase(opt, "SETID") and cli.argc == 5) {
+        var id: Stream.Id = undefined;
+        if (eqlCase(sds.castBytes(argv[4].v.ptr), "$")) {
+            id = stream.?.last_id;
+        } else if (!parseIdOrReply(cli, argv[4], &id, 0, true)) {
+            return;
+        }
+        cg.?.last_id = id;
+        cli.addReply(Server.shared.ok);
+    } else if (eqlCase(opt, "DESTROY") and cli.argc == 4) {
+        if (cg) |group| {
+            _ = raxlib.raxRemove(
+                stream.?.cgroups.?,
+                groupname,
+                sds.getLen(groupname),
+                null,
+            );
+            group.destroy();
+            cli.addReply(Server.shared.cone);
+        } else {
+            cli.addReply(Server.shared.czero);
+        }
+    } else if (eqlCase(opt, "DELCONSUMER") and cli.argc == 5) {
+        // Delete the consumer and returns the number of pending messages
+        // that were yet associated with such a consumer.
+        const pending = cg.?.delConsumer(sds.cast(argv[4].v.ptr));
+        cli.addReplyLongLong(@intCast(pending));
+    } else if (eqlCase(opt, "HELP")) {
+        cli.addReplyHelp(help);
+    } else {
+        cli.addReplySubcommandSyntaxError();
+    }
+}
+
 /// XSETID key last-id
 ///
 /// Set the internal "last ID" of a stream.
@@ -709,6 +836,36 @@ pub const Stream = struct {
                 consumer.seen_time = std.time.milliTimestamp();
             }
             return consumer;
+        }
+
+        /// Delete the consumer specified in the consumer group. The consumer
+        /// may have pending messages: they are removed from the PEL, and the
+        /// number of pending messages "lost" is returned.
+        fn delConsumer(self: *CG, name: sds.String) u64 {
+            const consumer = self.lookupConsumer(
+                name,
+                SLC_NOCREAT | SLC_NOREFRESH,
+            ) orelse {
+                return 0;
+            };
+            const pending = raxlib.raxSize(consumer.pel);
+
+            // Iterate all the consumer pending messages, deleting every
+            // corresponding entry from the global entry.
+            var ri: raxlib.raxIterator = undefined;
+            raxlib.raxStart(&ri, consumer.pel);
+            defer raxlib.raxStop(&ri);
+            _ = raxlib.raxSeek(&ri, "^", null, 0);
+            while (raxlib.raxNext(&ri) != 0) {
+                const nack: *NACK = .cast(ri.data.?);
+                _ = raxlib.raxRemove(self.pel, ri.key, ri.key_len, null);
+                nack.destroy();
+            }
+
+            // Deallocate the consumer.
+            _ = raxlib.raxRemove(self.consumers, name, sds.getLen(name), null);
+            consumer.destroy();
+            return pending;
         }
 
         /// Free a consumer group and all its associated data.

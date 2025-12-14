@@ -124,6 +124,7 @@ pub const table = [_]Command{
     .{ .name = "xlen", .proc = stream.xlenCommand, .arity = 2 },
     .{ .name = "xrange", .proc = stream.xrangeCommand, .arity = -4 },
     .{ .name = "xrevrange", .proc = stream.xrevrangeCommand, .arity = -4 },
+    .{ .name = "xgroup", .proc = stream.xgroupCommand, .arity = -2 },
     .{ .name = "xsetid", .proc = stream.xsetidCommand, .arity = 3 },
     .{ .name = "xinfo", .proc = stream.xinfoCommand, .arity = -2 },
 };
