@@ -492,6 +492,173 @@ pub fn xackCommand(cli: *CLient) void {
     cli.addReplyLongLong(acknowledged);
 }
 
+/// XPENDING <key> <group> [<start> <stop> <count> [<consumer>]]
+///
+/// If start and stop are omitted, the command just outputs information about
+/// the amount of pending messages for the key/group pair, together with
+/// the minimum and maxium ID of pending messages.
+///
+/// If start and stop are provided instead, the pending messages are returned
+/// with informations about the current owner, number of deliveries and last
+/// delivery time and so forth.
+pub fn xpendingCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    // Without the range just outputs general
+    // informations about the PEL.
+    const justinfo = cli.argc == 3;
+
+    const key = argv[1];
+    const groupname = argv[2];
+    const consumername = if (cli.argc == 7) argv[6] else null;
+
+    var startid: Stream.Id = undefined;
+    var endid: Stream.Id = undefined;
+    var count: i64 = undefined;
+
+    // Start and stop, and the consumer, can be omitted.
+    if (cli.argc != 3 and cli.argc != 6 and cli.argc != 7) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    // Parse start/end/count arguments ASAP if needed, in order to report
+    // syntax errors before any other error.
+    if (cli.argc >= 6) {
+        count = argv[5].getLongLongOrReply(cli, null) orelse {
+            return;
+        };
+        if (count < 0) count = 0;
+        if (!Stream.Id.parseOrReply(cli, argv[3], &startid, 0, false)) {
+            return;
+        }
+        if (!Stream.Id.parseOrReply(cli, argv[4], &endid, maxInt(u64), false)) {
+            return;
+        }
+    }
+
+    // Lookup the key and the group inside the stream.
+    var group: ?*Stream.CG = null;
+    const xobj = cli.db.lookupKeyRead(key);
+    if (xobj) |o| {
+        if (o.checkTypeOrReply(cli, .stream)) {
+            return;
+        }
+        const stream: *Stream = .cast(o.v.ptr);
+        group = stream.lookupCG(sds.cast(groupname.v.ptr));
+    }
+    if (xobj == null or group == null) {
+        cli.addReplyErrFormat(
+            "-NOGROUP No such key '{s}' or consumer group '{s}'",
+            .{
+                sds.castBytes(key.v.ptr),
+                sds.castBytes(groupname.v.ptr),
+            },
+        );
+        return;
+    }
+
+    // XPENDING <key> <group> variant.
+    if (justinfo) {
+        cli.addReplyMultiBulkLen(4);
+        // Total number of messages in the PEL.
+        const pel_len: i64 = @intCast(raxlib.raxSize(group.?.pel));
+        cli.addReplyLongLong(pel_len);
+        // First and last IDs.
+        if (pel_len == 0) {
+            cli.addReply(Server.shared.nullbulk); // Start
+            cli.addReply(Server.shared.nullbulk); // End;
+            cli.addReply(Server.shared.nullmultibulk); // Consumers.
+        } else {
+            var ri: raxlib.raxIterator = undefined;
+            raxlib.raxStart(&ri, group.?.pel);
+
+            // Start
+            _ = raxlib.raxSeek(&ri, "^", null, 0);
+            _ = raxlib.raxNext(&ri);
+            startid.decode(ri.key[0..ri.key_len]);
+            cli.addReplyStreamID(&startid);
+
+            // End
+            _ = raxlib.raxSeek(&ri, "$", null, 0);
+            _ = raxlib.raxNext(&ri);
+            endid.decode(ri.key[0..ri.key_len]);
+            cli.addReplyStreamID(&endid);
+            raxlib.raxStop(&ri);
+
+            // Consumers with pending messages.
+            raxlib.raxStart(&ri, group.?.consumers);
+            _ = raxlib.raxSeek(&ri, "^", null, 0);
+            const replylen = cli.addDeferredMultiBulkLength();
+            var arraylen: i64 = 0;
+            while (raxlib.raxNext(&ri) != 0) {
+                const consumer: *Stream.Consumer = .cast(ri.data.?);
+                if (raxlib.raxSize(consumer.pel) == 0) continue;
+                cli.addReplyMultiBulkLen(2);
+                cli.addReplyBulkString(ri.key[0..ri.key_len]); // Name
+                cli.addReplyLongLong(@intCast(raxlib.raxSize(consumer.pel)));
+                arraylen += 1;
+            }
+            cli.setDeferredMultiBulkLength(replylen, arraylen);
+            raxlib.raxStop(&ri);
+        }
+    }
+    // XPENDING <key> <group> <start> <stop> <count> [<consumer>] variant.
+    else {
+        var consumer: ?*Stream.Consumer = null;
+        if (consumername) |name| {
+            consumer = group.?.lookupConsumer(
+                sds.cast(name.v.ptr),
+                Stream.SLC_NOCREAT | Stream.SLC_NOREFRESH,
+            );
+            // If a consumer name was mentioned but it does not exist, we can
+            // just return an empty array.
+            if (consumer == null) {
+                cli.addReplyMultiBulkLen(0);
+                return;
+            }
+        }
+        const pel = if (consumer != null) consumer.?.pel else group.?.pel;
+        var startkey: [@sizeOf(Stream.Id)]u8 = undefined;
+        var endkey: [@sizeOf(Stream.Id)]u8 = undefined;
+        startid.encode(&startkey);
+        endid.encode(&endkey);
+
+        const now = std.time.milliTimestamp();
+        var ri: raxlib.raxIterator = undefined;
+        raxlib.raxStart(&ri, pel);
+        defer raxlib.raxStop(&ri);
+
+        _ = raxlib.raxSeek(&ri, ">=", &startkey, startkey.len);
+        const replylen = cli.addDeferredMultiBulkLength();
+        var arraylen: i64 = 0;
+        while (count > 0 and raxlib.raxNext(&ri) != 0) {
+            if (memcmp(ri.key[0..ri.key_len], &endkey) == .gt) break;
+
+            count -= 1;
+            arraylen += 1;
+            cli.addReplyMultiBulkLen(4);
+
+            // Entry ID.
+            var id: Stream.Id = undefined;
+            id.decode(ri.key[0..ri.key_len]);
+            cli.addReplyStreamID(&id);
+
+            const nack: *Stream.NACK = .cast(ri.data.?);
+            // Consumer name.
+            cli.addReplyBulkString(sds.asBytes(nack.consumer.name));
+
+            // Milliseconds elapsed since last delivery.
+            var elapsed = now - nack.delivery_time;
+            if (elapsed < 0) elapsed = 0;
+            cli.addReplyLongLong(elapsed);
+
+            // Number of deliveries.
+            cli.addReplyLongLong(@intCast(nack.delivery_count));
+        }
+        cli.setDeferredMultiBulkLength(replylen, arraylen);
+    }
+}
+
 /// XSETID key last-id
 ///
 /// Set the internal "last ID" of a stream.
