@@ -128,6 +128,7 @@ pub const table = [_]Command{
     .{ .name = "xgroup", .proc = stream.xgroupCommand, .arity = -2 },
     .{ .name = "xack", .proc = stream.xackCommand, .arity = -4 },
     .{ .name = "xpending", .proc = stream.xpendingCommand, .arity = -3 },
+    .{ .name = "xclaim", .proc = stream.xclaimCommand, .arity = -6 },
     .{ .name = "xsetid", .proc = stream.xsetidCommand, .arity = 3 },
     .{ .name = "xinfo", .proc = stream.xinfoCommand, .arity = -2 },
 };

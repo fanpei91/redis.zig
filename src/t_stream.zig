@@ -484,7 +484,7 @@ pub fn xackCommand(cli: *CLient) void {
         if (found != raxlib.raxNotFound) {
             const nack: *Stream.NACK = .cast(found.?);
             _ = raxlib.raxRemove(cg.pel, &buf, buf.len, null);
-            _ = raxlib.raxRemove(nack.consumer.pel, &buf, buf.len, null);
+            _ = raxlib.raxRemove(nack.consumer.?.pel, &buf, buf.len, null);
             nack.destroy();
             acknowledged += 1;
         }
@@ -645,7 +645,7 @@ pub fn xpendingCommand(cli: *CLient) void {
 
             const nack: *Stream.NACK = .cast(ri.data.?);
             // Consumer name.
-            cli.addReplyBulkString(sds.asBytes(nack.consumer.name));
+            cli.addReplyBulkString(sds.asBytes(nack.consumer.?.name));
 
             // Milliseconds elapsed since last delivery.
             var elapsed = now - nack.delivery_time;
@@ -657,6 +657,293 @@ pub fn xpendingCommand(cli: *CLient) void {
         }
         cli.setDeferredMultiBulkLength(replylen, arraylen);
     }
+}
+
+/// XCLAIM <key> <group> <consumer> <min-idle-time> <ID-1> <ID-2>
+///        [IDLE <milliseconds>] [TIME <mstime>] [RETRYCOUNT <count>]
+///        [FORCE] [JUSTID]
+///
+/// Gets ownership of one or multiple messages in the Pending Entries List
+/// of a given stream consumer group.
+///
+/// If the message ID (among the specified ones) exists, and its idle
+/// time greater or equal to <min-idle-time>, then the message new owner
+/// becomes the specified <consumer>. If the minimum idle time specified
+/// is zero, messages are claimed regardless of their idle time.
+///
+/// All the messages that cannot be found inside the pending entries list
+/// are ignored, but in case the FORCE option is used. In that case we
+/// create the NACK (representing a not yet acknowledged message) entry in
+/// the consumer group PEL.
+///
+/// This command creates the consumer as side effect if it does not yet
+/// exists. Moreover the command reset the idle time of the message to 0,
+/// even if by using the IDLE or TIME options, the user can control the
+/// new idle time.
+///
+/// The options at the end can be used in order to specify more attributes
+/// to set in the representation of the pending message:
+///
+/// 1. IDLE <ms>:
+///      Set the idle time (last time it was delivered) of the message.
+///      If IDLE is not specified, an IDLE of 0 is assumed, that is,
+///      the time count is reset because the message has now a new
+///      owner trying to process it.
+///
+/// 2. TIME <ms-unix-time>:
+///      This is the same as IDLE but instead of a relative amount of
+///      milliseconds, it sets the idle time to a specific unix time
+///      (in milliseconds). This is useful in order to rewrite the AOF
+///      file generating XCLAIM commands.
+///
+/// 3. RETRYCOUNT <count>:
+///      Set the retry counter to the specified value. This counter is
+///      incremented every time a message is delivered again. Normally
+///      XCLAIM does not alter this counter, which is just served to clients
+///      when the XPENDING command is called: this way clients can detect
+///      anomalies, like messages that are never processed for some reason
+///      after a big number of delivery attempts.
+///
+/// 4. FORCE:
+///      Creates the pending message entry in the PEL even if certain
+///      specified IDs are not already in the PEL assigned to a different
+///      client. However the message must be exist in the stream, otherwise
+///      the IDs of non existing messages are ignored.
+///
+/// 5. JUSTID:
+///      Return just an array of IDs of messages successfully claimed,
+///      without returning the actual message.
+///
+/// 6. LASTID <id>:
+///      Update the consumer group last ID with the specified ID if the
+///      current last ID is smaller than the provided one.
+///      This is used for replication / AOF, so that when we read from a
+///      consumer group, the XCLAIM that gets propagated to give ownership
+///      to the consumer, is also used in order to update the group current
+///      ID.
+///
+/// The command returns an array of messages that the user
+/// successfully claimed, so that the caller is able to understand
+/// what messages it is now in charge of.
+pub fn xclaimCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+    const key = argv[1];
+    const groupname = sds.cast(argv[2].v.ptr);
+
+    var retrycount: i64 = -1; // -1 means RETRYCOUNT option not given.
+    var deliverytime: i64 = -1; // -1 means IDLE/TIME options not given.
+    var force = false;
+    var justid = false;
+
+    var stream: ?*Stream = null;
+    var group: ?*Stream.CG = null;
+    const xobj = cli.db.lookupKeyRead(key);
+    if (xobj) |obj| {
+        if (obj.checkTypeOrReply(cli, .stream)) {
+            return;
+        }
+        stream = .cast(obj.v.ptr);
+        group = stream.?.lookupCG(groupname);
+    }
+    // No key or group? Send an error given that the group creation
+    // is mandatory.
+    if (stream == null or group == null) {
+        cli.addReplyErrFormat(
+            "-NOGROUP No such consumer group '{s}' for key name '{s}'",
+            .{
+                sds.asBytes(groupname),
+                sds.castBytes(key.v.ptr),
+            },
+        );
+        return;
+    }
+
+    var minidle = argv[4].getLongLongOrReply(
+        cli,
+        "Invalid min-idle-time argument for XCLAIM",
+    ) orelse {
+        return;
+    };
+    if (minidle < 0) minidle = 0;
+
+    // Start parsing the IDs, so that we abort ASAP if there is a syntax
+    // error: the return value of this command cannot be an error in case
+    // the client successfully claimed some message, so it should be
+    // executed in a "all or nothing" fashion.
+    var j: usize = 5;
+    while (j < cli.argc) : (j += 1) {
+        var id: Stream.Id = undefined;
+        if (!Stream.Id.parseOrReply(null, argv[j], &id, 0, true)) {
+            break;
+        }
+    }
+    // Next time we iterate the IDs we now the range.
+    const last_id_arg = j - 1;
+
+    // If we stopped because some IDs cannot be parsed, perhaps they
+    // are trailing options.
+    const now = std.time.milliTimestamp();
+    var last_id: Stream.Id = .{ .ms = 0, .seq = 0 };
+    while (j < cli.argc) : (j += 1) {
+        const moreargs = cli.argc - 1 - j; //Number of additional arguments.
+        const opt = sds.castBytes(argv[j].v.ptr);
+        if (eqlCase(opt, "FORCE")) {
+            force = true;
+        } else if (eqlCase(opt, "JUSTID")) {
+            justid = true;
+        } else if (eqlCase(opt, "IDLE") and moreargs >= 1) {
+            j += 1;
+            deliverytime = argv[j].getLongLongOrReply(
+                cli,
+                "Invalid IDLE option argument for XCLAIM",
+            ) orelse {
+                return;
+            };
+            deliverytime = now - deliverytime;
+        } else if (eqlCase(opt, "TIME") and moreargs >= 1) {
+            j += 1;
+            deliverytime = argv[j].getLongLongOrReply(
+                cli,
+                "Invalid TIME option argument for XCLAIM",
+            ) orelse {
+                return;
+            };
+        } else if (eqlCase(opt, "RETRYCOUNT") and moreargs >= 1) {
+            j += 1;
+            retrycount = argv[j].getLongLongOrReply(
+                cli,
+                "Invalid RETRYCOUNT option argument for XCLAIM",
+            ) orelse {
+                return;
+            };
+        } else if (eqlCase(opt, "LASTID") and moreargs >= 1) {
+            j += 1;
+            if (!Stream.Id.parseOrReply(cli, argv[j], &last_id, 0, true)) {
+                return;
+            }
+        } else {
+            cli.addReplyErrFormat("Unrecognized XCLAIM option '{s}'", .{opt});
+            return;
+        }
+    }
+
+    if (last_id.compare(&group.?.last_id) == .gt) {
+        group.?.last_id = last_id;
+    }
+
+    if (deliverytime != -1) {
+        // If a delivery time was passed, either with IDLE or TIME, we
+        // do some sanity check on it, and set the deliverytime to now
+        // (which is a sane choice usually) if the value is bogus.
+        // To raise an error here is not wise because clients may compute
+        // the idle time doing some math starting from their local time,
+        // and this is not a good excuse to fail in case, for instance,
+        // the computer time is a bit in the future from our POV.
+        if (deliverytime < 0 or deliverytime > now) {
+            deliverytime = now;
+        }
+    } else {
+        // If no IDLE/TIME option was passed, we want the last delivery
+        // time to be now, so that the idle time of the message will be
+        // zero.
+        deliverytime = now;
+    }
+
+    // Do the actual claiming.
+    var consumer: ?*Stream.Consumer = null;
+    const replylen = cli.addDeferredMultiBulkLength();
+    var arraylen: i64 = 0;
+    j = 5;
+    while (j <= last_id_arg) : (j += 1) {
+        var id: Stream.Id = undefined;
+        if (!Stream.Id.parseOrReply(cli, argv[j], &id, 0, true)) {
+            @panic("StreamID invalid after check. Should not be possible.");
+        }
+        var idbuf: [@sizeOf(Stream.Id)]u8 = undefined;
+        id.encode(&idbuf);
+
+        // Lookup the ID in the group PEL.
+        const foundnack = raxlib.raxFind(group.?.pel, &idbuf, idbuf.len);
+        var nack: *Stream.NACK = undefined;
+        // If FORCE is passed, let's check if at least the entry
+        // exists in the Stream. In such case, we'll crate a new
+        // entry in the PEL from scratch, so that XCLAIM can also
+        // be used to create entries in the PEL. Useful for AOF
+        // and replication of consumer groups.
+        if (force and foundnack == raxlib.raxNotFound) {
+            var it: Stream.Iterator = undefined;
+            it.start(stream.?, &id, &id, false);
+            defer it.stop();
+
+            var item_id: Stream.Id = undefined;
+            var numfields: i64 = undefined;
+            if (!it.getId(&item_id, &numfields)) {
+                // Item must exist for us to create a NACK for it.
+                continue;
+            }
+
+            // Create the NACK.
+            nack = Stream.NACK.create(null);
+            _ = raxlib.raxInsert(group.?.pel, &idbuf, idbuf.len, nack, null);
+        } else if (foundnack != raxlib.raxNotFound) {
+            nack = .cast(foundnack.?);
+        }
+
+        if (foundnack != raxlib.raxNotFound) {
+            // We need to check if the minimum idle time requested
+            // by the caller is satisfied by this entry.
+            //
+            // Note that the nack could be created by FORCE, in this
+            // case there was no pre-existing entry and minidle should
+            // be ignored, but in that case nack->consumer is NULL.
+            if (nack.consumer != null and minidle != 0) {
+                if (now - nack.delivery_time < minidle) continue;
+            }
+
+            // Remove the entry from the old consumer.
+            // Note that nack->consumer is NULL if we created the
+            // NACK above because of the FORCE option.
+            if (nack.consumer) |c| {
+                _ = raxlib.raxRemove(c.pel, &idbuf, idbuf.len, null);
+            }
+            // Update the consumer and idle time.
+            if (consumer == null) {
+                consumer = group.?.lookupConsumer(
+                    sds.cast(argv[3].v.ptr),
+                    Stream.SLC_NONE,
+                );
+            }
+            nack.consumer = consumer;
+            nack.delivery_time = deliverytime;
+            // Set the delivery attempts counter if given, otherwise
+            // autoincrement unless JUSTID option provided
+            if (retrycount >= 0) {
+                nack.delivery_count = @intCast(retrycount);
+            } else if (!justid) {
+                nack.delivery_count +%= 1;
+            }
+            // Add the entry in the new consumer local PEL.
+            _ = raxlib.raxInsert(consumer.?.pel, &idbuf, idbuf.len, nack, null);
+            // Send the reply for this entry.
+            if (justid) {
+                cli.addReplyStreamID(&id);
+            } else {
+                assert(stream.?.replyWithRange(
+                    cli,
+                    &id,
+                    &id,
+                    1,
+                    false,
+                    null,
+                    null,
+                    Stream.RWR_RAWENTRIES,
+                    null,
+                ) == 1);
+            }
+            arraylen += 1;
+        }
+    }
+    cli.setDeferredMultiBulkLength(replylen, arraylen);
 }
 
 /// XSETID key last-id
@@ -1005,12 +1292,12 @@ pub const Stream = struct {
         delivery_count: u64,
         /// The consumer this message was delivered to
         /// in the last delivery.
-        consumer: *Consumer,
+        consumer: ?*Consumer,
 
         /// Create a NACK entry setting the delivery count to 1 and the delivery
         /// time to the current time. The NACK consumer will be set to the one
         /// specified as argument of the function.
-        pub fn create(consumer: *Consumer) *NACK {
+        pub fn create(consumer: ?*Consumer) *NACK {
             const nack = allocator.create(NACK);
             nack.delivery_time = std.time.milliTimestamp();
             nack.delivery_count = 1;
@@ -2110,7 +2397,7 @@ pub const Stream = struct {
                 // Try to add a new NACK. Most of the time this will work and
                 // will not require extra lookups. We'll fix the problem later
                 // if we find that there is already a entry for this ID.
-                var nack = NACK.create(consumer.?);
+                var nack = NACK.create(consumer);
                 const group_inserted = raxlib.raxTryInsert(
                     cg.pel,
                     &buf,
@@ -2133,13 +2420,13 @@ pub const Stream = struct {
                     nack.destroy();
                     nack = .cast(raxlib.raxFind(cg.pel, &buf, buf.len).?);
                     _ = raxlib.raxRemove(
-                        nack.consumer.pel,
+                        nack.consumer.?.pel,
                         &buf,
                         buf.len,
                         null,
                     );
                     // Update the consumer and NACK metadata.
-                    nack.consumer = consumer.?;
+                    nack.consumer = consumer;
                     nack.delivery_time = std.time.milliTimestamp();
                     nack.delivery_count = 1;
                     // Add the entry in the new consumer local PEL.
