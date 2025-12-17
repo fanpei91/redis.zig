@@ -62,24 +62,39 @@ fn getFreeEffort(obj: *Object) u64 {
     if (obj.type == .list) {
         const ql: *Quicklist = .cast(ptr);
         return ql.len;
-    }
-
-    if (obj.type == .set and obj.encoding == .ht) {
+    } else if (obj.type == .set and obj.encoding == .ht) {
         const h: *Set.Hash = .cast(ptr);
         return h.size();
-    }
-
-    if (obj.type == .zset and obj.encoding == .skiplist) {
+    } else if (obj.type == .zset and obj.encoding == .skiplist) {
         const sz: *SkipListSet = .cast(ptr);
         return sz.sl.length;
-    }
-
-    if (obj.type == .hash and obj.encoding == .ht) {
+    } else if (obj.type == .hash and obj.encoding == .ht) {
         const h: *Hash.Map = .cast(ptr);
         return h.size();
-    }
+    } else if (obj.type == .stream) {
+        var effort: u64 = 0;
+        const stream: *Stream = .cast(obj.v.ptr);
 
-    // TODO: STREAM
+        // Make a best effort estimate to maintain constant runtime. Every macro
+        // node in the Stream is one allocation.
+        effort += stream.rax.*.numnodes;
+
+        // Every consumer group is an allocation and so are the entries in its
+        // PEL. We use size of the first group's PEL as an estimate for all
+        // others.
+        if (stream.cgroups) |groups| {
+            var ri: raxlib.raxIterator = undefined;
+            raxlib.raxStart(&ri, groups);
+            defer raxlib.raxStop(&ri);
+            _ = raxlib.raxSeek(&ri, "^", null, 0);
+            // There must be at least one group so the following should always
+            // work.
+            assert(raxlib.raxNext(&ri) != 0);
+            const cg: *Stream.CG = .cast(ri.data.?);
+            effort += raxlib.raxSize(groups) * (1 + raxlib.raxSize(cg.pel));
+        }
+        return effort;
+    }
 
     // Everything else is a single allocation.
     return 1;
@@ -103,5 +118,9 @@ const Quicklist = @import("QuickList.zig");
 const SkipListSet = @import("t_zset.zig").SkipListSet;
 const Set = @import("t_set.zig").Set;
 const Hash = @import("t_hash.zig").Hash;
+const Stream = @import("t_stream.zig").Stream;
 const bio = @import("bio.zig");
 const sds = @import("sds.zig");
+const raxlib = @import("rax/rax.zig").rax;
+const std = @import("std");
+const assert = std.debug.assert;

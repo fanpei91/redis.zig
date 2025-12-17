@@ -50,6 +50,7 @@ pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a w
 pub const BLOCKED_NONE = 0; // Not blocked, no CLIENT_BLOCKED flag set.
 pub const BLOCKED_LIST = 1; // BLPOP & co.
 pub const BLOCKED_MODULE = 3; // Blocked by a loadable module.
+pub const BLOCKED_STREAM = 4; // XREAD.
 pub const BLOCKED_ZSET = 5; // BZPOP et al.
 
 // Units

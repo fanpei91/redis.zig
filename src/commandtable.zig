@@ -125,6 +125,8 @@ pub const table = [_]Command{
     .{ .name = "xrange", .proc = stream.xrangeCommand, .arity = -4 },
     .{ .name = "xrevrange", .proc = stream.xrevrangeCommand, .arity = -4 },
     .{ .name = "xtrim", .proc = stream.xtrimCommand, .arity = -2 },
+    .{ .name = "xread", .proc = stream.xreadCommand, .arity = -4 },
+    .{ .name = "xreadgroup", .proc = stream.xreadCommand, .arity = -7 },
     .{ .name = "xgroup", .proc = stream.xgroupCommand, .arity = -2 },
     .{ .name = "xack", .proc = stream.xackCommand, .arity = -4 },
     .{ .name = "xpending", .proc = stream.xpendingCommand, .arity = -3 },
@@ -151,5 +153,4 @@ const stream = @import("t_stream.zig");
 const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");
-const sds = @import("sds.zig");
 const Object = @import("Object.zig");

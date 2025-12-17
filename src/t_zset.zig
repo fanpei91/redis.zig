@@ -1187,7 +1187,7 @@ fn bzpop(cli: *Client, where: Where) void {
         return;
     }
     // If the keys do not exist we must block
-    blocked.blockForKeys(cli, Server.BLOCKED_ZSET, keys, timeout, null);
+    blocked.blockForKeys(cli, Server.BLOCKED_ZSET, keys, timeout, null, null);
 }
 
 /// ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS weight

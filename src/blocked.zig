@@ -12,13 +12,20 @@ pub fn blockForKeys(
     keys: []*Object,
     timeout: i64,
     target: ?*Object,
+    stream_ids: ?[]Stream.Id,
 ) void {
     cli.bpop.timeout = timeout;
     cli.bpop.target = target;
     if (target) |t| t.incrRefCount();
 
-    for (keys) |key| {
+    for (keys, 0..) |key, i| {
+        // Allocate our BlockInfo structure, associated to each key the client
+        // is blocked for.
         const bki = allocator.create(BlockInfo);
+        if (btype == Server.BLOCKED_STREAM) {
+            bki.stream_id = stream_ids.?[i];
+        }
+
         // If the key already exists in the dictionary ignore it.
         if (!cli.bpop.keys.add(key, bki)) {
             allocator.destroy(bki);
@@ -203,17 +210,100 @@ pub fn handleClientsBlockedOnKeys() void {
                 zcard -= 1;
             }
         }
-        // TODO: Stream
-        // else if (coll.type == .stream) {
+        // Serve clients blocked on stream key.
+        else if (coll.type == .stream) {
+            // We need to provide the new data arrived on the stream
+            // to all the clients that are waiting for an offset smaller
+            // than the current top item.
+            const de = rl.db.blocking_keys.find(rl.key) orelse {
+                continue;
+            };
+            const stream: *Stream = .cast(coll.v.ptr);
+            const clients: *ClientList = de.val;
+            var li = clients.iterator(.forward);
+            while (li.next()) |node| {
+                const receiver = node.value;
+                if (receiver.btype != Server.BLOCKED_STREAM) {
+                    continue;
+                }
+                const bki = receiver.bpop.keys.fetchValue(rl.key).?;
+                const gt = &bki.stream_id.?;
 
-        // }
+                // If we blocked in the context of a consumer
+                // group, we need to resolve the group and update the
+                // last ID the client is blocked for: this is needed
+                // because serving other clients in the same consumer
+                // group will alter the "last ID" of the consumer
+                // group, and clients blocked in a consumer group are
+                // always blocked for the ">" ID: we need to deliver
+                // only new messages and avoid unblocking the client
+                // otherwise.
+                var group: ?*Stream.CG = null;
+                if (receiver.bpop.xread_group) |gpo| {
+                    group = stream.lookupCG(sds.cast(gpo.v.ptr));
+                    // If the group was not found, send an error
+                    // to the consumer.
+                    if (group == null) {
+                        receiver.addReplyErr("-NOGROUP the consumer group this client " ++
+                            "was blocked on no longer exists");
+                        unblockClient(receiver);
+                        continue;
+                    } else {
+                        gt.* = group.?.last_id;
+                    }
+                }
+                if (stream.last_id.compare(gt) == .gt) {
+                    var start = gt.*;
+                    start.incr();
+
+                    // Lookup the consumer for the group, if any.
+                    var consumer: ?*Stream.Consumer = null;
+                    var noack = false;
+                    if (group) |g| {
+                        consumer = g.lookupConsumer(
+                            sds.cast(receiver.bpop.xread_consumer.?.v.ptr),
+                            Stream.SLC_NONE,
+                        );
+                        noack = receiver.bpop.xread_group_noack;
+                    }
+
+                    // Emit the two elements sub-array consisting of
+                    // the name of the stream and the data we
+                    // extracted from it. Wrapped in a single-item
+                    // array, since we have just one key.
+                    receiver.addReplyMultiBulkLen(1);
+                    receiver.addReplyMultiBulkLen(2);
+                    receiver.addReplyBulk(rl.key);
+                    const spi: ?*Stream.PropInfo = null; // TODO: PropInfo
+                    var flags: i32 = 0;
+                    if (noack) flags |= Stream.RWR_NOACK;
+                    _ = stream.replyWithRange(
+                        receiver,
+                        &start,
+                        null,
+                        receiver.bpop.xread_count,
+                        false,
+                        group,
+                        consumer,
+                        flags,
+                        spi,
+                    );
+                    // Note that after we unblock the client, 'gt'
+                    // and other receiver->bpop stuff are no longer
+                    // valid, so we must do the setup above before
+                    // this call.
+                    unblockClient(receiver);
+                }
+            }
+        }
     }
 }
 
 pub fn unblockClient(cli: *Client) void {
-    // TODO: BLOCKED_STREAM, BLOCKED_WAIT, BLOCKED_MODULE
+    // TODO: BLOCKED_WAIT, BLOCKED_MODULE
     if (cli.btype == Server.BLOCKED_LIST or
-        cli.btype == Server.BLOCKED_ZSET)
+        cli.btype == Server.BLOCKED_ZSET or
+        cli.btype == Server.BLOCKED_STREAM)
     {
         unblockClientWaitingData(cli);
     } else {
@@ -243,11 +333,18 @@ fn unblockClientWaitingData(cli: *Client) void {
         }
     }
     di.release();
-    cli.bpop.keys.empty(null);
 
+    // Cleanup the client structure
+    cli.bpop.keys.empty(null);
     if (cli.bpop.target) |target| {
         target.decrRefCount();
         cli.bpop.target = null;
+    }
+    if (cli.bpop.xread_group != null) {
+        cli.bpop.xread_group.?.decrRefCount();
+        cli.bpop.xread_consumer.?.decrRefCount();
+        cli.bpop.xread_group = null;
+        cli.bpop.xread_consumer = null;
     }
 }
 
@@ -277,9 +374,10 @@ pub fn queueClientForReprocessing(cli: *Client) void {
 /// send it a reply of some kind. After this function is called,
 /// unblockClient() will be called with the same client as argument.
 pub fn replyToBlockedClientTimedOut(cli: *Client) void {
-    // TODO: BLOCKED_STREAM, BLOCKED_WAIT, BLOCKED_MODULE
+    // TODO: BLOCKED_WAIT, BLOCKED_MODULE
     if (cli.btype == Server.BLOCKED_LIST or
-        cli.btype == Server.BLOCKED_ZSET)
+        cli.btype == Server.BLOCKED_ZSET or
+        cli.btype == Server.BLOCKED_STREAM)
     {
         cli.addReply(Server.shared.nullmultibulk);
     } else {
@@ -340,10 +438,35 @@ pub fn getTimeoutFromObjectOrReply(
     return llval;
 }
 
+/// This structure represents the blocked key information that we store
+/// in the client structure. Each client blocked on keys, has a
+/// client->bpop.keys hash table. The keys of the hash table are Redis
+/// keys pointers to 'robj' structures. The value is this structure.
+/// The structure has two goals: firstly we store the list node that this
+/// client uses to be listed in the database "blocked clients for this key"
+/// list, so we can later unblock in O(1) without a list scan.
+/// Secondly for certain blocking types, we have additional info. Right now
+/// the only use for additional info we have is when clients are blocked
+/// on streams, as we have to remember the ID it blocked for.
 pub const BlockInfo = struct {
+    /// List node for db->blocking_keys[key] list.
     listNode: *ClientList.Node,
+
+    /// Stream ID if we blocked in a stream.
+    stream_id: ?Stream.Id,
 };
 
+/// The following structure represents a node in the server.ready_keys list,
+/// where we accumulate all the keys that had clients blocked with a blocking
+/// operation such as B[LR]POP, but received new data in the context of the
+/// last executed command.
+///
+/// After the execution of every command or script, we run this list to check
+/// if as a result we should serve data to clients blocked, unblocking them.
+/// Note that server.ready_keys will not have duplicates as there dictionary
+/// also called ready_keys in every structure representing a Redis database,
+/// where we make sure to remember if a given key was already added in the
+/// server.ready_keys list.
 pub const ReadyList = struct {
     db: *Database,
     key: *Object,
@@ -365,3 +488,4 @@ const log = std.log.scoped(.blocked);
 const assert = std.debug.assert;
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;
+const Stream = @import("t_stream.zig").Stream;

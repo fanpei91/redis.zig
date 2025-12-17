@@ -355,6 +355,7 @@ pub fn brpoplpushCommand(cli: *Client) void {
             keys,
             timeout,
             target,
+            null,
         );
         return;
     };
@@ -398,7 +399,7 @@ fn bpop(cli: *Client, where: Where) void {
     }
 
     // If the keys does not exists we must block
-    blocked.blockForKeys(cli, Server.BLOCKED_LIST, keys, timeout, null);
+    blocked.blockForKeys(cli, Server.BLOCKED_LIST, keys, timeout, null, null);
 }
 
 ///  This is the semantic of this command:

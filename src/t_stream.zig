@@ -312,6 +312,313 @@ pub fn xtrimCommand(cli: *CLient) void {
     cli.addReplyLongLong(@intCast(deleted));
 }
 
+const XREAD_BLOCKED_DEFAULT_COUNT = 1000;
+/// XREAD [BLOCK <milliseconds>] [COUNT <count>] STREAMS key_1 key_2 ... key_N
+///       ID_1 ID_2 ... ID_N
+///
+/// This function also implements the XREADGROUP command, which is like XREAD
+/// but accepting the [GROUP group-name consumer-name] additional option.
+/// This is useful because while XREAD is a read command and can be called
+/// on slaves, XREADGROUP is not.
+pub fn xreadCommand(cli: *CLient) void {
+    const argv = cli.argv.?;
+
+    var timeout: i64 = -1; // -1 means, no BLOCK argument given.
+    var count: i64 = 0;
+    var noack = false; // rue if NOACK option was specified.
+
+    var streams_count: usize = 0;
+    var streams_arg: usize = 0;
+
+    var static_ids: [8]Stream.Id = undefined;
+    var ids: []Stream.Id = &static_ids;
+
+    // XREAD or XREADGROUP?
+    const xreadgroup = sds.getLen(sds.cast(argv[0].v.ptr)) == 10;
+    var groupname: ?*Object = null;
+    var consumername: ?*Object = null;
+    var groups: ?[]*Stream.CG = null;
+
+    // Parse arguments
+    {
+        var i: usize = 1;
+        while (i < cli.argc) : (i += 1) {
+            const moreargs = cli.argc - 1 - i;
+            const opt = sds.castBytes(argv[i].v.ptr);
+            if (eqlCase(opt, "BLOCK") and moreargs >= 1) {
+                i += 1;
+                timeout = blocked.getTimeoutFromObjectOrReply(
+                    cli,
+                    argv[i],
+                    Server.UNIT_MILLISECONDS,
+                ) orelse {
+                    return;
+                };
+            } else if (eqlCase(opt, "COUNT") and moreargs >= 1) {
+                i += 1;
+                count = argv[i].getLongLongOrReply(cli, null) orelse {
+                    return;
+                };
+                if (count < 0) count = 0;
+            } else if (eqlCase(opt, "STREAMS") and moreargs >= 1) {
+                streams_arg = i + 1;
+                streams_count = cli.argc - streams_arg;
+                if (streams_count % 2 != 0) {
+                    cli.addReplyErr("Unbalanced XREAD list of streams: " ++
+                        "for each stream key an ID or '$' must be " ++
+                        "specified.");
+                    return;
+                }
+                // We have two arguments for each stream.
+                streams_count = @divExact(streams_count, 2);
+                break;
+            } else if (eqlCase(opt, "GROUP") and moreargs >= 2) {
+                if (!xreadgroup) {
+                    cli.addReplyErr("The GROUP option is only supported by " ++
+                        "XREADGROUP. You called XREAD instead.");
+                    return;
+                }
+                groupname = argv[i + 1];
+                consumername = argv[i + 2];
+                i += 2;
+            } else if (eqlCase(opt, "NOACK")) {
+                if (!xreadgroup) {
+                    cli.addReplyErr("The NOACK option is only supported by " ++
+                        "XREADGROUP. You called XREAD instead.");
+                    return;
+                }
+                noack = true;
+            } else {
+                cli.addReply(Server.shared.syntaxerr);
+                return;
+            }
+        }
+    }
+
+    // STREAMS option is mandatory.
+    if (streams_count == 0) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    }
+
+    // If the user specified XREADGROUP then it must also
+    // provide the GROUP option.
+    if (xreadgroup and groupname == null) {
+        cli.addReplyErr("Missing GROUP option for XREADGROUP");
+        return;
+    }
+
+    // Parse the IDs and resolve the group name.
+    biz: {
+        if (streams_count > static_ids.len) {
+            ids = allocator.alloc(Stream.Id, streams_count);
+        }
+        if (groupname != null) {
+            groups = allocator.alloc(*Stream.CG, streams_count);
+        }
+        for (streams_arg + streams_count..cli.argc) |i| {
+            // Specifying "$" as last-known-id means that the client wants to be
+            // served with just the messages that will arrive into the stream
+            // starting from now.
+            const id_idx = i - streams_arg - streams_count;
+            const key = argv[i - streams_count];
+            const xobj = cli.db.lookupKeyRead(key);
+            var group: ?*Stream.CG = null;
+            if (xobj) |obj| {
+                if (obj.checkTypeOrReply(cli, .stream)) {
+                    break :biz;
+                }
+                if (groupname) |gp| {
+                    const name = sds.cast(gp.v.ptr);
+                    group = Stream.cast(obj.v.ptr).lookupCG(name);
+                }
+            }
+
+            // If a group was specified, than we need to be sure that the
+            // key and group actually exist.
+            if (groupname != null) {
+                if (xobj == null or group == null) {
+                    cli.addReplyErrFormat(
+                        "-NOGROUP No such key '{s}' or consumer " ++
+                            "group '{s}' in XREADGROUP with GROUP " ++
+                            "option",
+                        .{
+                            sds.castBytes(key.v.ptr),
+                            sds.castBytes(groupname.?.v.ptr),
+                        },
+                    );
+                    break :biz;
+                }
+                groups.?[id_idx] = group.?;
+            }
+
+            const idarg = argv[i];
+            if (eqlCase(sds.castBytes(idarg.v.ptr), "$")) {
+                if (xreadgroup) {
+                    cli.addReplyErr("The $ ID is meaningless in the context of " ++
+                        "XREADGROUP: you want to read the history of " ++
+                        "this consumer by specifying a proper ID, or " ++
+                        "use the > ID to get new messages. The $ ID would " ++
+                        "just return an empty result set.");
+                    break :biz;
+                }
+                if (xobj) |obj| {
+                    ids[id_idx] = Stream.cast(obj.v.ptr).last_id;
+                } else {
+                    ids[id_idx].ms = 0;
+                    ids[id_idx].seq = 0;
+                }
+                continue;
+            } else if (eqlCase(sds.castBytes(idarg.v.ptr), ">")) {
+                if (!xreadgroup) {
+                    cli.addReplyErr("The > ID can be specified only when calling " ++
+                        "XREADGROUP using the GROUP <group> " ++
+                        "<consumer> option.");
+                    break :biz;
+                }
+                // We use just the maximum ID to signal this is a ">" ID, anyway
+                // the code handling the blocking clients will have to update the
+                // ID later in order to match the changing consumer group last ID.
+                ids[id_idx].ms = maxInt(u64);
+                ids[id_idx].seq = maxInt(u64);
+                continue;
+            }
+            if (!Stream.Id.parseOrReply(cli, idarg, &ids[id_idx], 0, true)) {
+                break :biz;
+            }
+        }
+
+        // Try to serve the client synchronously.
+        var arraylen: i64 = 0;
+        var replylen: ?*CLient.ReplyBlock = null;
+        for (0..streams_count) |i| {
+            const xobj = cli.db.lookupKeyRead(argv[streams_arg + i]) orelse {
+                continue;
+            };
+            const stream: *Stream = .cast(xobj.v.ptr);
+            const gt = &ids[i]; // ID must be greater than this.
+            var serve_synchronously = false;
+            var serve_history = false; // True for XREADGROUP with ID != ">".
+
+            // Check if there are the conditions to serve the client
+            // synchronously.
+            if (groups) |grps| {
+                // If the consumer is blocked on a group, we always serve it
+                // synchronously (serving its local history) if the ID specified
+                // was not the special ">" ID.
+                if (gt.ms != maxInt(u64) or gt.seq != maxInt(u64)) {
+                    serve_synchronously = true;
+                    serve_history = true;
+                } else if (stream.length > 0) {
+                    // We also want to serve a consumer in a consumer group
+                    // synchronously in case the group top item delivered is
+                    // smaller than what the stream has inside.
+                    const last = &grps[i].last_id;
+                    var maxid: Stream.Id = undefined;
+                    stream.lastValidId(&maxid);
+                    if (maxid.compare(last) == .gt) {
+                        serve_synchronously = true;
+                        gt.* = last.*;
+                    }
+                }
+            } else if (stream.length > 0) {
+                // For consumers without a group, we serve synchronously if we can
+                // actually provide at least one item from the stream.
+                var maxid: Stream.Id = undefined;
+                stream.lastValidId(&maxid);
+                if (maxid.compare(gt) == .gt) {
+                    serve_synchronously = true;
+                }
+            }
+
+            if (serve_synchronously) {
+                arraylen += 1;
+                if (arraylen == 1) {
+                    replylen = cli.addDeferredMultiBulkLength();
+                }
+                // Stream.replyWithRange() handles the 'start' ID as inclusive,
+                // so start from the next ID, since we want only messages with
+                // IDs greater than start.
+                var start = gt.*;
+                start.incr();
+
+                // Emit the two elements sub-array consisting of the name
+                // of the stream and the data we extracted from it.
+                cli.addReplyMultiBulkLen(2);
+                cli.addReplyBulk(argv[streams_arg + i]);
+                var consumer: ?*Stream.Consumer = null;
+                if (groups) |grps| {
+                    consumer = grps[i].lookupConsumer(
+                        sds.cast(consumername.?.v.ptr),
+                        Stream.SLC_NONE,
+                    );
+                }
+
+                const spi: ?*Stream.PropInfo = null; // TODO: PropInfo
+                var flags: i32 = 0;
+                if (noack) flags |= Stream.RWR_NOACK;
+                if (serve_history) flags |= Stream.RWR_HISTORY;
+                _ = stream.replyWithRange(
+                    cli,
+                    &start,
+                    null,
+                    @intCast(count),
+                    false,
+                    if (groups != null) groups.?[i] else null,
+                    consumer,
+                    flags,
+                    spi,
+                );
+            }
+        }
+
+        // We replied synchronously! Set the top array len and return to caller.
+        if (arraylen > 0) {
+            cli.setDeferredMultiBulkLength(replylen, arraylen);
+            break :biz;
+        }
+
+        // Block if needed.
+        if (timeout != -1) {
+            blocked.blockForKeys(
+                cli,
+                Server.BLOCKED_STREAM,
+                argv[streams_arg .. streams_arg + streams_count],
+                timeout,
+                null,
+                ids,
+            );
+
+            // If no COUNT is given and we block, set a relatively small count:
+            // in case the ID provided is too low, we do not want the server to
+            // block just to serve this client a huge stream of messages.
+            cli.bpop.xread_count = if (count > 0)
+                @intCast(count)
+            else
+                XREAD_BLOCKED_DEFAULT_COUNT;
+            if (groupname != null) {
+                groupname.?.incrRefCount();
+                consumername.?.incrRefCount();
+                cli.bpop.xread_group = groupname;
+                cli.bpop.xread_consumer = consumername;
+                cli.bpop.xread_group_noack = noack;
+            } else {
+                cli.bpop.xread_group = null;
+                cli.bpop.xread_consumer = null;
+            }
+            break :biz;
+        }
+
+        // No BLOCK option, nor any stream we can serve. Reply as with a
+        // timeout happened.
+        cli.addReply(Server.shared.nullmultibulk);
+    }
+
+    // cleanup
+    if (groups) |grps| allocator.free(grps);
+    if (!std.meta.eql(ids, &static_ids)) allocator.free(ids);
+}
+
 /// XGROUP CREATE <key> <groupname> <id or $> [MKSTREAM]
 /// XGROUP SETID <key> <groupname> <id or $>
 /// XGROUP DESTROY <key> <groupname>
@@ -749,10 +1056,11 @@ pub fn xclaimCommand(cli: *CLient) void {
     // is mandatory.
     if (stream == null or group == null) {
         cli.addReplyErrFormat(
-            "-NOGROUP No such consumer group '{s}' for key name '{s}'",
+            "-NOGROUP No such key '{s}' or " ++
+                "consumer group '{s}'",
             .{
-                sds.asBytes(groupname),
                 sds.castBytes(key.v.ptr),
+                sds.asBytes(groupname),
             },
         );
         return;
@@ -1142,19 +1450,19 @@ pub const Stream = struct {
     const ITEM_FLAG_SAMEFIELDS = (1 << 1); // Same fields as master entry.
 
     // Flags for lookupConsumer()
-    const SLC_NONE = 0;
+    pub const SLC_NONE = 0;
     /// Do not create the consumer if it doesn't exist
-    const SLC_NOCREAT = (1 << 0);
+    pub const SLC_NOCREAT = (1 << 0);
     /// Do not update consumer's seen-time
-    const SLC_NOREFRESH = (1 << 1);
+    pub const SLC_NOREFRESH = (1 << 1);
 
     // Flags for replyWithRange()
     /// Do not create entries in the PEL.
-    const RWR_NOACK = (1 << 0);
+    pub const RWR_NOACK = (1 << 0);
     /// Do not emit protocol for array boundaries, just the entries.
-    const RWR_RAWENTRIES = (1 << 1);
+    pub const RWR_RAWENTRIES = (1 << 1);
     /// Only serve consumer local PEL.
-    const RWR_HISTORY = (1 << 2);
+    pub const RWR_HISTORY = (1 << 2);
 
     /// Stream item ID: a 128 bit number composed of a milliseconds time and
     /// a sequence counter. IDs generated in the same millisecond (or in a past
@@ -1845,7 +2153,7 @@ pub const Stream = struct {
 
     /// Stream propagation informations, passed to functions in order to propagate
     /// XCLAIM commands to AOF and slaves.
-    pub const ProInfo = struct {
+    pub const PropInfo = struct {
         keyname: *Object,
         groupname: *Object,
     };
@@ -2326,7 +2634,7 @@ pub const Stream = struct {
         group: ?*CG,
         consumer: ?*Consumer,
         flags: i32,
-        spi: ?*ProInfo,
+        spi: ?*PropInfo,
     ) usize {
         _ = spi;
 

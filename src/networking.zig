@@ -45,23 +45,40 @@ pub const Client = struct {
             }
         };
 
-        // Blocking operation timeout(ms). If UNIX current time
-        // is > timeout then the operation timed out
+        /// Blocking operation timeout(ms). If UNIX current time
+        /// is > timeout then the operation timed out
         timeout: i64,
 
-        // The keys we are waiting to terminate a blocking
-        // operation such as BLPOP or XREAD. Or NULL.
+        /// The keys we are waiting to terminate a blocking
+        /// operation such as BLPOP or XREAD. Or NULL.
         keys: *Keys.HashMap,
 
-        // The key that should receive the element,
-        // for BRPOPLPUSH.
+        /// The key that should receive the element,
+        /// for BRPOPLPUSH.
         target: ?*Object,
+
+        // --BLOCK_STREAM--
+        /// XREAD COUNT option.
+        xread_count: usize,
+        /// XREADGROUP group name.
+        xread_group: ?*Object,
+        /// XREADGROUP consumer name.
+        xread_consumer: ?*Object,
+        xread_retry_time: i64,
+        xread_retry_ttl: i64,
+        xread_group_noack: bool,
 
         fn create() BlockingState {
             return .{
                 .timeout = 0,
                 .keys = Keys.HashMap.create(Keys.vtable),
                 .target = null,
+                .xread_count = 0,
+                .xread_group = null,
+                .xread_consumer = null,
+                .xread_retry_time = -1,
+                .xread_retry_ttl = -1,
+                .xread_group_noack = false,
             };
         }
     };
