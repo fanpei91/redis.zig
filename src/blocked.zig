@@ -16,7 +16,7 @@ pub fn blockForKeys(
 ) void {
     cli.bpop.timeout = timeout;
     cli.bpop.target = target;
-    if (target) |t| t.incrRefCount();
+    if (target) |t| _ = t.incrRefCount();
 
     for (keys, 0..) |key, i| {
         // Allocate our BlockInfo structure, associated to each key the client
@@ -69,9 +69,7 @@ pub fn signalKeyAsReady(db: *Database, key: *Object) void {
     if (db.ready_keys.find(key) != null) return;
 
     // Ok, we need to queue this key into server.ready_keys.
-    const rl = allocator.create(ReadyList);
-    rl.db = db;
-    rl.key = key;
+    const rl = ReadyList.create(db, key);
     server.ready_keys.append(rl);
 
     // We also add the key in the db->ready_keys dictionary in order
@@ -157,7 +155,7 @@ pub fn handleClientsBlockedOnKeys() void {
                 // Protect receiver.bpop.target, that will be
                 // freed by the next unblockClient()
                 // call.
-                if (dstkey) |dst| dst.incrRefCount();
+                if (dstkey) |dst| _ = dst.incrRefCount();
                 defer if (dstkey) |dst| dst.decrRefCount();
 
                 unblockClient(receiver);
@@ -454,6 +452,10 @@ pub const BlockInfo = struct {
 
     /// Stream ID if we blocked in a stream.
     stream_id: ?Stream.Id,
+
+    pub fn destroy(self: *BlockInfo) void {
+        allocator.destroy(self);
+    }
 };
 
 /// The following structure represents a node in the server.ready_keys list,
@@ -470,6 +472,19 @@ pub const BlockInfo = struct {
 pub const ReadyList = struct {
     db: *Database,
     key: *Object,
+
+    pub fn create(db: *Database, key: *Object) *ReadyList {
+        const rl = allocator.create(ReadyList);
+        rl.db = db;
+        rl.key = key;
+        _ = rl.key.incrRefCount();
+        return rl;
+    }
+
+    pub fn destroy(self: *ReadyList) void {
+        self.key.decrRefCount();
+        allocator.destroy(self);
+    }
 };
 
 const std = @import("std");

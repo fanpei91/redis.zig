@@ -190,15 +190,6 @@ pub const Database = struct {
     pub const Hash = struct {
         pub const Map = dict.Dict(sds.String, ?*Object);
 
-        const vtable: *const Map.VTable = &.{
-            .hash = sds.hash,
-            .eql = sds.eql,
-            .dupeKey = dupeKey,
-            .dupeVal = dupeVal,
-            .freeKey = freeKey,
-            .freeVal = freeVal,
-        };
-
         fn dupeKey(key: sds.String) sds.String {
             return sds.dupe(allocator.child, key);
         }
@@ -206,7 +197,7 @@ pub const Database = struct {
         fn dupeVal(val: ?*Object) ?*Object {
             // Lazy freeing will set value to null.
             if (val) |v| {
-                v.incrRefCount();
+                return v.incrRefCount();
             }
             return val;
         }
@@ -221,61 +212,44 @@ pub const Database = struct {
         }
     };
 
-    const Expires = struct {
-        const HashMap = dict.Dict(sds.String, i64);
-
-        const vtable: *const HashMap.VTable = &.{
-            .hash = sds.hash,
-            .eql = sds.eql,
-        };
-    };
-
-    const BlockingKeys = struct {
-        const HashMap = dict.Dict(*Object, *Server.ClientList);
-
-        const vtable: *const HashMap.VTable = &.{
-            .hash = Object.hash,
-            .eql = Object.eql,
-            .dupeKey = dupeKey,
-            .freeKey = Object.decrRefCount,
-            .freeVal = Server.ClientList.release,
-        };
-
-        fn dupeKey(key: *Object) *Object {
-            key.incrRefCount();
-            return key;
-        }
-    };
-
-    const ReadyKeys = struct {
-        const HashMap = dict.Dict(*Object, void);
-
-        const vtable: *const HashMap.VTable = &.{
-            .hash = Object.hash,
-            .eql = Object.eql,
-            .dupeKey = dupeKey,
-            .freeKey = Object.decrRefCount,
-        };
-
-        fn dupeKey(key: *Object) *Object {
-            key.incrRefCount();
-            return key;
-        }
-    };
+    const Expires = dict.Dict(sds.String, i64);
+    const BlockingKeys = dict.Dict(*Object, *Server.ClientList);
+    const ReadyKeys = dict.Dict(*Object, void);
 
     id: usize, // Database ID
     dict: *Hash.Map, // The keyspace for this DB
-    expires: *Expires.HashMap, // Timeout of keys with a timeout set
-    blocking_keys: *BlockingKeys.HashMap, // Keys with clients waiting for data (BLPOP)
-    ready_keys: *ReadyKeys.HashMap, // Blocked keys that received a PUSH
+    expires: *Expires, // Timeout of keys with a timeout set
+    blocking_keys: *BlockingKeys, // Keys with clients waiting for data (BLPOP)
+    ready_keys: *ReadyKeys, // Blocked keys that received a PUSH
 
     pub fn create(id: usize) Database {
         return .{
             .id = id,
-            .dict = .create(Hash.vtable),
-            .expires = .create(Expires.vtable),
-            .blocking_keys = .create(BlockingKeys.vtable),
-            .ready_keys = .create(ReadyKeys.vtable),
+            .dict = .create(&.{
+                .hash = sds.hash,
+                .eql = sds.eql,
+                .dupeKey = Hash.dupeKey,
+                .dupeVal = Hash.dupeVal,
+                .freeKey = Hash.freeKey,
+                .freeVal = Hash.freeVal,
+            }),
+            .expires = .create(&.{
+                .hash = sds.hash,
+                .eql = sds.eql,
+            }),
+            .blocking_keys = .create(&.{
+                .hash = Object.hash,
+                .eql = Object.eql,
+                .dupeKey = Object.incrRefCount,
+                .freeKey = Object.decrRefCount,
+                .freeVal = Server.ClientList.release,
+            }),
+            .ready_keys = .create(&.{
+                .hash = Object.hash,
+                .eql = Object.eql,
+                .dupeKey = Object.incrRefCount,
+                .freeKey = Object.decrRefCount,
+            }),
         };
     }
 

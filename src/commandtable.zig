@@ -133,6 +133,12 @@ pub const table = [_]Command{
     .{ .name = "xclaim", .proc = stream.xclaimCommand, .arity = -6 },
     .{ .name = "xsetid", .proc = stream.xsetidCommand, .arity = 3 },
     .{ .name = "xinfo", .proc = stream.xinfoCommand, .arity = -2 },
+    .{ .name = "subscribe", .proc = pubsub.subscribeCommand, .arity = -2 },
+    .{ .name = "psubscribe", .proc = pubsub.psubscribeCommand, .arity = -2 },
+    .{ .name = "unsubscribe", .proc = pubsub.unsubscribeCommand, .arity = -1 },
+    .{ .name = "punsubscribe", .proc = pubsub.punsubscribeCommand, .arity = -1 },
+    .{ .name = "pubsub", .proc = pubsub.pubsubCommand, .arity = -2 },
+    .{ .name = "publish", .proc = pubsub.publishCommand, .arity = 3 },
 };
 
 pub const Command = struct {
@@ -154,3 +160,4 @@ const db = @import("db.zig");
 const expire = @import("expire.zig");
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
+const pubsub = @import("pubsub.zig");

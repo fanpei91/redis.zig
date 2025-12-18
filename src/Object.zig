@@ -148,6 +148,12 @@ pub const Shared = struct {
     space: *Object,
     colon: *Object,
     plus: *Object,
+    subscribebulk: *Object,
+    psubscribebulk: *Object,
+    unsubscribebulk: *Object,
+    punsubscribebulk: *Object,
+    messagebulk: *Object,
+    pmessagebulk: *Object,
     integers: [Server.OBJ_SHARED_INTEGERS]*Object,
     bulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // $<value>\r\n
     mbulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // *<value>\r\n
@@ -268,6 +274,12 @@ pub const Shared = struct {
             .string,
             sds.new(allocator.child, "+"),
         );
+        self.subscribebulk = Object.createString("$9\r\nsubscribe\r\n");
+        self.psubscribebulk = Object.createString("$10\r\npsubscribe\r\n");
+        self.unsubscribebulk = Object.createString("$11\r\nunsubscribe\r\n");
+        self.punsubscribebulk = Object.createString("$12\r\npunsubscribe\r\n");
+        self.messagebulk = Object.createString("$7\r\nmessage\r\n");
+        self.pmessagebulk = Object.createString("$8\r\npmessage\r\n");
         for (0..Server.OBJ_SHARED_INTEGERS) |i| {
             var obj = Object.createInt(@intCast(i));
             self.integers[i] = obj.makeShared();
@@ -323,6 +335,12 @@ pub const Shared = struct {
         self.space.decrRefCount();
         self.colon.decrRefCount();
         self.plus.decrRefCount();
+        self.subscribebulk.decrRefCount();
+        self.psubscribebulk.decrRefCount();
+        self.unsubscribebulk.decrRefCount();
+        self.punsubscribebulk.decrRefCount();
+        self.messagebulk.decrRefCount();
+        self.pmessagebulk.decrRefCount();
         for (self.integers) |obj| obj.free();
         for (self.bulkhdr) |obj| obj.decrRefCount();
         for (self.mbulkhdr) |obj| obj.decrRefCount();
@@ -459,8 +477,7 @@ fn createStringFromLonglongWithOptions(value: i64, from_shared: bool) *Object {
     }
     if (value >= 0 and value < Server.OBJ_SHARED_INTEGERS and enabled) {
         const o = Server.shared.integers[@abs(value)];
-        o.incrRefCount();
-        return o;
+        return o.incrRefCount();
     }
 
     if (value >= minInt(i64) and value <= maxInt(i64)) {
@@ -598,8 +615,9 @@ pub fn decrRefCount(self: *Object) void {
     if (self.refcount != SHARED_REFCOUNT) self.refcount -= 1;
 }
 
-pub fn incrRefCount(self: *Object) void {
+pub fn incrRefCount(self: *Object) *Object {
     if (self.refcount != SHARED_REFCOUNT) self.refcount += 1;
+    return self;
 }
 
 pub fn resetRefCount(self: *Object) *Object {
@@ -619,8 +637,7 @@ pub fn stringLen(self: *Object) usize {
 /// If the object is already raw-encoded just increment the ref count.
 pub fn getDecoded(self: *Object) *Object {
     if (self.sdsEncoded()) {
-        self.incrRefCount();
-        return self;
+        return self.incrRefCount();
     }
     if (self.type == .string and self.encoding == .int) {
         var buf: [20]u8 = undefined;
@@ -644,8 +661,7 @@ pub fn tryEncoding(self: *Object) *Object {
         if (use_shared_integers and value > 0 and value < Server.OBJ_SHARED_INTEGERS) {
             self.decrRefCount();
             const obj = Server.shared.integers[@as(usize, @intCast(value))];
-            obj.incrRefCount();
-            return obj;
+            return obj.incrRefCount();
         } else {
             if (self.encoding == .raw) {
                 sds.free(allocator.child, sds.cast(self.v.ptr));

@@ -597,8 +597,8 @@ pub fn xreadCommand(cli: *CLient) void {
             else
                 XREAD_BLOCKED_DEFAULT_COUNT;
             if (groupname != null) {
-                groupname.?.incrRefCount();
-                consumername.?.incrRefCount();
+                _ = groupname.?.incrRefCount();
+                _ = consumername.?.incrRefCount();
                 cli.bpop.xread_group = groupname;
                 cli.bpop.xread_consumer = consumername;
                 cli.bpop.xread_group_noack = noack;

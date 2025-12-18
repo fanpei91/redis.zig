@@ -24,26 +24,7 @@ const ERR_DENIED =
 
 pub const Client = struct {
     const BlockingState = struct {
-        const Keys = struct {
-            const HashMap = dict.Dict(*Object, *blocked.BlockInfo);
-
-            const vtable: *const HashMap.VTable = &.{
-                .hash = Object.hash,
-                .eql = Object.eql,
-                .dupeKey = dupeKey,
-                .freeKey = Object.decrRefCount,
-                .freeVal = freeVal,
-            };
-
-            fn dupeKey(key: *Object) *Object {
-                key.incrRefCount();
-                return key;
-            }
-
-            fn freeVal(val: *blocked.BlockInfo) void {
-                allocator.destroy(val);
-            }
-        };
+        const Keys = dict.Dict(*Object, *blocked.BlockInfo);
 
         /// Blocking operation timeout(ms). If UNIX current time
         /// is > timeout then the operation timed out
@@ -51,7 +32,7 @@ pub const Client = struct {
 
         /// The keys we are waiting to terminate a blocking
         /// operation such as BLPOP or XREAD. Or NULL.
-        keys: *Keys.HashMap,
+        keys: *Keys,
 
         /// The key that should receive the element,
         /// for BRPOPLPUSH.
@@ -71,7 +52,13 @@ pub const Client = struct {
         fn create() BlockingState {
             return .{
                 .timeout = 0,
-                .keys = Keys.HashMap.create(Keys.vtable),
+                .keys = Keys.create(&.{
+                    .hash = Object.hash,
+                    .eql = Object.eql,
+                    .dupeKey = Object.incrRefCount,
+                    .freeKey = Object.decrRefCount,
+                    .freeVal = blocked.BlockInfo.destroy,
+                }),
                 .target = null,
                 .xread_count = 0,
                 .xread_group = null,
@@ -130,32 +117,60 @@ pub const Client = struct {
         }
     };
 
-    id: usize, // Client incremental unique ID.
-    fd: i32, // Client socket.
-    flags: i32, // Client flags: Server.CLIENT_* constants.
+    const PubSub = struct {
+        const Channels = dict.Dict(*Object, void);
+        const Patterns = list.List(*Object, *Object);
+    };
+
+    /// Client incremental unique ID.
+    id: usize,
+    /// Client socket.
+    fd: i32,
+    /// Client flags: Server.CLIENT_* constants.
+    flags: i32,
     db: *db.Database,
     client_list_node: ?*Server.ClientList.Node,
-    reqtype: i32, // Request protocol type: Server.PROTO_REQ_*
-    querybuf_peak: usize, // Recent (100ms or more) peak of querybuf size.
-    querybuf: sds.String, // Buffer we use to accumulate client queries.
-    qb_pos: usize, // The position we have read in querybuf.
-    argv: ?[]*Object, // Arguments of current command.
-    argc: usize, // Num of arguments of current command.
+    /// Request protocol type: Server.PROTO_REQ_*
+    reqtype: i32,
+    /// Recent (100ms or more) peak of querybuf size.
+    querybuf_peak: usize,
+    /// Buffer we use to accumulate client queries.
+    querybuf: sds.String,
+    /// The position we have read in querybuf.
+    qb_pos: usize,
+    /// Arguments of current command.
+    argv: ?[]*Object,
+    /// Num of arguments of current command.
+    argc: usize,
     cmd: ?*const Server.Command,
     lastcmd: ?*const Server.Command,
-    multibulklen: i32, // Number of multi bulk arguments left to read.
-    bulklen: i64, // Length of bulk argument in multi bulk request.
-    authenticated: bool, // When Server.requirepass is non-NULL.
-    lastinteraction: i64, // Time of the last interaction, used for timeout
-    // Response
-    reply: *LinkedList(void, *ReplyBlock), // List of reply objects to send to the client.
-    reply_bytes: usize, // Total bytes of objects in reply list.
-    sentlen: usize, // Amount of bytes already sent in the current buffer or object being sent.
+    /// Number of multi bulk arguments left to read.
+    multibulklen: i32,
+    /// Length of bulk argument in multi bulk request.
+    bulklen: i64,
+    /// When Server.requirepass is non-NULL.
+    authenticated: bool,
+    /// Time of the last interaction, used for timeout
+    lastinteraction: i64,
+    // ---Response---
+    /// List of reply objects to send to the client.
+    reply: *LinkedList(void, *ReplyBlock),
+    /// Total bytes of objects in reply list.
+    reply_bytes: usize,
+    /// Amount of bytes already sent in the current buffer or object being sent.
+    sentlen: usize,
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
     bufpos: usize,
-    // Blocking
-    btype: i32, // Type of blocking op if Server.CLIENT_BLOCKED.
-    bpop: BlockingState, // blocking state
+    // ---Blocking---
+    /// Type of blocking op if Server.CLIENT_BLOCKED.
+    btype: i32,
+    /// blocking state
+    bpop: BlockingState,
+    // ---PubSub---
+    /// channels a client is interested in (SUBSCRIBE)
+    pubsub_channels: *PubSub.Channels,
+    /// patterns a client is interested in (SUBSCRIBE)
+    pubsub_patterns: *PubSub.Patterns,
 
     pub fn create(fd: i32, flags: i32) !*Client {
         const cli = allocator.create(Client);
@@ -207,6 +222,17 @@ pub const Client = struct {
         cli.bufpos = 0;
         cli.btype = Server.BLOCKED_NONE;
         cli.bpop = BlockingState.create();
+        cli.pubsub_channels = .create(&.{
+            .hash = Object.hash,
+            .eql = Object.eql,
+            .dupeKey = Object.incrRefCount,
+            .freeKey = Object.decrRefCount,
+        });
+        cli.pubsub_patterns = .create(&.{
+            .eql = Object.equalStrings,
+            .setVal = Object.incrRefCount,
+            .freeVal = Object.decrRefCount,
+        });
         if (fd != -1) cli.link();
         return cli;
     }
@@ -1003,16 +1029,29 @@ pub const Client = struct {
     }
 
     pub fn free(self: *Client) void {
+        // Free the query buffer
         sds.free(allocator.child, self.querybuf);
         self.querybuf = undefined;
 
+        // Deallocate structures used to block on blocking ops.
         if (self.flags & Server.CLIENT_BLOCKED != 0) {
             blocked.unblockClient(self);
         }
         self.bpop.keys.destroy();
 
+        // Unsubscribe from all the pubsub channels
+        _ = pubsub.unsubscribeAllChannels(self, false);
+        _ = pubsub.unsubscribeAllPatterns(self, false);
+        self.pubsub_channels.destroy();
+        self.pubsub_patterns.release();
+
+        // Free data structures.
         self.reply.release();
         self.freeArgv();
+
+        // Unlink the client: this will close the socket, remove the I/O
+        // handlers, and remove references of the client from different
+        // places where active clients may be referenced.
         self.unlink();
 
         allocator.destroy(self);
@@ -1253,3 +1292,5 @@ const dict = @import("dict.zig");
 const assert = std.debug.assert;
 const raxlib = @import("rax/rax.zig").rax;
 const Stream = @import("t_stream.zig").Stream;
+const list = @import("list.zig");
+const pubsub = @import("pubsub.zig");

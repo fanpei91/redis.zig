@@ -44,6 +44,7 @@ pub const CLIENT_UNBLOCKED = (1 << 7); // This client was unblocked and is store
 pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
 pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
+pub const CLIENT_PUBSUB = (1 << 18); // Client is in Pub/Sub mode.
 
 // Client block type (btype field in Client structure)
 // if CLIENT_BLOCKED flag is set.
@@ -143,24 +144,8 @@ const Commands = struct {
     }
 };
 
-const ReadyKeys = struct {
-    pub const List = LinkedList(*blocked.ReadyList, *blocked.ReadyList);
-
-    const vtable: *const List.VTable = &.{
-        .setVal = setVal,
-        .freeVal = freeVal,
-    };
-
-    fn setVal(val: *blocked.ReadyList) *blocked.ReadyList {
-        val.key.incrRefCount();
-        return val;
-    }
-
-    fn freeVal(val: *blocked.ReadyList) void {
-        val.key.decrRefCount();
-        allocator.destroy(val);
-    }
-};
+pub const ClientList = LinkedList(*Client, *Client);
+const ReadyKeys = LinkedList(*blocked.ReadyList, *blocked.ReadyList);
 
 const Server = @This();
 // General
@@ -210,6 +195,11 @@ lfu_decay_time: i32, // LFU counter decay factor.
 unixtime: atomic.Value(i64), // Unix time sampled every cron cycle.
 mstime: i64, // 'unixtime' in milliseconds.
 ustime: i64, // 'unixtime' in microseconds.
+// ---PubSub---
+/// Map channels to list of subscribed clients
+pubsub_channels: *dict.Dict(*Object, *ClientList),
+/// A list of pubsub_patterns
+pubsub_patterns: *LinkedList(*pubsub.Pattern, *pubsub.Pattern),
 // Lazy free
 lazyfree_lazy_expire: bool,
 // List parameters
@@ -224,7 +214,7 @@ zset_max_ziplist_value: usize,
 stream_node_max_bytes: usize,
 stream_node_max_entries: i64,
 // Blocked clients
-ready_keys: *ReadyKeys.List, // List of ReadyList structures for BLPOP & co
+ready_keys: *ReadyKeys, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
@@ -271,6 +261,19 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.lruclock.store(evict.getLRUClock());
     server.unixtime = .init(0);
     server.updateCachedTime();
+    server.pubsub_channels = .create(&.{
+        .hash = Object.hash,
+        .eql = Object.equalStrings,
+        .dupeKey = Object.incrRefCount,
+        .freeKey = Object.decrRefCount,
+        .freeVal = ClientList.release,
+    });
+    errdefer server.pubsub_channels.destroy();
+    server.pubsub_patterns = .create(&.{
+        .eql = pubsub.Pattern.eql,
+        .freeVal = pubsub.Pattern.destroy,
+    });
+    errdefer server.pubsub_patterns.release();
     server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
     server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
     server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
@@ -281,7 +284,9 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.zset_max_ziplist_value = OBJ_ZSET_MAX_ZIPLIST_VALUE;
     server.stream_node_max_bytes = OBJ_STREAM_NODE_MAX_BYTES;
     server.stream_node_max_entries = OBJ_STREAM_NODE_MAX_ENTRIES;
-    server.ready_keys = ReadyKeys.List.create(ReadyKeys.vtable);
+    server.ready_keys = ReadyKeys.create(&.{
+        .freeVal = blocked.ReadyList.destroy,
+    });
     errdefer server.ready_keys.release();
     server.unblocked_clients = ClientList.create(&.{});
     errdefer server.unblocked_clients.release();
@@ -704,6 +709,7 @@ fn clientsCronHandleTimeout(cli: *Client, now_ms: i64) bool {
     const now_sec: i64 = @divFloor(now_ms, std.time.ms_per_s);
     if (server.maxidletime > 0 and
         cli.flags & CLIENT_BLOCKED == 0 and // no timeout for BLPOP
+        cli.flags & CLIENT_PUBSUB == 0 and // no timeout for Pub/Sub clients
         (now_sec - cli.lastinteraction > server.maxidletime))
     {
         log.debug("Closing idle client", .{});
@@ -823,6 +829,18 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         return true;
     }
 
+    // Only allow SUBSCRIBE and UNSUBSCRIBE in the context of Pub/Sub
+    if (cli.flags & CLIENT_PUBSUB != 0 and
+        cli.cmd.?.proc != pingCommand and
+        cli.cmd.?.proc != pubsub.subscribeCommand and
+        cli.cmd.?.proc != pubsub.unsubscribeCommand and
+        cli.cmd.?.proc != pubsub.psubscribeCommand and
+        cli.cmd.?.proc != pubsub.punsubscribeCommand)
+    {
+        cli.addReplyErr("only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context");
+        return true;
+    }
+
     self.call(cli, 0);
 
     if (server.ready_keys.len > 0) {
@@ -888,6 +906,9 @@ pub fn destroy() void {
     server.ready_keys.release();
     server.unblocked_clients.release();
 
+    server.pubsub_channels.destroy();
+    server.pubsub_patterns.release();
+
     for (server.ipfd[0..server.ipfd_count]) |fd| {
         posix.close(fd);
     }
@@ -928,7 +949,8 @@ pub fn authCommand(cli: *Client) void {
     cli.addReplyErr("invalid password");
 }
 
-// PING
+/// The PING command. It works in a different way if the client is in
+/// in Pub/Sub mode.
 pub fn pingCommand(cli: *Client) void {
     // The command takes zero or one arguments.
     if (cli.argc > 2) {
@@ -939,10 +961,20 @@ pub fn pingCommand(cli: *Client) void {
         return;
     }
 
-    if (cli.argc == 1) {
-        cli.addReply(shared.pong);
+    if (cli.flags & CLIENT_PUBSUB != 0) {
+        cli.addReply(shared.mbulkhdr[2]);
+        cli.addReplyBulkString("pong");
+        if (cli.argc == 1) {
+            cli.addReplyBulkString("");
+        } else {
+            cli.addReplyBulk(cli.argv.?[1]);
+        }
     } else {
-        cli.addReplyBulk(cli.argv.?[1]);
+        if (cli.argc == 1) {
+            cli.addReply(shared.pong);
+        } else {
+            cli.addReplyBulk(cli.argv.?[1]);
+        }
     }
 }
 
@@ -997,7 +1029,6 @@ const raxlib = @import("rax/rax.zig").rax;
 const bio = @import("bio.zig");
 const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
-pub const ClientList = LinkedList(*Client, *Client);
 pub const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const c = @cImport({
@@ -1005,3 +1036,4 @@ const c = @cImport({
 });
 const assert = std.debug.assert;
 const hasher = @import("hasher.zig");
+const pubsub = @import("pubsub.zig");
