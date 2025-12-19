@@ -131,7 +131,10 @@ fn del(cli: *Client, lazy: bool) void {
             lazyfree.asyncDelete(cli.db, key)
         else
             cli.db.syncDelete(key);
-        if (deleted) numdel += 1;
+        if (deleted) {
+            cli.db.signalModifiedKey(key);
+            numdel += 1;
+        }
     }
     cli.addReplyLongLong(numdel);
 }
@@ -174,6 +177,8 @@ fn rename(cli: *Client, nx: bool) void {
         cli.db.setExpire(cli, newkey, expire);
     }
     _ = cli.db.delete(key);
+    cli.db.signalModifiedKey(key);
+    cli.db.signalModifiedKey(newkey);
 
     cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
@@ -212,15 +217,18 @@ pub const Database = struct {
         }
     };
 
-    const Expires = dict.Dict(sds.String, i64);
-    const BlockingKeys = dict.Dict(*Object, *Server.ClientList);
-    const ReadyKeys = dict.Dict(*Object, void);
-
-    id: usize, // Database ID
-    dict: *Hash.Map, // The keyspace for this DB
-    expires: *Expires, // Timeout of keys with a timeout set
-    blocking_keys: *BlockingKeys, // Keys with clients waiting for data (BLPOP)
-    ready_keys: *ReadyKeys, // Blocked keys that received a PUSH
+    /// Database ID
+    id: usize,
+    /// The keyspace for this DB
+    dict: *Hash.Map,
+    /// Timeout of keys with a timeout set
+    expires: *dict.Dict(sds.String, i64),
+    /// Keys with clients waiting for data (BLPOP)
+    blocking_keys: *dict.Dict(*Object, *Server.ClientList),
+    /// Blocked keys that received a PUSH
+    ready_keys: *dict.Dict(*Object, void),
+    /// WATCHED keys for MULTI/EXEC CAS
+    watched_keys: *dict.Dict(*Object, *Server.ClientList),
 
     pub fn create(id: usize) Database {
         return .{
@@ -250,14 +258,22 @@ pub const Database = struct {
                 .dupeKey = Object.incrRefCount,
                 .freeKey = Object.decrRefCount,
             }),
+            .watched_keys = .create(&.{
+                .hash = Object.hash,
+                .eql = Object.eql,
+                .dupeKey = Object.incrRefCount,
+                .freeKey = Object.decrRefCount,
+                .freeVal = Server.ClientList.release,
+            }),
         };
     }
 
-    /// Update LFU when an object is accessed.
-    /// Firstly, decrement the counter if the decrement time is reached.
-    /// Then logarithmically increment the counter, and update the access time.
     /// High level Set operation. This function can be used in order to set
     /// a key, whatever it was existing or not, to a new object.
+    ///
+    /// 1) The ref count of the value object is incremented.
+    /// 2) clients WATCHing for the destination key notified.
+    /// 3) The expire time of the key is reset (the key is made persistent).
     ///
     /// All the new keys in the database should be created via this interface.
     pub fn setKey(self: *Database, key: *Object, val: *Object) void {
@@ -267,6 +283,7 @@ pub const Database = struct {
             self.overwrite(key, val);
         }
         _ = self.removeExpire(key);
+        self.signalModifiedKey(key);
     }
 
     /// Add the key to the DB. The program is aborted if the key already exists.
@@ -454,6 +471,11 @@ pub const Database = struct {
         return self.lookupKey(key, flags);
     }
 
+    /// Every time a key in the database is modified the function is called.
+    pub fn signalModifiedKey(self: *Database, key: *Object) void {
+        multi.touchWatchedKey(self, key);
+    }
+
     /// Low level key lookup API, not actually called directly from commands
     /// implementations that should instead rely on lookupKeyRead(),
     /// lookupKeyWrite() and lookupKeyReadWithFlags().
@@ -472,6 +494,9 @@ pub const Database = struct {
         return val;
     }
 
+    /// Update LFU when an object is accessed.
+    /// Firstly, decrement the counter if the decrement time is reached.
+    /// Then logarithmically increment the counter, and update the access time.
     fn updateLFU(obj: *Object) void {
         var counter: u8 = evict.LFUDecrAndReturn(obj);
         counter = evict.LFULogIncr(counter);
@@ -557,16 +582,13 @@ pub const Database = struct {
         self.expires.destroy();
         self.blocking_keys.destroy();
         self.ready_keys.destroy();
+        self.watched_keys.destroy();
         self.* = undefined;
     }
 };
 
 pub const Scan = struct {
     pub const Keys = list.List(void, *Object);
-
-    const vtable: *const Keys.VTable = &.{
-        .freeVal = Object.decrRefCount,
-    };
 
     /// This function implements SCAN, HSCAN and SSCAN commands.
     /// If object 'o' is passed, then it must be a Hash or Set object, otherwise
@@ -599,7 +621,9 @@ pub const Scan = struct {
         // zig fmt: on
 
         const argv = cli.argv.?;
-        var keys: *Keys = Keys.create(vtable);
+        var keys: *Keys = Keys.create(&.{
+            .freeVal = Object.decrRefCount,
+        });
         defer keys.release();
         var count: i64 = 10;
         var pat: ?sds.String = null;
@@ -801,3 +825,4 @@ const ZipList = @import("ZipList.zig");
 const IntSet = @import("IntSet.zig");
 const hasher = @import("hasher.zig");
 const zset = @import("t_zset.zig");
+const multi = @import("multi.zig");

@@ -32,10 +32,10 @@ pub fn rpopCommand(cli: *Client) void {
 pub fn rpoplpushCommand(cli: *Client) void {
     const argv = cli.argv.?;
 
-    const srckey = argv[1];
+    const touchedkey = argv[1];
     const srcobj = cli.db.lookupKeyWriteOrReply(
         cli,
-        srckey,
+        touchedkey,
         Server.shared.nullbulk,
     ) orelse return;
     if (srcobj.checkTypeOrReply(cli, .list)) {
@@ -54,8 +54,9 @@ pub fn rpoplpushCommand(cli: *Client) void {
     rpoplpush(cli, dstkey, dstobj, value);
 
     if (List.length(srcobj) == 0) {
-        _ = cli.db.delete(srckey);
+        _ = cli.db.delete(touchedkey);
     }
+    cli.db.signalModifiedKey(touchedkey);
 }
 
 /// LINSERT key <BEFORE | AFTER> pivot element
@@ -98,6 +99,7 @@ pub fn linsertCommand(cli: *Client) void {
     }
     if (inserted) {
         cli.addReplyLongLong(List.length(lobj));
+        cli.db.signalModifiedKey(key);
         return;
     }
     cli.addReply(Server.shared.cnegone);
@@ -163,6 +165,7 @@ pub fn lsetCommand(cli: *Client) void {
     const element = sds.castBytes(argv[3].v.ptr);
     if (ql.replaceAtIndex(index, element)) {
         cli.addReply(Server.shared.ok);
+        cli.db.signalModifiedKey(key);
         return;
     }
     cli.addReply(Server.shared.outofrangeerr);
@@ -278,6 +281,7 @@ pub fn ltrimCommand(cli: *Client) void {
     if (List.length(lobj) == 0) {
         _ = cli.db.delete(key);
     }
+    cli.db.signalModifiedKey(key);
     cli.addReply(Server.shared.ok);
 }
 
@@ -318,11 +322,12 @@ pub fn lremCommand(cli: *Client) void {
             }
         }
     }
-
+    if (removed > 0) {
+        cli.db.signalModifiedKey(key);
+    }
     if (List.length(lobj) == 0) {
         _ = cli.db.delete(key);
     }
-
     cli.addReplyLongLong(removed);
 }
 
@@ -347,6 +352,13 @@ pub fn brpoplpushCommand(cli: *Client) void {
     ) orelse return;
 
     const srcobj = cli.db.lookupKeyWrite(argv[1]) orelse {
+        if (cli.flags & Server.CLIENT_MULTI != 0) {
+            // Blocking against an empty list in a multi state
+            // returns immediately.
+            cli.addReply(Server.shared.nullbulk);
+            return;
+        }
+        // The list is empty and the client blocks.
         const keys = argv[1..2];
         const target = argv[2];
         blocked.blockForKeys(
@@ -395,6 +407,14 @@ fn bpop(cli: *Client, where: Where) void {
         if (List.length(lobj) == 0) {
             _ = cli.db.delete(key);
         }
+        cli.db.signalModifiedKey(key);
+        return;
+    }
+
+    // If we are inside a MULTI/EXEC and the list is empty the only thing
+    // we can do is treating it as a timeout (even with timeout 0).
+    if (cli.flags & Server.CLIENT_MULTI != 0) {
+        cli.addReply(Server.shared.nullmultibulk);
         return;
     }
 
@@ -428,6 +448,7 @@ fn rpoplpush(
         cli.db.add(dstkey, l);
         break :blk l;
     };
+    cli.db.signalModifiedKey(dstkey);
     List.push(destlist, value, .head);
     // Always send the pushed value to the client.
     cli.addReplyBulk(value);
@@ -447,8 +468,13 @@ fn push(cli: *Client, where: Where) void {
         return;
     }
 
+    var pushed: i64 = 0;
     for (argv[2..cli.argc]) |element| {
         List.push(list, element, where);
+        pushed += 1;
+    }
+    if (pushed > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(List.length(list));
 }
@@ -468,8 +494,13 @@ fn pushx(cli: *Client, where: Where) void {
         return;
     }
 
+    var pushed: i64 = 0;
     for (argv[2..cli.argc]) |element| {
         List.push(list, element, where);
+        pushed += 1;
+    }
+    if (pushed > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(List.length(list));
 }
@@ -492,10 +523,10 @@ fn pop(cli: *Client, where: Where) void {
     };
     defer value.decrRefCount();
     cli.addReplyBulk(value);
-
     if (List.length(lobj) == 0) {
         _ = cli.db.delete(key);
     }
+    cli.db.signalModifiedKey(key);
 }
 
 /// This is a helper function for blocked.handleClientsBlockedOnLists().

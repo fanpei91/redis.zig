@@ -19,6 +19,9 @@ pub fn saddCommand(cli: *Client) void {
             added += 1;
         }
     }
+    if (added > 0) {
+        cli.db.signalModifiedKey(key);
+    }
     cli.addReplyLongLong(added);
 }
 
@@ -46,6 +49,9 @@ pub fn sremCommand(cli: *Client) void {
                 break;
             }
         }
+    }
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(deleted);
 }
@@ -124,6 +130,9 @@ pub fn smoveCommand(cli: *Client) void {
         cli.db.add(dstkey, o);
         break :blk o;
     };
+
+    cli.db.signalModifiedKey(srckey);
+    cli.db.signalModifiedKey(dstkey);
 
     _ = Set.add(dst, member);
     cli.addReply(Server.shared.cone);
@@ -342,7 +351,9 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
             cli.db.lookupKeyRead(key);
         if (sobj == null) {
             if (dstkey) |dst| {
-                _ = cli.db.delete(dst);
+                if (cli.db.delete(dst)) {
+                    cli.db.signalModifiedKey(dst);
+                }
                 cli.addReply(Server.shared.czero);
             } else {
                 cli.addReply(Server.shared.emptymultibulk);
@@ -439,8 +450,11 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
         const len = Set.size(dstset.?);
         if (len > 0) {
             cli.db.add(dst, dstset.?);
+            cli.addReplyLongLong(@intCast(len));
+        } else {
+            cli.addReply(Server.shared.czero);
         }
-        cli.addReplyLongLong(@intCast(len));
+        cli.db.signalModifiedKey(dst);
     } else {
         cli.setDeferredMultiBulkLength(replylen.?, cardinality);
     }
@@ -619,8 +633,11 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     const len = Set.size(dstset);
     if (len > 0) {
         cli.db.add(dstkey.?, dstset);
+        cli.addReplyLongLong(@intCast(len));
+    } else {
+        cli.addReply(Server.shared.czero);
     }
-    cli.addReplyLongLong(@intCast(len));
+    cli.db.signalModifiedKey(dstkey.?);
 }
 
 fn sortSetsByReversedCardinality(_: void, lhs: ?*Object, rhs: ?*Object) bool {
@@ -674,9 +691,10 @@ pub fn spopCommand(cli: *Client) void {
     cli.addReplyBulk(ele);
 
     if (Set.size(sobj) == 0) {
-        const ok = cli.db.delete(key);
-        assert(ok);
+        assert(cli.db.delete(key));
     }
+    // Set has been modified
+    cli.db.signalModifiedKey(key);
 }
 
 /// How many times bigger should be the set compared to the remaining size
@@ -727,8 +745,8 @@ fn spopWithCount(cli: *Client) void {
         };
         it.release();
         // Delete the set as it is now empty
-        const ok = cli.db.delete(key);
-        assert(ok);
+        assert(cli.db.delete(key));
+        cli.db.signalModifiedKey(key);
         return;
     }
 
@@ -809,6 +827,8 @@ fn spopWithCount(cli: *Client) void {
         // Assign the new set as the key value.
         cli.db.overwrite(key, newset);
     }
+
+    cli.db.signalModifiedKey(key);
 }
 
 /// SSCAN key cursor [MATCH pattern] [COUNT count]

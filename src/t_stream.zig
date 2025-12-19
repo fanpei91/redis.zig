@@ -96,6 +96,8 @@ pub fn xaddCommand(cli: *CLient) void {
 
     cli.addReplyStreamID(&id);
 
+    cli.db.signalModifiedKey(key);
+
     if (maxlen >= 0) {
         _ = stream.trim(@intCast(maxlen), approx_maxlen);
     }
@@ -140,6 +142,9 @@ pub fn xdelCommand(cli: *CLient) void {
     for (argv[2..cli.argc]) |arg| {
         assert(Stream.Id.parseOrReply(null, arg, &id, 0, true));
         deleted += @intFromBool(stream.delete(&id));
+    }
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(deleted);
 }
@@ -308,6 +313,9 @@ pub fn xtrimCommand(cli: *CLient) void {
     } else {
         cli.addReplyErr("XTRIM called without an option to trim the stream");
         return;
+    }
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(@intCast(deleted));
 }
@@ -580,6 +588,12 @@ pub fn xreadCommand(cli: *CLient) void {
 
         // Block if needed.
         if (timeout != -1) {
+            // If we are inside a MULTI/EXEC and the list is empty the only thing
+            // we can do is treating it as a timeout (even with timeout 0).
+            if (cli.flags & Server.CLIENT_MULTI != 0) {
+                cli.addReply(Server.shared.nullmultibulk);
+                break :biz;
+            }
             blocked.blockForKeys(
                 cli,
                 Server.BLOCKED_STREAM,

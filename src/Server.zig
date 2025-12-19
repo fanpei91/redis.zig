@@ -38,11 +38,14 @@ pub const PROTO_REQ_INLINE = 1;
 pub const PROTO_REQ_MULTIBULK = 2;
 
 // Client flags
+pub const CLIENT_MULTI = (1 << 3); // This client is in a MULTI context
 pub const CLIENT_BLOCKED = (1 << 4); // The client is waiting in a blocking operation
+pub const CLIENT_DIRTY_CAS = (1 << 5); // Watched keys modified. EXEC will fail.
 pub const CLIENT_CLOSE_AFTER_REPLY = (1 << 6); // Close after writing entire reply.
 pub const CLIENT_UNBLOCKED = (1 << 7); // This client was unblocked and is stored in server.unblocked_clients
 pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
+pub const CLIENT_DIRTY_EXEC = (1 << 12); // EXEC will fail for errors while queueing
 pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
 pub const CLIENT_PUBSUB = (1 << 18); // Client is in Pub/Sub mode.
 
@@ -144,8 +147,8 @@ const Commands = struct {
     }
 };
 
-pub const ClientList = LinkedList(*Client, *Client);
-const ReadyKeys = LinkedList(*blocked.ReadyList, *blocked.ReadyList);
+pub const ClientList = List(*Client, *Client);
+const ReadyKeys = List(*blocked.ReadyList, *blocked.ReadyList);
 
 const Server = @This();
 // General
@@ -199,7 +202,7 @@ ustime: i64, // 'unixtime' in microseconds.
 /// Map channels to list of subscribed clients
 pubsub_channels: *dict.Dict(*Object, *ClientList),
 /// A list of pubsub_patterns
-pubsub_patterns: *LinkedList(*pubsub.Pattern, *pubsub.Pattern),
+pubsub_patterns: *List(*pubsub.Pattern, *pubsub.Pattern),
 // Lazy free
 lazyfree_lazy_expire: bool,
 // List parameters
@@ -787,6 +790,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     cli.cmd = self.lookupCommand(cmd);
     cli.lastcmd = cli.cmd;
     if (cli.cmd == null) {
+        multi.flagTransaction(cli);
         var args = sds.empty(allocator.child);
         defer sds.free(allocator.child, args);
         var i: usize = 1;
@@ -814,6 +818,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     }
     const arity = cli.cmd.?.arity;
     if ((arity > 0 and arity != cli.argc) or (cli.argc < -arity)) {
+        multi.flagTransaction(cli);
         cli.addReplyErrFormat(
             "wrong number of arguments for '{s}' command",
             .{cli.cmd.?.name},
@@ -825,6 +830,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     if (server.requirepass != null and !cli.authenticated and
         cli.cmd.?.proc != authCommand)
     {
+        multi.flagTransaction(cli);
         cli.addReply(shared.noautherr);
         return true;
     }
@@ -841,10 +847,20 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         return true;
     }
 
-    self.call(cli, 0);
-
-    if (server.ready_keys.len > 0) {
-        blocked.handleClientsBlockedOnKeys();
+    // Exec the command
+    if (cli.flags & CLIENT_MULTI != 0 and
+        cli.cmd.?.proc != multi.execCommand and
+        cli.cmd.?.proc != multi.discardCommand and
+        cli.cmd.?.proc != multi.multiCommand and
+        cli.cmd.?.proc != multi.watchCommand)
+    {
+        multi.queueMultiCommand(cli);
+        cli.addReply(Server.shared.queued);
+    } else {
+        self.call(cli, 0);
+        if (server.ready_keys.len > 0) {
+            blocked.handleClientsBlockedOnKeys();
+        }
     }
 
     return true;
@@ -1016,7 +1032,7 @@ const random = @import("random.zig");
 const config = @import("config.zig");
 const ae = @import("ae.zig");
 const util = @import("util.zig");
-const LinkedList = @import("list.zig").List;
+const List = @import("list.zig").List;
 const networking = @import("networking.zig");
 const anet = @import("anet.zig");
 const log = std.log.scoped(.server);
@@ -1037,3 +1053,4 @@ const c = @cImport({
 const assert = std.debug.assert;
 const hasher = @import("hasher.zig");
 const pubsub = @import("pubsub.zig");
+const multi = @import("multi.zig");

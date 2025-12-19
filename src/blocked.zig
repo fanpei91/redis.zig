@@ -177,6 +177,8 @@ pub fn handleClientsBlockedOnKeys() void {
             if (List.length(coll) == 0) {
                 assert(rl.db.delete(rl.key));
             }
+            // We don't call rl.db.signalModifiedKey() as it was already called
+            // when an element was pushed on the list.
         }
         // Serve clients blocked on sorted set key.
         else if (coll.type == .zset) {

@@ -24,15 +24,13 @@ const ERR_DENIED =
 
 pub const Client = struct {
     const BlockingState = struct {
-        const Keys = dict.Dict(*Object, *blocked.BlockInfo);
-
         /// Blocking operation timeout(ms). If UNIX current time
         /// is > timeout then the operation timed out
         timeout: i64,
 
         /// The keys we are waiting to terminate a blocking
         /// operation such as BLPOP or XREAD. Or NULL.
-        keys: *Keys,
+        keys: *dict.Dict(*Object, *blocked.BlockInfo),
 
         /// The key that should receive the element,
         /// for BRPOPLPUSH.
@@ -52,7 +50,7 @@ pub const Client = struct {
         fn create() BlockingState {
             return .{
                 .timeout = 0,
-                .keys = Keys.create(&.{
+                .keys = .create(&.{
                     .hash = Object.hash,
                     .eql = Object.eql,
                     .dupeKey = Object.incrRefCount,
@@ -117,11 +115,6 @@ pub const Client = struct {
         }
     };
 
-    const PubSub = struct {
-        const Channels = dict.Dict(*Object, void);
-        const Patterns = list.List(*Object, *Object);
-    };
-
     /// Client incremental unique ID.
     id: usize,
     /// Client socket.
@@ -152,25 +145,26 @@ pub const Client = struct {
     authenticated: bool,
     /// Time of the last interaction, used for timeout
     lastinteraction: i64,
-    // ---Response---
     /// List of reply objects to send to the client.
-    reply: *LinkedList(void, *ReplyBlock),
+    reply: *List(void, *ReplyBlock),
     /// Total bytes of objects in reply list.
     reply_bytes: usize,
     /// Amount of bytes already sent in the current buffer or object being sent.
     sentlen: usize,
     buf: [Server.PROTO_REPLY_CHUNK_BYTES]u8,
     bufpos: usize,
-    // ---Blocking---
     /// Type of blocking op if Server.CLIENT_BLOCKED.
     btype: i32,
     /// blocking state
     bpop: BlockingState,
-    // ---PubSub---
     /// channels a client is interested in (SUBSCRIBE)
-    pubsub_channels: *PubSub.Channels,
+    pubsub_channels: *dict.Dict(*Object, void),
     /// patterns a client is interested in (SUBSCRIBE)
-    pubsub_patterns: *PubSub.Patterns,
+    pubsub_patterns: *list.List(*Object, *Object),
+    /// Keys WATCHED for MULTI/EXEC CAS
+    watched_keys: *list.List(void, *multi.WatchedKey),
+    /// MULTI/EXEC state
+    mstate: multi.State,
 
     pub fn create(fd: i32, flags: i32) !*Client {
         const cli = allocator.create(Client);
@@ -233,7 +227,11 @@ pub const Client = struct {
             .setVal = Object.incrRefCount,
             .freeVal = Object.decrRefCount,
         });
+        cli.watched_keys = .create(&.{
+            .freeVal = multi.WatchedKey.destroy,
+        });
         if (fd != -1) cli.link();
+        cli.mstate.init();
         return cli;
     }
 
@@ -1039,6 +1037,10 @@ pub const Client = struct {
         }
         self.bpop.keys.destroy();
 
+        // UNWATCH all the keys
+        multi.unwatchAllKeys(self);
+        self.watched_keys.release();
+
         // Unsubscribe from all the pubsub channels
         _ = pubsub.unsubscribeAllChannels(self, false);
         _ = pubsub.unsubscribeAllPatterns(self, false);
@@ -1054,6 +1056,9 @@ pub const Client = struct {
         // places where active clients may be referenced.
         self.unlink();
 
+        // Release other dynamically allocated client structure fields,
+        // and finally release the client structure itself.
+        self.mstate.deinit();
         allocator.destroy(self);
     }
 
@@ -1284,7 +1289,7 @@ const sds = @import("sds.zig");
 const Object = @import("Object.zig");
 const server = &Server.instance;
 const util = @import("util.zig");
-const LinkedList = @import("list.zig").List;
+const List = @import("list.zig").List;
 const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const blocked = @import("blocked.zig");
@@ -1294,3 +1299,4 @@ const raxlib = @import("rax/rax.zig").rax;
 const Stream = @import("t_stream.zig").Stream;
 const list = @import("list.zig");
 const pubsub = @import("pubsub.zig");
+const multi = @import("multi.zig");

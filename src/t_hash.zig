@@ -32,6 +32,7 @@ pub fn hsetCommand(cli: *Client) void {
         // HMSET
         cli.addReply(Server.shared.ok);
     }
+    cli.db.signalModifiedKey(argv[1]);
 }
 
 /// HINCRBY key field increment
@@ -68,6 +69,7 @@ pub fn hincrbyCommand(cli: *Client) void {
         sds.fromLonglong(allocator.child, value),
         Server.HASH_SET_TAKE_VALUE,
     );
+    cli.db.signalModifiedKey(key);
     cli.addReplyLongLong(value);
 }
 
@@ -109,13 +111,15 @@ pub fn hincrbyfloatCommand(cli: *Client) void {
         sds.new(allocator.child, s),
         Server.HASH_SET_TAKE_VALUE,
     );
+    cli.db.signalModifiedKey(key);
     cli.addReplyBulkString(s);
 }
 
 /// HSETNX key field value
 pub fn hsetnxCommand(cli: *Client) void {
     const argv = cli.argv.?;
-    const hobj = Hash.lookupCreateOrReply(argv[1], cli) orelse {
+    const key = argv[1];
+    const hobj = Hash.lookupCreateOrReply(key, cli) orelse {
         return;
     };
     Hash.tryConversion(hobj, argv[2..cli.argc]);
@@ -129,6 +133,7 @@ pub fn hsetnxCommand(cli: *Client) void {
     const value = sds.cast(argv[3].v.ptr);
     const ret = Hash.set(hobj, field, value, Server.HASH_SET_COPY);
     assert(ret == .insert);
+    cli.db.signalModifiedKey(key);
     cli.addReply(Server.shared.cone);
 }
 
@@ -195,6 +200,9 @@ pub fn hdelCommand(cli: *Client) void {
                 break;
             }
         }
+    }
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(deleted);
 }

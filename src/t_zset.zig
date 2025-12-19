@@ -139,6 +139,10 @@ fn zadd(cli: *Client, flags: i32) void {
         // ZADD
         cli.addReplyLongLong(if (ch) added + updated else added);
     }
+
+    if (added > 0 or updated > 0) {
+        cli.db.signalModifiedKey(key);
+    }
 }
 
 /// ZCARD key
@@ -241,6 +245,9 @@ pub fn zremCommand(cli: *Client) void {
             assert(ok);
             break;
         }
+    }
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
     cli.addReplyLongLong(deleted);
 }
@@ -352,6 +359,10 @@ fn zremrangeby(cli: *Client, rangetype: RangeType) void {
         }
     } else {
         @panic("Unknown sorted set encoding");
+    }
+
+    if (deleted > 0) {
+        cli.db.signalModifiedKey(key);
     }
 
     cli.addReplyLongLong(@intCast(deleted));
@@ -1137,6 +1148,11 @@ pub fn zpop(
         }
         assert(Zset.del(zset, ele));
 
+        // Do this only for the first iteration.
+        if (arraylen == 0) {
+            cli.db.signalModifiedKey(key);
+        }
+
         cli.addReplyBulkString(sds.asBytes(ele));
         cli.addReplyDouble(score);
         arraylen += 2;
@@ -1186,6 +1202,13 @@ fn bzpop(cli: *Client, where: Where) void {
         zpop(cli, keys[i .. i + 1], where, true, null);
         return;
     }
+    // If we are inside a MULTI/EXEC and the zset is empty the only thing
+    // we can do is treating it as a timeout (even with timeout 0).
+    if (cli.flags & Server.CLIENT_MULTI != 0) {
+        cli.addReply(Server.shared.nullmultibulk);
+        return;
+    }
+
     // If the keys do not exist we must block
     blocked.blockForKeys(cli, Server.BLOCKED_ZSET, keys, timeout, null, null);
 }
@@ -1395,13 +1418,17 @@ fn unionInter(cli: *Client, destkey: *Object, op: Operation) void {
         @panic("Unknown operator");
     }
 
-    _ = cli.db.delete(destkey);
+    const touched = cli.db.delete(destkey);
     if (dstset.sl.length > 0) {
         Zset.convertToZipListIfNeeded(dstobj, maxelelen, totelelen);
         cli.db.add(destkey, dstobj);
         cli.addReplyLongLong(@intCast(Zset.length(dstobj)));
+        cli.db.signalModifiedKey(destkey);
     } else {
         cli.addReply(Server.shared.czero);
+        if (touched) {
+            cli.db.signalModifiedKey(destkey);
+        }
     }
 }
 
@@ -2216,7 +2243,7 @@ pub const SkipListSet = struct {
     pub const HashMap = dict.Dict(sds.String, *f64);
 
     sl: *SkipList,
-    dict: *HashMap,
+    dict: *dict.Dict(sds.String, *f64),
 
     pub fn create() *SkipListSet {
         const z = allocator.create(SkipListSet);

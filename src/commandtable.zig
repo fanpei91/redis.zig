@@ -139,6 +139,11 @@ pub const table = [_]Command{
     .{ .name = "punsubscribe", .proc = pubsub.punsubscribeCommand, .arity = -1 },
     .{ .name = "pubsub", .proc = pubsub.pubsubCommand, .arity = -2 },
     .{ .name = "publish", .proc = pubsub.publishCommand, .arity = 3 },
+    .{ .name = "watch", .proc = multi.watchCommand, .arity = -2 },
+    .{ .name = "unwatch", .proc = multi.unwatchCommand, .arity = 1 },
+    .{ .name = "multi", .proc = multi.multiCommand, .arity = 1 },
+    .{ .name = "discard", .proc = multi.discardCommand, .arity = 1 },
+    .{ .name = "exec", .proc = multi.execCommand, .arity = 1 },
 };
 
 pub const Command = struct {
@@ -161,3 +166,4 @@ const expire = @import("expire.zig");
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
 const pubsub = @import("pubsub.zig");
+const multi = @import("multi.zig");

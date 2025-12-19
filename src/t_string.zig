@@ -193,6 +193,7 @@ pub fn incrbyfloatCommand(cli: *Client) void {
     } else {
         cli.db.add(key, new);
     }
+    cli.db.signalModifiedKey(key);
     cli.addReplyBulk(new);
 }
 
@@ -242,6 +243,7 @@ pub fn appendCommand(cli: *Client) void {
         cli.db.add(key, append);
         totlen = append.stringLen();
     }
+    cli.db.signalModifiedKey(key);
     cli.addReplyLongLong(@intCast(totlen));
 }
 
@@ -296,13 +298,16 @@ pub fn setrangeCommand(cli: *Client) void {
     }
     const obj = o.?;
     var s = sds.cast(obj.v.ptr);
-    obj.v = .{ .ptr = sds.growZero(allocator.child, s, length) };
-    s = sds.cast(obj.v.ptr);
-    memcpy(
-        s + @as(usize, @intCast(offset)),
-        value,
-        sds.getLen(value),
-    );
+    if (sds.getLen(value) > 0) {
+        obj.v = .{ .ptr = sds.growZero(allocator.child, s, length) };
+        s = sds.cast(obj.v.ptr);
+        memcpy(
+            s + @as(usize, @intCast(offset)),
+            value,
+            sds.getLen(value),
+        );
+        cli.db.signalModifiedKey(key);
+    }
     cli.addReplyLongLong(@intCast(sds.getLen(s)));
 }
 
@@ -462,6 +467,8 @@ fn incr(cli: *Client, by: i64) void {
             cli.db.add(key, new);
         }
     }
+
+    cli.db.signalModifiedKey(key);
 
     cli.addReply(Server.shared.colon);
     cli.addReply(new);

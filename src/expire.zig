@@ -83,10 +83,12 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     if (checkAlreadyExpired(when)) {
         const deleted = cli.db.delete(key);
         assert(deleted);
+        cli.db.signalModifiedKey(key);
         cli.addReply(Server.shared.cone);
         return;
     }
     cli.db.setExpire(cli, key, when);
+    cli.db.signalModifiedKey(key);
     cli.addReply(Server.shared.cone);
 }
 
