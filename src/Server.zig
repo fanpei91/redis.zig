@@ -37,17 +37,48 @@ pub const PROTO_REPLY_CHUNK_BYTES = 16 * 1024; // 16k output buffer
 pub const PROTO_REQ_INLINE = 1;
 pub const PROTO_REQ_MULTIBULK = 2;
 
+// Command flags. Please check the command table defined in the redis.c file
+// for more information about the meaning of every flag.
+pub const CMD_WRITE = (1 << 0); // "w" flag
+pub const CMD_READONLY = (1 << 1); // "r" flag
+pub const CMD_DENYOOM = (1 << 2); // "m" flag
+pub const CMD_MODULE = (1 << 3); // Command exported by module.
+pub const CMD_ADMIN = (1 << 4); // "a" flag
+pub const CMD_PUBSUB = (1 << 5); // "p" flag
+pub const CMD_NOSCRIPT = (1 << 6); // "s" flag
+pub const CMD_RANDOM = (1 << 7); // "R" flag
+pub const CMD_SORT_FOR_SCRIPT = (1 << 8); // "S" flag
+pub const CMD_LOADING = (1 << 9); // "l" flag
+pub const CMD_STALE = (1 << 10); // "t" flag
+pub const CMD_SKIP_MONITOR = (1 << 11); // "M" flag
+pub const CMD_ASKING = (1 << 12); // "k" flag
+pub const CMD_FAST = (1 << 13); // "F" flag
+pub const CMD_MODULE_GETKEYS = (1 << 14); // Use the modules getkeys interface.
+pub const CMD_MODULE_NO_CLUSTER = (1 << 15); // Deny on Redis Cluster.
+
+// Command call flags, see call() function
+pub const CMD_CALL_NONE = 0;
+pub const CMD_CALL_SLOWLOG = (1 << 0);
+pub const CMD_CALL_STATS = (1 << 1);
+pub const CMD_CALL_PROPAGATE_AOF = (1 << 2);
+pub const CMD_CALL_PROPAGATE_REPL = (1 << 3);
+pub const CMD_CALL_PROPAGATE = (CMD_CALL_PROPAGATE_AOF | CMD_CALL_PROPAGATE_REPL);
+pub const CMD_CALL_FULL = (CMD_CALL_SLOWLOG | CMD_CALL_STATS | CMD_CALL_PROPAGATE);
+
 // Client flags
 pub const CLIENT_MULTI = (1 << 3); // This client is in a MULTI context
 pub const CLIENT_BLOCKED = (1 << 4); // The client is waiting in a blocking operation
 pub const CLIENT_DIRTY_CAS = (1 << 5); // Watched keys modified. EXEC will fail.
 pub const CLIENT_CLOSE_AFTER_REPLY = (1 << 6); // Close after writing entire reply.
 pub const CLIENT_UNBLOCKED = (1 << 7); // This client was unblocked and is stored in server.unblocked_clients
+pub const CLIENT_LUA = (1 << 8); // This is a non connected client used by Lua
 pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
 pub const CLIENT_DIRTY_EXEC = (1 << 12); // EXEC will fail for errors while queueing
 pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
 pub const CLIENT_PUBSUB = (1 << 18); // Client is in Pub/Sub mode.
+pub const CLIENT_LUA_DEBUG_SYNC = (1 << 26); // EVAL debugging without fork()
+pub const CLIENT_PROTECTED = (1 << 28); // Client should not be freed for now.
 
 // Client block type (btype field in Client structure)
 // if CLIENT_BLOCKED flag is set.
@@ -219,6 +250,8 @@ stream_node_max_entries: i64,
 // Blocked clients
 ready_keys: *ReadyKeys, // List of ReadyList structures for BLPOP & co
 unblocked_clients: *ClientList, // list of clients to unblock before next loop
+/// The Lua interpreter. We use just one for all clients
+lua: scripting.Lua,
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
@@ -361,6 +394,9 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
         server.maxmemory = 3 * 1024 * 1024 * 1024; // 3GB
         server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
+
+    server.lua.init(true);
+    errdefer server.lua.deinit();
 
     try bio.init();
 }
@@ -876,11 +912,28 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
 fn populateCommandTable(self: *Server) void {
     for (0..commandtable.table.len) |i| {
         const command = &commandtable.table[i];
-        const added = self.commands.add(
+        for (command.sflags) |f| {
+            switch (f) {
+                'w' => command.flags |= Server.CMD_WRITE,
+                'r' => command.flags |= Server.CMD_READONLY,
+                'm' => command.flags |= Server.CMD_DENYOOM,
+                'a' => command.flags |= Server.CMD_ADMIN,
+                'p' => command.flags |= Server.CMD_PUBSUB,
+                's' => command.flags |= Server.CMD_NOSCRIPT,
+                'R' => command.flags |= Server.CMD_RANDOM,
+                'S' => command.flags |= Server.CMD_SORT_FOR_SCRIPT,
+                'l' => command.flags |= Server.CMD_LOADING,
+                't' => command.flags |= Server.CMD_STALE,
+                'M' => command.flags |= Server.CMD_SKIP_MONITOR,
+                'k' => command.flags |= Server.CMD_ASKING,
+                'F' => command.flags |= Server.CMD_FAST,
+                else => @panic("Unsupported command flag"),
+            }
+        }
+        assert(self.commands.add(
             sds.new(allocator.child, command.name),
             @constCast(command),
-        );
-        assert(added);
+        ));
     }
 }
 
@@ -935,8 +988,8 @@ pub fn destroy() void {
     }
     if (server.sofd != -1) posix.close(server.sofd);
 
+    server.lua.deinit();
     bio.deinit();
-
     shared.destroy();
 
     instance = undefined;
@@ -1041,7 +1094,7 @@ const posix = std.posix;
 const atomic = @import("atomic.zig");
 const Client = networking.Client;
 const Database = @import("db.zig").Database;
-const raxlib = @import("rax/rax.zig").rax;
+const raxlib = @import("rax.zig").rax;
 const bio = @import("bio.zig");
 const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
@@ -1054,3 +1107,5 @@ const assert = std.debug.assert;
 const hasher = @import("hasher.zig");
 const pubsub = @import("pubsub.zig");
 const multi = @import("multi.zig");
+const zlua = @import("zlua");
+const scripting = @import("scripting.zig");

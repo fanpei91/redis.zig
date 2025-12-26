@@ -748,7 +748,7 @@ pub fn getAlloc(s: String) usize {
 /// 2) The string.
 /// 3) The free buffer at the end if any.
 /// 4) The implicit null term.
-pub fn getAllocMemSize(s: String) usize {
+pub fn allocSize(s: String) usize {
     return hdrSize(getType(s)) + getAlloc(s) + 1;
 }
 
@@ -794,7 +794,7 @@ inline fn setBuf(s: String, buf: []const u8) void {
 
 inline fn allocMemSlice(s: String) []u8 {
     const mem: [*]u8 = s - hdrSize(getType(s));
-    return mem[0..getAllocMemSize(s)];
+    return mem[0..allocSize(s)];
 }
 
 fn setAlloc(s: String, new_alloc: usize) void {
@@ -939,11 +939,11 @@ test catRepr {
     try expectEqualStrings("\"\\a\\n\\x00foo\\r\\\"\"", asBytes(ns));
 }
 
-test getAllocMemSize {
+test allocSize {
     const allocator = std.testing.allocator;
     const s = new(allocator, "hello");
     defer free(allocator, s);
-    try expectEqual(@sizeOf(MemSizedHdr5) + 5 + 1, getAllocMemSize(s));
+    try expectEqual(@sizeOf(MemSizedHdr5) + 5 + 1, allocSize(s));
 }
 
 test "incrLen-" {

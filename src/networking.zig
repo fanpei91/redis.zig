@@ -70,7 +70,6 @@ pub const Client = struct {
     pub const ReplyBlock = struct {
         size: usize,
         used: usize,
-        buffer: [0]u8,
 
         fn create(size: usize) *ReplyBlock {
             const ptr = allocator.alignedAlloc(
@@ -99,9 +98,9 @@ pub const Client = struct {
             self.used += src.len;
         }
 
-        fn slice(self: *ReplyBlock, start: usize, end: usize) []u8 {
-            assert(start <= self.size and end <= self.size);
+        pub fn slice(self: *ReplyBlock, start: usize, end: usize) []u8 {
             const buf = self.mem()[@sizeOf(ReplyBlock)..];
+            assert(start <= buf.len and end <= buf.len);
             return buf[start..end];
         }
 
@@ -305,6 +304,43 @@ pub const Client = struct {
     /// raw processInputBuffer().
     pub fn processInputBufferAndReplicate(self: *Client) void {
         self.processInputBuffer();
+    }
+
+    /// This funciton is used when we want to re-enter the event loop but there
+    /// is the risk that the client we are dealing with will be freed in some
+    /// way. This happens for instance in:
+    ///
+    /// * DEBUG RELOAD and similar.
+    /// * When a Lua script is in -BUSY state.
+    ///
+    /// So the function will protect the client by doing two things:
+    ///
+    /// 1) It removes the file events. This way it is not possible that an
+    ///    error is signaled on the socket, freeing the client.
+    /// 2) Moreover it makes sure that if the client is freed in a different code
+    ///    path, it is not really released, but only marked for later release.
+    pub fn protect(self: *Client) !void {
+        self.flags |= Server.CLIENT_PROTECTED;
+        try server.el.deleteFileEvent(
+            self.fd,
+            ae.READABLE | ae.WRITABLE,
+        );
+    }
+
+    /// This will undo the client protection done by protect()
+    pub fn unprotect(self: *Client) !void {
+        if (self.flags & Server.CLIENT_PROTECTED != 0) {
+            self.flags &= ~@as(i32, Server.CLIENT_PROTECTED);
+            try server.el.createFileEvent(
+                self.fd,
+                ae.READABLE,
+                readQueryFromClient,
+                self,
+            );
+            if (self.hasPendingReplies()) {
+                self.installWriteHandler();
+            }
+        }
     }
 
     /// This function is called every time, in the client structure 'c', there is
@@ -909,7 +945,34 @@ pub const Client = struct {
         }
     }
 
+    /// This function is called every time we are going to transmit new data
+    /// to the client. The behavior is the following:
+    ///
+    /// If the client should receive new data (normal clients will) the function
+    /// returns TRUE, and make sure to install the write handler in our event
+    /// loop so that when the socket is writable new data gets written.
+    ///
+    /// If the client should not receive new data, because it is a fake client
+    /// (used to load AOF in memory), a master or because the setup of the write
+    /// handler failed, the function returns FALSE.
+    ///
+    /// The function may return TRUE without actually installing the write
+    /// event handler in the following cases:
+    ///
+    /// 1) The event handler should already be installed since the output buffer
+    ///    already contains something.
+    /// 2) The client is a slave but not yet online, so we want to just accumulate
+    ///    writes in the buffer but not actually sending them yet.
+    ///
+    /// Typically gets called every time a reply is built, before adding more
+    /// data to the clients output buffers. If the function returns FALSE no
+    /// data should be appended to the output buffers.
     fn prepareClientToWrite(self: *Client) bool {
+        // If it's the Lua client we always return ok without installing any
+        // handler since there is no socket at all.
+        if (self.flags & Server.CLIENT_LUA != 0) {
+            return true;
+        }
         // Schedule the client to write the output buffers to the socket, unless
         // it should already be setup to do so (it has already pending data).
         if (!self.hasPendingReplies()) {
@@ -918,10 +981,19 @@ pub const Client = struct {
         return true;
     }
 
-    fn hasPendingReplies(self: *Client) bool {
+    /// Return true if the specified client has pending reply buffers to write to
+    /// the socket.
+    pub fn hasPendingReplies(self: *Client) bool {
         return self.bufpos > 0 or self.reply.len > 0;
     }
 
+    /// This funciton puts the client in the queue of clients that should write
+    /// their output buffers to the socket. Note that it does not *yet* install
+    /// the write handler, to start clients are put in a queue of clients that need
+    /// to write, so we try to do that before returning in the event loop (see the
+    /// handleClientsWithPendingWrites() function).
+    /// If we fail and there is more data to write, compared to what the socket
+    /// buffers can hold, then we'll really install the handler.
     fn installWriteHandler(self: *Client) void {
         if (self.flags & Server.CLIENT_PENDING_WRITE == 0) {
             // Here instead of installing the write handler, we just flag the
@@ -1027,6 +1099,13 @@ pub const Client = struct {
     }
 
     pub fn free(self: *Client) void {
+        // If a client is protected, yet we need to free it right now, make sure
+        // to at least use asynchronous freeing.
+        if (self.flags & Server.CLIENT_PROTECTED != 0) {
+            self.freeAsync();
+            return;
+        }
+
         // Free the query buffer
         sds.free(allocator.child, self.querybuf);
         self.querybuf = undefined;
@@ -1068,7 +1147,11 @@ pub const Client = struct {
     /// because the client should be valid for the continuation of the flow
     /// of the program.
     pub fn freeAsync(self: *Client) void {
-        if (self.flags & Server.CLIENT_CLOSE_ASAP != 0) return;
+        if (self.flags & Server.CLIENT_CLOSE_ASAP != 0 or
+            self.flags & Server.CLIENT_LUA != 0)
+        {
+            return;
+        }
         self.flags |= Server.CLIENT_CLOSE_ASAP;
         server.clients_to_close.append(self);
     }
@@ -1172,6 +1255,12 @@ pub fn handleClientsWithPendingWrites() !usize {
         server.clients_pending_write.removeNode(
             ln,
         );
+
+        // If a client is protected, don't do anything,
+        // that may trigger write error or recreate handler
+        if (cli.flags & Server.CLIENT_PROTECTED != 0) {
+            continue;
+        }
 
         // Try to write buffers to the client socket.
         if (!try cli.write(false)) continue;
@@ -1277,6 +1366,30 @@ fn sendReplyToClient(
     _ = try cli.write(true);
 }
 
+/// This function is called by Redis in order to process a few events from
+/// time to time while blocked into some not interruptible operation.
+/// This allows to reply to clients with the -LOADING error while loading the
+/// data set at startup or after a full resynchronization with the master
+/// and so forth.
+///
+/// It calls the event loop in order to process a few events. Specifically we
+/// try to call the event loop 4 times as long as we receive acknowledge that
+/// some event was processed, in order to go forward with the accept, read,
+/// write, close sequence needed to serve a client.
+///
+/// The function returns the total number of events processed.
+pub fn processEventsWhileBlocked() !usize {
+    const iterations = 4;
+    var count: usize = 0;
+    for (0..iterations) |_| {
+        var events = try server.el.processEvents(ae.FILE_EVENTS | ae.DONT_WAIT);
+        events += try handleClientsWithPendingWrites();
+        if (events == 0) break;
+        count += events;
+    }
+    return count;
+}
+
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const ae = @import("ae.zig");
@@ -1295,7 +1408,7 @@ const memcpy = memzig.memcpy;
 const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
 const assert = std.debug.assert;
-const raxlib = @import("rax/rax.zig").rax;
+const raxlib = @import("rax.zig").rax;
 const Stream = @import("t_stream.zig").Stream;
 const list = @import("list.zig");
 const pubsub = @import("pubsub.zig");

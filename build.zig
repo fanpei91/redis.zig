@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) !void {
         });
         buildLzf(b, mod);
         buildRax(b, mod);
+        buildLua(b, mod);
 
         const exe = b.addExecutable(.{
             .name = "redis-server",
@@ -46,6 +47,7 @@ pub fn build(b: *std.Build) !void {
 
         buildLzf(b, mod);
         buildRax(b, mod);
+        buildLua(b, mod);
         const all_tests = b.addTest(.{
             .root_module = mod,
         });
@@ -73,23 +75,52 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
-fn buildLzf(b: *std.Build, mod: *std.Build.Module) void {
-    mod.addCSourceFiles(.{
+fn buildLzf(b: *std.Build, root: *std.Build.Module) void {
+    root.addCSourceFiles(.{
         .files = &.{
-            "src/lzf/lzf_c.c",
-            "src/lzf/lzf_d.c",
+            "deps/lzf/lzf_c.c",
+            "deps/lzf/lzf_d.c",
         },
+        .language = .c,
         .flags = &.{"-DSTRICT_ALIGN=1"},
     });
-    mod.addIncludePath(b.path("src/lzf"));
+    root.addIncludePath(b.path("deps/lzf"));
 }
 
-fn buildRax(b: *std.Build, mod: *std.Build.Module) void {
+fn buildRax(b: *std.Build, root: *std.Build.Module) void {
     // TODO: use Allocator(-Dmalloc=my_malloc -Dfree=my_free)
+    root.addCSourceFiles(.{
+        .files = &.{
+            "deps/rax/rax.c",
+        },
+        .language = .c,
+    });
+    root.addIncludePath(b.path("deps/rax"));
+}
+
+fn buildLua(b: *std.Build, mod: *std.Build.Module) void {
+    mod.addIncludePath(b.path("deps/lua/src/"));
     mod.addCSourceFiles(.{
         .files = &.{
-            "src/rax/rax.c",
+            "deps/lua/src/lapi.c",       "deps/lua/src/lcode.c",
+            "deps/lua/src/ldebug.c",     "deps/lua/src/ldump.c",
+            "deps/lua/src/lfunc.c",      "deps/lua/src/lgc.c",
+            "deps/lua/src/llex.c",       "deps/lua/src/lmem.c",
+            "deps/lua/src/lobject.c",    "deps/lua/src/lopcodes.c",
+            "deps/lua/src/lparser.c",    "deps/lua/src/lstate.c",
+            "deps/lua/src/lstring.c",    "deps/lua/src/ltable.c",
+            "deps/lua/src/ltm.c",        "deps/lua/src/lundump.c",
+            "deps/lua/src/lvm.c",        "deps/lua/src/lzio.c",
+            "deps/lua/src/lauxlib.c",    "deps/lua/src/lbaselib.c",
+            "deps/lua/src/ldblib.c",     "deps/lua/src/liolib.c",
+            "deps/lua/src/lmathlib.c",   "deps/lua/src/loslib.c",
+            "deps/lua/src/ltablib.c",    "deps/lua/src/lstrlib.c",
+            "deps/lua/src/loadlib.c",    "deps/lua/src/linit.c",
+            "deps/lua/src/ldo.c",        "deps/lua/src/fpconv.c",
+            "deps/lua/src/strbuf.c",     "deps/lua/src/lua_bit.c",
+            "deps/lua/src/lua_cjson.c",  "deps/lua/src/lua_cmsgpack.c",
+            "deps/lua/src/lua_struct.c",
         },
+        .language = .c,
     });
-    mod.addIncludePath(b.path("src/rax"));
 }

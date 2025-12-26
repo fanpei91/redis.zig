@@ -11,11 +11,11 @@ pub const WRITABLE = 2;
 /// to do that in a group fashion.
 pub const BARRIER = 4;
 
-const FILE_EVENTS = 1;
-const TIME_EVENTS = 2;
-const ALL_EVENTS = FILE_EVENTS | TIME_EVENTS;
-const DONT_WAIT = 4;
-const CALL_AFTER_SLEEP = 8;
+pub const FILE_EVENTS = 1;
+pub const TIME_EVENTS = 2;
+pub const ALL_EVENTS = FILE_EVENTS | TIME_EVENTS;
+pub const DONT_WAIT = 4;
+pub const CALL_AFTER_SLEEP = 8;
 
 const NOMORE = -1;
 const DELETED_EVENT_ID = -1;

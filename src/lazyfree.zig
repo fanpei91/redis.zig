@@ -121,6 +121,6 @@ const Hash = @import("t_hash.zig").Hash;
 const Stream = @import("t_stream.zig").Stream;
 const bio = @import("bio.zig");
 const sds = @import("sds.zig");
-const raxlib = @import("rax/rax.zig").rax;
+const raxlib = @import("rax.zig").rax;
 const std = @import("std");
 const assert = std.debug.assert;

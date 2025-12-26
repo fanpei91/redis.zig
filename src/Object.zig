@@ -14,7 +14,7 @@ pub fn objectCommand(cli: *Client) void {
         "REFCOUNT <key>",
         "    Return the number of references of the value associated with the specified",
         "    <key>.",
-        "PRINT",
+        "HELP",
         "    Print this help.",
     };
 
@@ -141,6 +141,7 @@ pub const Shared = struct {
     syntaxerr: *Object,
     sameobjecterr: *Object,
     outofrangeerr: *Object,
+    noscripterr: *Object,
     noautherr: *Object,
     oomerr: *Object,
     execaborterr: *Object,
@@ -240,6 +241,10 @@ pub const Shared = struct {
             .string,
             sds.new(allocator.child, "-ERR index out of range\r\n"),
         );
+        self.noscripterr = Object.create(
+            .string,
+            sds.new(allocator.child, "-NOSCRIPT No matching script. Please use EVAL.\r\n"),
+        );
         self.noautherr = Object.create(
             .string,
             sds.new(allocator.child, "-NOAUTH Authentication required.\r\n"),
@@ -328,6 +333,7 @@ pub const Shared = struct {
         self.syntaxerr.decrRefCount();
         self.sameobjecterr.decrRefCount();
         self.outofrangeerr.decrRefCount();
+        self.noscripterr.decrRefCount();
         self.noautherr.decrRefCount();
         self.oomerr.decrRefCount();
         self.execaborterr.decrRefCount();
@@ -859,7 +865,7 @@ pub fn strEncoding(self: *Object) []const u8 {
 pub fn free(self: *Object) void {
     if (self.type == .string and self.encoding == .embstr) {
         const s: sds.String = sds.cast(self.v.ptr);
-        const mem_size = @sizeOf(Object) + sds.getAllocMemSize(s);
+        const mem_size = @sizeOf(Object) + sds.allocSize(s);
         const mem: [*]align(@alignOf(Object)) u8 = @ptrCast(@alignCast(self));
         allocator.free(mem[0..mem_size]);
         return;
