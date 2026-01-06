@@ -622,7 +622,7 @@ pub const Client = struct {
                 // likely...
                 self.querybuf = sds.newLen(
                     allocator.child,
-                    null,
+                    sds.NOINIT.ptr,
                     @intCast(self.bulklen + 2),
                 );
                 sds.clear(self.querybuf);
@@ -1268,6 +1268,7 @@ pub fn handleClientsWithPendingWrites() !usize {
         // If after the synchronous writes above we still have data to
         // output to the client, we need to install the writable handler.
         if (cli.hasPendingReplies()) {
+            // TODO: AOF
             server.el.createFileEvent(
                 cli.fd,
                 ae.WRITABLE,

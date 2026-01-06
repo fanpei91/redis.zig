@@ -258,6 +258,15 @@ pub fn getAbsolutePath(filename: []const u8) !sds.String {
     return sds.new(allocator.child, realpath);
 }
 
+/// Return true if the specified path is just a file basename without any
+/// relative or absolute path. This function just checks that no / or \
+/// character exists inside the specified path, that's enough in the
+/// environments where Redis runs.
+pub fn pathIsBaseName(path: []const u8) bool {
+    return std.mem.indexOfScalar(u8, path, '/') == null and
+        std.mem.indexOfScalar(u8, path, '\\') == null;
+}
+
 /// Return true if strings are the same, false if they are not.
 /// The comparison is performed in a way that prevents an attacker to obtain
 /// information about the nature of the strings just monitoring the execution

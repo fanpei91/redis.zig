@@ -72,7 +72,7 @@ pub fn main() void {
 
     try checkTcpBacklogSettings(server);
     checkMaxMemorySettings(server);
-
+    loadDataFromDisk(server);
     try server.up();
 }
 
@@ -111,6 +111,32 @@ fn checkMaxMemorySettings(server: *const Server) void {
     }
 }
 
+/// Function called at startup to load RDB or AOF file in memory.
+fn loadDataFromDisk(server: *Server) void {
+    const start = std.time.microTimestamp();
+    if (server.aof_state == Server.AOF_ON) {
+        // TODO: load append-only file
+    } else {
+        var rsi: rdb.SaveInfo = undefined; // TODO: init
+        rdb.load(server.rdb_filename, &rsi) catch |err| {
+            if (err != error.FileNotFound) {
+                logging.warn(
+                    "Fatal error loading the DB: {}. Existing.",
+                    .{err},
+                );
+                std.process.exit(1);
+            }
+            return;
+        };
+        const elapsed: f32 = @floatFromInt(std.time.microTimestamp() - start);
+        logging.notice(
+            "DB loaded from disk: {:.3}",
+            .{elapsed / std.time.us_per_s},
+        );
+        // TODO: replication, cluster
+    }
+}
+
 fn printUsage() void {
     std.debug.print("Usage: ./redis-server [/path/to/redis.conf] [options]\n", .{});
     std.debug.print("       ./redis-server -h or --help\n", .{});
@@ -132,3 +158,5 @@ const config = @import("config.zig");
 const Server = @import("Server.zig");
 const builtin = @import("builtin");
 const log = std.log.scoped(.main);
+const rdb = @import("rdb.zig");
+const logging = @import("logging.zig");

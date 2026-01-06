@@ -41,6 +41,7 @@ pub fn scriptCommand(cli: *Client) void {
     } else if (cli.argc == 2 and eqlCase(opt, "flush")) {
         server.lua.reset();
         cli.addReply(Server.shared.ok);
+        server.dirty +%= 1; // Propagating this command is a good idea.
     } else if (cli.argc >= 2 and eqlCase(opt, "exists")) {
         cli.addReplyMultiBulkLen(@intCast(cli.argc - 2));
         for (2..cli.argc) |i| {
@@ -178,6 +179,8 @@ pub const Lua = struct {
         }
 
         fn gcall(lua: *Lua, protected: bool) c_int {
+            // TODO: server.loading, masterhost, replication...
+
             var raise_error = protected;
             // Cached across calls.
             const Cached = struct {
@@ -1092,7 +1095,7 @@ pub const Lua = struct {
     ///
     /// If 'cli' is not NULL, on error the client is informed with an appropriate
     /// error describing the nature of the problem and the Lua interpreter error.
-    fn createFunction(self: *Lua, cli: ?*Client, body: *Object) ?sds.String {
+    pub fn createFunction(self: *Lua, cli: ?*Client, body: *Object) ?sds.String {
         var funcname: [42:0]u8 = undefined;
         funcname[0] = 'f';
         funcname[1] = '_';

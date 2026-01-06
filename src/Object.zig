@@ -142,6 +142,7 @@ pub const Shared = struct {
     sameobjecterr: *Object,
     outofrangeerr: *Object,
     noscripterr: *Object,
+    loadingerr: *Object,
     noautherr: *Object,
     oomerr: *Object,
     execaborterr: *Object,
@@ -245,6 +246,10 @@ pub const Shared = struct {
             .string,
             sds.new(allocator.child, "-NOSCRIPT No matching script. Please use EVAL.\r\n"),
         );
+        self.loadingerr = Object.create(
+            .string,
+            sds.new(allocator.child, "-LOADING Redis is loading the dataset in memory\r\n"),
+        );
         self.noautherr = Object.create(
             .string,
             sds.new(allocator.child, "-NOAUTH Authentication required.\r\n"),
@@ -334,6 +339,7 @@ pub const Shared = struct {
         self.sameobjecterr.decrRefCount();
         self.outofrangeerr.decrRefCount();
         self.noscripterr.decrRefCount();
+        self.loadingerr.decrRefCount();
         self.noautherr.decrRefCount();
         self.oomerr.decrRefCount();
         self.execaborterr.decrRefCount();
@@ -390,6 +396,14 @@ pub fn createInt(int: i64) *Object {
     return obj;
 }
 
+/// Initialize a object allocated on the stack.
+pub fn initStaticStringObject(obj: *Object, s: sds.String) void {
+    obj.refcount = 1;
+    obj.type = .string;
+    obj.encoding = .raw;
+    obj.v = .{ .ptr = s };
+}
+
 pub const SHARED_REFCOUNT = maxInt(i32);
 /// Set a special refcount in the object to make it "shared":
 /// incrRefCount() and decrRefCount() will test for this special refcount
@@ -416,7 +430,7 @@ pub fn createString(str: []const u8) *Object {
 }
 
 pub fn createRawString(str: []const u8) *Object {
-    const s = sds.new(allocator.child, str);
+    const s = sds.newLen(allocator.child, str.ptr, str.len);
     return create(.string, s);
 }
 
@@ -429,7 +443,9 @@ fn createEmbeddedString(str: []const u8) *Object {
     sh.alloc = @intCast(str.len);
     sh.flags = sds.TYPE_8;
     const s: sds.String = @ptrFromInt(@intFromPtr(sh) + @sizeOf(sds.Hdr8));
-    memcpy(s, str, str.len);
+    if (@intFromPtr(str.ptr) != @intFromPtr(sds.NOINIT.ptr)) {
+        memcpy(s, str, str.len);
+    }
     s[str.len] = 0;
 
     const obj: *Object = @ptrCast(@alignCast(mem));
@@ -629,6 +645,48 @@ pub fn incrRefCount(self: *Object) *Object {
 pub fn resetRefCount(self: *Object) *Object {
     self.refcount = 0;
     return self;
+}
+
+/// Set the object LRU/LFU depending on server.maxmemory_policy.
+/// The lfu_freq arg is only relevant if policy is MAXMEMORY_FLAG_LFU.
+/// The lru_idle and lru_clock args are only relevant if policy
+/// is MAXMEMORY_FLAG_LRU.
+/// Either or both of them may be <0, in that case, nothing is set.
+pub fn setLRUOrLFU(
+    val: *Object,
+    lfu_freq: i64,
+    lru_idle: i64,
+    lru_clock: i64,
+) void {
+    if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
+        if (lfu_freq >= 0) {
+            assert(lfu_freq <= 255);
+            const freq: u8 = @intCast(lfu_freq);
+            val.lru = @intCast((evict.LFUGetTimeInMinutes() << 8) | freq);
+        }
+    } else if (lru_idle >= 0) {
+        // Provided LRU idle time is in seconds. Scale
+        // according to the LRU clock resolution this Redis
+        // instance was compiled with (normally 1000 ms, so the
+        // below statement will expand to lru_idle*1000/1000.
+        const idle = @divFloor(
+            lru_idle * std.time.ms_per_s,
+            Server.LRU_CLOCK_RESOLUTION,
+        );
+        var lru_abs = lru_clock - idle;
+        // If the LRU field underflows (since LRU it is a wrapping
+        // clock), the best we can do is to provide a large enough LRU
+        // that is half-way in the circlular LRU clock we use: this way
+        // the computed idle time for this object will stay high for quite
+        // some time.
+        if (lru_abs < 0) {
+            lru_abs = @rem(
+                (lru_clock + (@divFloor(Server.LRU_CLOCK_MAX, 2))),
+                Server.LRU_CLOCK_MAX,
+            );
+        }
+        val.lru = @intCast(lru_abs);
+    }
 }
 
 pub fn stringLen(self: *Object) usize {

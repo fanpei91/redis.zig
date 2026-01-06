@@ -15,6 +15,7 @@ pub fn persistCommand(cli: *Client) void {
     if (cli.db.lookupKeyWrite(key) != null) {
         if (cli.db.removeExpire(key)) {
             cli.addReply(Server.shared.cone);
+            server.dirty +%= 1;
         } else {
             cli.addReply(Server.shared.czero);
         }
@@ -81,8 +82,8 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     }
 
     if (checkAlreadyExpired(when)) {
-        const deleted = cli.db.delete(key);
-        assert(deleted);
+        assert(cli.db.delete(key));
+        server.dirty +%= 1;
         cli.db.signalModifiedKey(key);
         cli.addReply(Server.shared.cone);
         return;
@@ -90,10 +91,17 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     cli.db.setExpire(cli, key, when);
     cli.db.signalModifiedKey(key);
     cli.addReply(Server.shared.cone);
+    server.dirty +%= 1;
 }
 
 fn checkAlreadyExpired(when: i64) bool {
-    return std.time.milliTimestamp() >= when;
+    // EXPIRE with negative TTL, or EXPIREAT with a timestamp into the past
+    // should never be executed as a DEL when load the AOF or in the context
+    // of a slave instance.
+    //
+    // Instead we add the already expired key to the database with expire time
+    // (possibly in the past) and wait for an explicit DEL from the master.
+    return std.time.milliTimestamp() >= when and !server.loading;
 }
 
 /// Implements TTL and PTTL

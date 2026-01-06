@@ -43,6 +43,11 @@ pub inline fn oom() noreturn {
     @panic("Out Of Memory");
 }
 
+pub fn usedMemory() usize {
+    // TODO:
+    return 0;
+}
+
 var debug = std.heap.DebugAllocator(.{}).init;
 const std = @import("std");
 const builtin = @import("builtin");

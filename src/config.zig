@@ -420,6 +420,60 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "lua-time-limit") and argc == 2) {
+                server.lua.time_limit = std.fmt.parseInt(
+                    i64,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch 0;
+                server.lua.time_limit = @max(server.lua.time_limit, 0);
+                continue;
+            }
+
+            if (eql(option, "rdb-save-incremental-fsync") and argc == 2) {
+                server.rdb_save_incremental_fsync = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "dbfilename") and argc == 2) {
+                const path = sds.asSentinelBytes(argv[1]);
+                if (!util.pathIsBaseName(path)) {
+                    err = "dbfilename can't be a path, just a filename";
+                    break :biz;
+                }
+                allocator.free(server.rdb_filename);
+                server.rdb_filename = allocator.dupe(u8, path);
+                continue;
+            }
+
+            if (eql(option, "rdbchecksum") and argc == 2) {
+                server.rdb_checksum = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "rdbcompression") and argc == 2) {
+                server.rdb_compression = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "appendonly") and argc == 2) {
+                const yes = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                server.aof_state = if (yes) Server.AOF_ON else Server.AOF_OFF;
+                continue;
+            }
+
             err = "Bad directive or wrong number of arguments";
             break :biz;
         }
@@ -528,3 +582,4 @@ const sds = @import("sds.zig");
 const Server = @import("Server.zig");
 const log = std.log.scoped(.config);
 const expectEqual = std.testing.expectEqual;
+const util = @import("util.zig");

@@ -22,6 +22,7 @@ pub fn saddCommand(cli: *Client) void {
     if (added > 0) {
         cli.db.signalModifiedKey(key);
     }
+    server.dirty +%= added;
     cli.addReplyLongLong(added);
 }
 
@@ -52,6 +53,7 @@ pub fn sremCommand(cli: *Client) void {
     }
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
+        server.dirty +%= deleted;
     }
     cli.addReplyLongLong(deleted);
 }
@@ -133,8 +135,12 @@ pub fn smoveCommand(cli: *Client) void {
 
     cli.db.signalModifiedKey(srckey);
     cli.db.signalModifiedKey(dstkey);
+    server.dirty +%= 1;
 
-    _ = Set.add(dst, member);
+    // An extra key has changed when ele was successfully added to dstset
+    if (Set.add(dst, member)) {
+        server.dirty +%= 1;
+    }
     cli.addReply(Server.shared.cone);
 }
 
@@ -353,6 +359,7 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
             if (dstkey) |dst| {
                 if (cli.db.delete(dst)) {
                     cli.db.signalModifiedKey(dst);
+                    server.dirty +%= 1;
                 }
                 cli.addReply(Server.shared.czero);
             } else {
@@ -455,6 +462,7 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
             cli.addReply(Server.shared.czero);
         }
         cli.db.signalModifiedKey(dst);
+        server.dirty +%= 1;
     } else {
         cli.setDeferredMultiBulkLength(replylen.?, cardinality);
     }
@@ -638,6 +646,7 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         cli.addReply(Server.shared.czero);
     }
     cli.db.signalModifiedKey(dstkey.?);
+    server.dirty +%= 1;
 }
 
 fn sortSetsByReversedCardinality(_: void, lhs: ?*Object, rhs: ?*Object) bool {
@@ -695,6 +704,7 @@ pub fn spopCommand(cli: *Client) void {
     }
     // Set has been modified
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
 }
 
 /// How many times bigger should be the set compared to the remaining size
@@ -732,6 +742,7 @@ fn spopWithCount(cli: *Client) void {
     }
 
     const size = Set.size(sobj);
+    server.dirty +%= count;
 
     // CASE 1:
     // The number of requested elements is greater than or equal to
@@ -747,6 +758,7 @@ fn spopWithCount(cli: *Client) void {
         // Delete the set as it is now empty
         assert(cli.db.delete(key));
         cli.db.signalModifiedKey(key);
+        server.dirty +%= 1;
         return;
     }
 
@@ -829,6 +841,7 @@ fn spopWithCount(cli: *Client) void {
     }
 
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
 }
 
 /// SSCAN key cursor [MATCH pattern] [COUNT count]
@@ -914,7 +927,7 @@ pub const Set = struct {
     /// Convert the set to specified encoding. The resulting dict (when converting
     /// to a hash table) is presized to hold the number of elements in the original
     /// set.
-    fn convert(sobj: *Object, enc: Object.Encoding) void {
+    pub fn convert(sobj: *Object, enc: Object.Encoding) void {
         assert(sobj.type == .set and sobj.encoding == .intset);
 
         const is = IntSet.cast(sobj.v.ptr);

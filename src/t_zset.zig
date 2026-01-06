@@ -126,6 +126,7 @@ fn zadd(cli: *Client, flags: i32) void {
             score = newscore;
         }
     }
+    server.dirty +%= (added + updated);
 
     // reply to client
     if (incr) {
@@ -248,6 +249,7 @@ pub fn zremCommand(cli: *Client) void {
     }
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
+        server.dirty +%= deleted;
     }
     cli.addReplyLongLong(deleted);
 }
@@ -365,6 +367,7 @@ fn zremrangeby(cli: *Client, rangetype: RangeType) void {
         cli.db.signalModifiedKey(key);
     }
 
+    server.dirty +%= @intCast(deleted);
     cli.addReplyLongLong(@intCast(deleted));
 }
 
@@ -1147,6 +1150,7 @@ pub fn zpop(
             @panic("Unknown sorted set encoding");
         }
         assert(Zset.del(zset, ele));
+        server.dirty +%= 1;
 
         // Do this only for the first iteration.
         if (arraylen == 0) {
@@ -1424,10 +1428,12 @@ fn unionInter(cli: *Client, destkey: *Object, op: Operation) void {
         cli.db.add(destkey, dstobj);
         cli.addReplyLongLong(@intCast(Zset.length(dstobj)));
         cli.db.signalModifiedKey(destkey);
+        server.dirty +%= 1;
     } else {
         cli.addReply(Server.shared.czero);
         if (touched) {
             cli.db.signalModifiedKey(destkey);
+            server.dirty +%= 1;
         }
     }
 }
@@ -1853,6 +1859,12 @@ pub const Zset = struct {
 
 pub const ZipListSet = struct {
     zl: *ZipList,
+
+    pub fn fromZipList(zl: *ZipList) *ZipListSet {
+        const zls = allocator.create(ZipListSet);
+        zls.zl = zl;
+        return zls;
+    }
 
     pub fn create() *ZipListSet {
         const zls = allocator.create(ZipListSet);

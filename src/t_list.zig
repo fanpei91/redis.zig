@@ -57,6 +57,7 @@ pub fn rpoplpushCommand(cli: *Client) void {
         _ = cli.db.delete(touchedkey);
     }
     cli.db.signalModifiedKey(touchedkey);
+    server.dirty +%= 1;
 }
 
 /// LINSERT key <BEFORE | AFTER> pivot element
@@ -100,6 +101,7 @@ pub fn linsertCommand(cli: *Client) void {
     if (inserted) {
         cli.addReplyLongLong(List.length(lobj));
         cli.db.signalModifiedKey(key);
+        server.dirty +%= 1;
         return;
     }
     cli.addReply(Server.shared.cnegone);
@@ -166,6 +168,7 @@ pub fn lsetCommand(cli: *Client) void {
     if (ql.replaceAtIndex(index, element)) {
         cli.addReply(Server.shared.ok);
         cli.db.signalModifiedKey(key);
+        server.dirty +%= 1;
         return;
     }
     cli.addReply(Server.shared.outofrangeerr);
@@ -282,6 +285,7 @@ pub fn ltrimCommand(cli: *Client) void {
         _ = cli.db.delete(key);
     }
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
     cli.addReply(Server.shared.ok);
 }
 
@@ -316,6 +320,7 @@ pub fn lremCommand(cli: *Client) void {
     while (iter.next(&entry)) {
         if (entry.eql(element)) {
             entry.delete();
+            server.dirty +%= 1;
             removed += 1;
             if (toremove > 0 and removed == toremove) {
                 break;
@@ -408,6 +413,7 @@ fn bpop(cli: *Client, where: Where) void {
             _ = cli.db.delete(key);
         }
         cli.db.signalModifiedKey(key);
+        server.dirty +%= 1;
         return;
     }
 
@@ -476,6 +482,7 @@ fn push(cli: *Client, where: Where) void {
     if (pushed > 0) {
         cli.db.signalModifiedKey(key);
     }
+    server.dirty +%= pushed;
     cli.addReplyLongLong(List.length(list));
 }
 
@@ -502,6 +509,7 @@ fn pushx(cli: *Client, where: Where) void {
     if (pushed > 0) {
         cli.db.signalModifiedKey(key);
     }
+    server.dirty +%= pushed;
     cli.addReplyLongLong(List.length(list));
 }
 
@@ -527,6 +535,7 @@ fn pop(cli: *Client, where: Where) void {
         _ = cli.db.delete(key);
     }
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
 }
 
 /// This is a helper function for blocked.handleClientsBlockedOnLists().
@@ -671,6 +680,24 @@ pub const List = struct {
         return obj;
     }
 
+    /// Create a quicklist from a single ziplist.
+    pub fn convert(lobj: *Object, enc: Object.Encoding) void {
+        assert(lobj.type == .list);
+        assert(lobj.encoding == .ziplist);
+        if (enc != .quicklist) {
+            @branchHint(.unlikely);
+            @panic("Unsupported list conversion");
+        }
+        const zlen = server.list_max_ziplist_size;
+        const depth = server.list_compress_depth;
+        lobj.v = .{ .ptr = QuickList.createFromZiplist(
+            @intCast(zlen),
+            depth,
+            ZipList.cast(lobj.v.ptr),
+        ) };
+        lobj.encoding = .quicklist;
+    }
+
     pub fn length(lobj: *Object) i64 {
         if (lobj.encoding != .quicklist) {
             @branchHint(.unlikely);
@@ -726,3 +753,4 @@ const allocator = @import("allocator.zig");
 const assert = std.debug.assert;
 const blocked = @import("blocked.zig");
 const Database = @import("db.zig").Database;
+const ZipList = @import("ZipList.zig");

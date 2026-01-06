@@ -33,6 +33,7 @@ pub fn hsetCommand(cli: *Client) void {
         cli.addReply(Server.shared.ok);
     }
     cli.db.signalModifiedKey(argv[1]);
+    server.dirty +%= 1;
 }
 
 /// HINCRBY key field increment
@@ -71,6 +72,7 @@ pub fn hincrbyCommand(cli: *Client) void {
     );
     cli.db.signalModifiedKey(key);
     cli.addReplyLongLong(value);
+    server.dirty +%= 1;
 }
 
 /// HINCRBYFLOAT key field increment
@@ -113,6 +115,7 @@ pub fn hincrbyfloatCommand(cli: *Client) void {
     );
     cli.db.signalModifiedKey(key);
     cli.addReplyBulkString(s);
+    server.dirty +%= 1;
 }
 
 /// HSETNX key field value
@@ -135,6 +138,7 @@ pub fn hsetnxCommand(cli: *Client) void {
     assert(ret == .insert);
     cli.db.signalModifiedKey(key);
     cli.addReply(Server.shared.cone);
+    server.dirty +%= 1;
 }
 
 /// HGET key field
@@ -203,6 +207,7 @@ pub fn hdelCommand(cli: *Client) void {
     }
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
+        server.dirty +%= deleted;
     }
     cli.addReplyLongLong(deleted);
 }
@@ -396,7 +401,7 @@ pub const Hash = struct {
         }
     }
 
-    fn convert(hobj: *Object, enc: Object.Encoding) void {
+    pub fn convert(hobj: *Object, enc: Object.Encoding) void {
         if (hobj.encoding == .ziplist) {
             convertZipList(hobj, enc);
             return;

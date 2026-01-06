@@ -84,7 +84,7 @@ pub const Node = packed struct {
         return node;
     }
 
-    inline fn isCompressed(self: *const Node) bool {
+    pub inline fn isCompressed(self: *const Node) bool {
         return self.encoding == .lzf;
     }
 
@@ -524,7 +524,7 @@ pub fn create() *QuickList {
 
 /// Create new (potentially multi-node) quicklist from a single existing ziplist.
 /// Frees passed-in ziplist 'zl'.
-pub fn createFromZiplist(fill: i16, compress: u16, zl: *ZipList) *QuickList {
+pub fn createFromZiplist(fill: i16, compress: i32, zl: *ZipList) *QuickList {
     defer zl.free();
     const ql = new(fill, compress);
     var p = zl.index(0) orelse {
@@ -545,7 +545,7 @@ pub fn createFromZiplist(fill: i16, compress: u16, zl: *ZipList) *QuickList {
     return ql;
 }
 
-pub fn new(fill: i16, compress: u16) *QuickList {
+pub fn new(fill: i16, compress: i32) *QuickList {
     const ql = create();
     ql.setOptions(fill, compress);
     return ql;

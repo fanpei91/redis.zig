@@ -32,6 +32,8 @@ pub fn execCommand(cli: *Client) void {
             break :biz;
         }
 
+        // TODO: server.loading, server.masterhost, server.repl_slace_ro
+
         // Exec all the queued commands
         unwatchAllKeys(cli); // Unwatch ASAP otherwise we'll waste CPU cycles
         const orig_argv = cli.argv;
@@ -50,7 +52,13 @@ pub fn execCommand(cli: *Client) void {
                 cli.argc = cmd.argc;
                 cli.cmd = cmd.cmd;
 
-                server.call(cli, 0);
+                server.call(
+                    cli,
+                    if (server.loading)
+                        Server.CMD_CALL_NONE
+                    else
+                        Server.CMD_CALL_FULL,
+                );
 
                 // Commands may alter argc/argv, restore mstate.
                 cmd.argv = cli.argv.?;

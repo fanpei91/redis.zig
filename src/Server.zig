@@ -25,6 +25,12 @@ pub const MAX_CLIENTS_PER_CLOCK_TICK = 200; // HZ is adapted based on that.
 pub const OBJ_SHARED_INTEGERS = 10000;
 pub const OBJ_SHARED_BULKHDR_LEN = 32;
 pub const NET_MAX_WRITES_PER_EVENT = (1024 * 64);
+pub const CONFIG_DEFAULT_RDB_FILENAME = "dump.rdb";
+pub const CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC = true;
+pub const CONFIG_DEFAULT_RDB_CHECKSUM = true;
+pub const CONFIG_DEFAULT_RDB_COMPRESSION = true;
+pub const AOF_READ_DIFF_INTERVAL_BYTES = (1024 * 10);
+pub const CONFIG_BGSAVE_RETRY_DELAY = 5; // Wait a few secs before trying again.
 
 // Protocol and I/O related defines
 pub const PROTO_MAX_QUERYBUF_LEN = 1024 * 1024 * 1024; // 1GB max query buffer.
@@ -32,6 +38,7 @@ pub const PROTO_IOBUF_LEN = 1024 * 16; // Generic I/O buffer size
 pub const PROTO_MBULK_BIG_ARG = (1024 * 32);
 pub const PROTO_INLINE_MAX_SIZE = (1024 * 64); // Max size of inline reads
 pub const PROTO_REPLY_CHUNK_BYTES = 16 * 1024; // 16k output buffer
+pub const REDIS_AUTOSYNC_BYTES = (1024 * 1024 * 32); // fdatasync every 32MB
 
 // Client request types
 pub const PROTO_REQ_INLINE = 1;
@@ -65,6 +72,11 @@ pub const CMD_CALL_PROPAGATE_REPL = (1 << 3);
 pub const CMD_CALL_PROPAGATE = (CMD_CALL_PROPAGATE_AOF | CMD_CALL_PROPAGATE_REPL);
 pub const CMD_CALL_FULL = (CMD_CALL_SLOWLOG | CMD_CALL_STATS | CMD_CALL_PROPAGATE);
 
+// AOF states
+pub const AOF_OFF = 0; // AOF is off
+pub const AOF_ON = 1; // AOF is on
+pub const AOF_WAIT_REWRITE = 2; // AOF waits rewrite to start appending
+
 // Client flags
 pub const CLIENT_MULTI = (1 << 3); // This client is in a MULTI context
 pub const CLIENT_BLOCKED = (1 << 4); // The client is waiting in a blocking operation
@@ -91,6 +103,11 @@ pub const BLOCKED_ZSET = 5; // BZPOP et al.
 // Units
 pub const UNIT_SECONDS = 0;
 pub const UNIT_MILLISECONDS = 1;
+
+// RDB active child save type.
+pub const RDB_CHILD_TYPE_NONE = 0;
+pub const RDB_CHILD_TYPE_DISK = 1; // RDB is written to disk.
+pub const RDB_CHILD_TYPE_SOCKET = 2; // RDB is written to slave socket.
 
 // SHUTDOWN flags
 pub const SHUTDOWN_NOFLAGS = 0; // No flags.
@@ -151,9 +168,68 @@ pub const HASH_SET_COPY = 0;
 pub const OBJ_HASH_KEY = 1;
 pub const OBJ_HASH_VALUE = 2;
 
+pub const CHILD_INFO_MAGIC = 0xC17DDA7A12345678;
+pub const CHILD_INFO_TYPE_RDB = 0;
+pub const CHILD_INFO_TYPE_AOF = 1;
+
+// Scripting
+pub const LUA_SCRIPT_TIME_LIMIT = 5000; // milliseconds
+
 pub fn needShrinkDictToFit(used: u64, size: u64) bool {
     return (size > dict.HT_INITIAL_SIZE) and
         @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;
+}
+
+/// This function is called once a background process of some kind terminates,
+/// as we want to avoid resizing the hash tables when there is a child in order
+/// to play well with copy-on-write (otherwise when a resize happens lots of
+/// memory pages are copied). The goal of this function is to update the ability
+/// for dict.zig to resize the hash tables accordingly to the fact we have o not
+/// running childs.
+pub fn updateDictResizePolicy() void {
+    if (server.rdb_child_pid == -1 and server.aof_child_pid == -1) {
+        dict.enableResize();
+    } else {
+        dict.disableResize();
+    }
+}
+
+pub fn redisSetProcTitle(title: []const u8) void {
+    const mode: []const u8 = ""; // // TODO: cluster, sentinel
+    var buf: [255:0]u8 = undefined;
+    const s = std.fmt.bufPrint(
+        &buf,
+        "{s} {s}:{}{s}",
+        .{
+            title,
+            if (server.bindaddr_count > 0) server.bindaddr[0] else "*",
+            server.port,
+            mode,
+        },
+    ) catch |err| {
+        std.debug.panic("Error: formart proc title: {}", .{err});
+    };
+    buf[s.len] = 0;
+    _ = posix.prctl(
+        posix.PR.SET_NAME,
+        .{ @intFromPtr(&buf), 0, 0, 0 },
+    ) catch |err| {
+        logging.warn("Error set process title to '{s}': {}", .{ s, err });
+    };
+}
+
+/// After fork, the child process will inherit the resources
+/// of the parent process, e.g. fd(socket or flock) etc.
+/// should close the resources not used by the child process, so that if the
+/// parent restarts it can bind/lock despite the child possibly still running.
+pub fn closeChildUnusedResourceAfterFork() void {
+    closeListeningSockets(false);
+    // TODO: cluster, pidfile
+}
+
+/// After an RDB dump or AOF rewrite we exit from children.
+pub fn exitFromChild(retcode: u8) void {
+    std.process.exit(retcode);
 }
 
 pub var shared: Object.Shared = undefined;
@@ -190,7 +266,7 @@ shutdown_asap: bool, // SHUTDOWN needed ASAP
 dynamic_hz: bool, // Change hz value depending on # of clients.
 config_hz: u32, // Configured HZ value. May be different than the actual 'hz' field value if dynamic-hz is enabled.
 hz: u32, // serverCron() calls frequency in hertz
-arch_bits: i32, // 32 or 64 depending on @bitSizeOf(usize)
+arch_bits: i32, // 32 or 64 depending on @bitSizeOf(*anyopaque)
 requirepass: ?[]u8, // Pass for AUTH command, or null
 db: []Database,
 commands: *Commands.HashMap, // Command table
@@ -211,12 +287,35 @@ sofd: i32, // Unix socket file descriptor
 unixsocketperm: std.posix.mode_t, // UNIX socket permission
 protected_mode: bool, // Don't accept external connections.
 fixed_time_expire: i64, // If > 0, expire keys against server.mstime.
+// RDB / AOF loading information
+loading: bool, //  We are loading data from disk if true
+loading_start_time: i64,
+loading_total_bytes: u64,
+loading_loaded_bytes: u64,
+loading_process_events_interval_bytes: u64,
 // Configuration
 active_expire_enabled: bool, // Can be disabled for testing purposes.
 maxidletime: u32, // Client timeout in seconds
 dbnum: u32, // Total number of configured DBs
 tcpkeepalive: i32, // Set SO_KEEPALIVE if non-zero.
 client_max_querybuf_len: usize, // Limit for client query buffer length
+// RDB persistence
+dirty: i64, // Changes to DB from the last save
+dirty_before_bgsave: i64, // Used to restore dirty on failed BGSAVE
+rdb_child_pid: posix.pid_t, // PID of RDB saving child
+rdb_child_type: i32, // Type of save by active child.
+rdb_filename: []u8, // Name of RDB file
+rdb_save_incremental_fsync: bool, // fsync incrementally while rdb saving?
+lastsave: i64, // Unix time of last successful save
+lastbgsave_try: i64, // Unix time of last attempted bgsave
+rdb_checksum: bool, // Use RDB checksum?
+rdb_compression: bool, // Use compression in RDB?
+rdb_bgsave_scheduled: bool, // BGSAVE when possible if true.
+lastbgsave_status: bool, // OK: true, ERR: false
+rdb_save_time_start: i64, // Current RDB save start time.
+// AOF persistence
+aof_child_pid: posix.pid_t, //  PID if rewriting process
+aof_state: i32, // AOF_(ON|OFF|WAIT_REWRITE)
 // Limits
 maxclients: u32, // Max number of simultaneous clients
 maxmemory: u64, // Max number of memory bytes to use
@@ -256,7 +355,7 @@ lua: scripting.Lua,
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
     server.config_hz = CONFIG_DEFAULT_HZ;
-    server.arch_bits = @bitSizeOf(usize);
+    server.arch_bits = @bitSizeOf(*anyopaque);
     server.requirepass = null;
     errdefer if (server.requirepass) |passwd| allocator.free(passwd);
     server.commands = Commands.HashMap.create(Commands.vtable);
@@ -281,11 +380,28 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
     server.protected_mode = CONFIG_DEFAULT_PROTECTED_MODE;
     server.fixed_time_expire = 0;
+    server.loading = false;
+    server.loading_process_events_interval_bytes = 1024 * 1024 * 2;
     server.active_expire_enabled = true;
     server.maxidletime = CONFIG_DEFAULT_CLIENT_TIMEOUT;
     server.dbnum = CONFIG_DEFAULT_DBNUM;
     server.tcpkeepalive = CONFIG_DEFAULT_TCP_KEEPALIVE;
     server.client_max_querybuf_len = PROTO_MAX_QUERYBUF_LEN;
+    server.dirty = 0;
+    server.rdb_child_pid = -1;
+    server.rdb_child_type = RDB_CHILD_TYPE_NONE;
+    server.rdb_filename = allocator.dupe(u8, CONFIG_DEFAULT_RDB_FILENAME);
+    errdefer allocator.free(server.rdb_filename);
+    server.rdb_save_incremental_fsync = CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC;
+    server.lastsave = std.time.timestamp(); // At startup we consider the DB saved.
+    server.lastbgsave_try = 0; // At startup we never tried to BGSAVE.
+    server.lastbgsave_status = true;
+    server.rdb_save_time_start = -1;
+    server.rdb_checksum = CONFIG_DEFAULT_RDB_CHECKSUM;
+    server.rdb_compression = CONFIG_DEFAULT_RDB_COMPRESSION;
+    server.rdb_bgsave_scheduled = false;
+    server.aof_child_pid = -1;
+    server.aof_state = AOF_OFF;
     server.maxclients = CONFIG_DEFAULT_MAX_CLIENTS;
     server.maxmemory = CONFIG_DEFAULT_MAXMEMORY;
     server.maxmemory_policy = CONFIG_DEFAULT_MAXMEMORY_POLICY;
@@ -350,15 +466,6 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     );
     errdefer server.el.destroy();
 
-    server.db = allocator.alloc(Database, server.dbnum);
-    errdefer allocator.free(server.db);
-    var dbi: usize = 0;
-    errdefer for (0..dbi + 1) |j| server.db[j].destroy();
-    for (0..server.dbnum) |i| {
-        server.db[i] = Database.create(i);
-        dbi = i;
-    }
-
     // Open the TCP listening socket for the user commands.
     if (server.port != 0) try server.listenToPort();
 
@@ -370,23 +477,68 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
             server.unixsocketperm,
             server.tcp_backlog,
         ) catch |err| {
-            log.warn("Openning Unix socket: {}", .{err});
+            logging.warn("Openning Unix socket: {}", .{err});
             return err;
         };
         try anet.nonBlock(server.sofd);
     }
 
     if (server.ipfd_count == 0 and server.sofd < 0) {
-        log.warn("Configured to not listen anywhere.", .{});
+        logging.warn("Configured to not listen anywhere, exiting", .{});
         return error.NoListenSockets;
     }
+
+    server.db = allocator.alloc(Database, server.dbnum);
+    errdefer allocator.free(server.db);
+    var dbi: usize = 0;
+    errdefer for (0..dbi + 1) |j| server.db[j].destroy();
+    for (0..server.dbnum) |i| {
+        server.db[i] = Database.create(i);
+        dbi = i;
+    }
+
+    // Create the timer callback, this is our way to process many background
+    // operations incrementally, like clients timeout, eviction of unaccessed
+    // expired keys and so forth.
+    _ = server.el.createTimeEvent(
+        1,
+        serverCron,
+        null,
+        null,
+    );
+    // Create an event handler for accepting new connections in TCP and Unix
+    // domain sockets.
+    for (server.ipfd[0..server.ipfd_count]) |fd| {
+        server.el.createFileEvent(
+            fd,
+            ae.READABLE,
+            networking.acceptHandler,
+            null,
+        ) catch |err| {
+            logging.warn("Unrecoverable error creating server.ipfd file event.", .{});
+            return err;
+        };
+    }
+    if (server.sofd > 0) {
+        server.el.createFileEvent(
+            server.sofd,
+            ae.READABLE,
+            networking.acceptHandler,
+            null,
+        ) catch |err| {
+            logging.warn("Unrecoverable error creating server.sofd file event.", .{});
+            return err;
+        };
+    }
+
+    // TODO: Open the AOF file if needed.
 
     // 32 bit instances are limited to 4GB of address space, so if there is
     // no explicit limit in the user provided configuration we set a limit
     // at 3 GB using maxmemory with 'noeviction' policy'. This avoids
     // useless crashes of the Redis instance for out of memory.
     if (server.arch_bits == 32 and server.maxmemory == 0) {
-        log.warn(
+        logging.warn(
             "32 bit instance detected but no memory limit set. " ++
                 "Setting 3 GB maxmemory limit with 'noeviction' policy now.",
             .{},
@@ -396,6 +548,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     }
 
     server.lua.init(true);
+    server.lua.time_limit = LUA_SCRIPT_TIME_LIMIT;
     errdefer server.lua.deinit();
 
     try bio.init();
@@ -436,7 +589,7 @@ fn adjustOpenFilesLimit(self: *Server) !void {
                 const old_maxclients = self.maxclients;
                 self.maxclients = @intCast(bestlimit -| CONFIG_MIN_RESERVED_FDS);
                 if (bestlimit <= CONFIG_MIN_RESERVED_FDS) {
-                    log.warn(
+                    logging.warn(
                         "Your current 'ulimit -n' " ++
                             "of {} is not enough for the server to start. " ++
                             "Please increase your open file limit to at least to {}.",
@@ -444,16 +597,16 @@ fn adjustOpenFilesLimit(self: *Server) !void {
                     );
                     return error.MaxOpenFilesLimitNotEnough;
                 }
-                log.warn(
+                logging.warn(
                     "You requested maxclients of {} " ++
                         "requiring at least {} max file descriptors.",
                     .{ old_maxclients, maxfiles },
                 );
-                log.warn(
+                logging.warn(
                     "Server can't set maximum open files to {} because of OS error: {}.",
                     .{ maxfiles, setrlimit_error },
                 );
-                log.warn("Current maximum open files is {}. " ++
+                logging.warn("Current maximum open files is {}. " ++
                     "maxclients has been reduced to {} to compensate for " ++
                     "low ulimit. " ++
                     "If you need higher maxclients increase 'ulimit -n'.", .{
@@ -461,7 +614,7 @@ fn adjustOpenFilesLimit(self: *Server) !void {
                     self.maxclients,
                 });
             } else {
-                log.info(
+                logging.notice(
                     "Increased maximum number of open files " ++
                         "to {} (it was originally set to {}).",
                     .{ maxfiles, oldlimit },
@@ -469,7 +622,7 @@ fn adjustOpenFilesLimit(self: *Server) !void {
             }
         }
     } else |err| {
-        log.warn(
+        logging.warn(
             "Unable to obtain the current NOFILE limit ({}), " ++
                 "assuming 1024 and setting the max clients configuration accordingly.",
             .{err},
@@ -507,7 +660,7 @@ fn listenToPort(self: *Server) !void {
             addr,
             self.tcp_backlog,
         ) catch |err| {
-            log.warn(
+            logging.warn(
                 "Could not create server TCP listening socket {s}:{}: {}",
                 .{ addr, self.port, err },
             );
@@ -524,8 +677,8 @@ fn listenToPort(self: *Server) !void {
 fn setupSignalHandlers() void {
     // Zig can't compile c.SIG_IGN
     const SIG_IGN: *const fn (c_int) callconv(.c) void = @ptrFromInt(1);
-    _ = c.signal(c.SIGHUP, SIG_IGN);
-    _ = c.signal(c.SIGPIPE, SIG_IGN);
+    _ = libc.signal(libc.SIGHUP, SIG_IGN);
+    _ = libc.signal(libc.SIGPIPE, SIG_IGN);
 
     var act: posix.Sigaction = .{
         .handler = .{
@@ -539,54 +692,33 @@ fn setupSignalHandlers() void {
 }
 
 fn sigShutdownHandler(sig: i32) callconv(.c) void {
-    switch (sig) {
-        posix.SIG.INT => log.warn("Received SIGINT scheduling shutdown...", .{}),
-        posix.SIG.TERM => log.warn("Received SIGTERM scheduling shutdown...", .{}),
-        else => log.warn("Received shutdown signal, scheduling shutdown...", .{}),
-    }
+    // SIGINT is often delivered via Ctrl+C in an interactive session.
+    // If we receive the signal the second time, we interpret this as
+    // the user really wanting to quit ASAP without waiting to persist
+    // on disk.
     if (server.shutdown_asap and sig == posix.SIG.INT) {
-        log.warn("You insist... exiting now.", .{});
+        logging.warn("You insist... exiting now.", .{});
+        rdb.rdbRemoveTempFile(libc.getpid());
         //Exit with an error since this was not a clean shutdown.
         std.process.exit(1);
+    } else if (server.loading) {
+        logging.warn(
+            "Received shutdown signal during loading, exiting now.",
+            .{},
+        );
+        std.process.exit(0);
+    }
+    switch (sig) {
+        posix.SIG.INT => logging.warn("Received SIGINT scheduling shutdown...", .{}),
+        posix.SIG.TERM => logging.warn("Received SIGTERM scheduling shutdown...", .{}),
+        else => logging.warn("Received shutdown signal, scheduling shutdown...", .{}),
     }
     server.shutdown_asap = true;
 }
 
 pub fn up(self: *Server) !void {
-    // Create an event handler for accepting new connections in TCP and Unix
-    // domain sockets.
-    for (self.ipfd[0..self.ipfd_count]) |fd| {
-        self.el.createFileEvent(
-            fd,
-            ae.READABLE,
-            networking.acceptHandler,
-            null,
-        ) catch |err| {
-            log.err("Unrecoverable error creating server.ipfd file event.", .{});
-            return err;
-        };
-    }
-    if (self.sofd > 0) {
-        self.el.createFileEvent(
-            self.sofd,
-            ae.READABLE,
-            networking.acceptHandler,
-            null,
-        ) catch |err| {
-            log.err("Unrecoverable error creating server.sofd file event.", .{});
-            return err;
-        };
-    }
-
-    _ = self.el.createTimeEvent(
-        1,
-        serverCron,
-        null,
-        null,
-    );
-
     self.el.setBeforeSleepProc(beforeSleep);
-
+    // TODO: after sleep
     try self.el.main();
 }
 
@@ -649,7 +781,7 @@ fn serverCron(
         if (prepareForShutdown(SHUTDOWN_NOFLAGS)) {
             std.process.exit(0);
         }
-        log.warn(
+        logging.warn(
             "SIGTERM received but errors trying to shut down the server, " ++
                 "check the logs for more information",
             .{},
@@ -663,32 +795,95 @@ fn serverCron(
     // Handle background operations on Redis databases.
     databaseCron();
 
+    // Check if a background saving of AOF rewrite in progress terminated.
+    if (server.rdb_child_pid != -1 or server.aof_child_pid != -1) {
+        var statloc: c_int = undefined;
+        const pid = libc.wait3(&statloc, libc.WNOHANG, null);
+        if (pid != 0) {
+            const exitcode = libc.WEXITSTATUS(statloc);
+            var bysignal: c_int = 0;
+            if (libc.WIFSIGNALED(statloc)) {
+                bysignal = libc.WTERMSIG(statloc);
+            }
+            if (pid == -1) {
+                logging.warn(
+                    "wait3() returned an error: {s}. rdb_child_pid = {}, " ++
+                        "aof_child_pid = {}",
+                    .{
+                        libc.strerror(std.c._errno().*),
+                        server.rdb_child_pid,
+                        server.aof_child_pid,
+                    },
+                );
+            } else if (pid == server.rdb_child_pid) {
+                rdb.backgroundSaveDoneHandler(exitcode, bysignal);
+                if (bysignal == 0 and exitcode == 0) {
+                    childinfo.receive();
+                }
+            }
+            // TODO: AOF child pid
+            updateDictResizePolicy();
+            childinfo.closePipe();
+        }
+    } // TODO: save params, AOF
+
     // Close clients that need to be closed asynchronous.
     networking.freeClientsInAsyncFreeQueue();
+
+    // Start a scheduled BGSAVE if the corresponding flag is set. This is
+    // useful when we are forced to postpone a BGSAVE because an AOF
+    // rewrite is in progress.
+    //
+    // Note: this code must be after the replicationCron() call above so
+    // make sure when refactoring this file to keep this order. This is useful
+    // because we want to give priority to RDB savings for replication.
+    if (server.rdb_child_pid == -1 and server.aof_child_pid != -1 and
+        server.rdb_bgsave_scheduled and
+        ((server.unixtime.get() - server.lastbgsave_try > CONFIG_BGSAVE_RETRY_DELAY) or
+            server.lastbgsave_status == true))
+    {
+        var rsi: rdb.SaveInfo = undefined;
+        const rsiptr = rsi.populate();
+        if (rdb.saveBackground(server.rdb_filename, rsiptr)) {
+            server.rdb_bgsave_scheduled = false;
+        }
+    }
 
     return @intCast(@divFloor(1000, server.hz));
 }
 
 fn prepareForShutdown(flags: i32) bool {
     _ = flags;
-    log.warn("User requested shutdown..", .{});
+    logging.warn("User requested shutdown..", .{});
+
+    // Kill the saving child if there is a background saving in progress.
+    // We want to avoid race conditions, for instance our saving child may
+    // overwrite the synchronous saving did by SHUTDOWN.
+    if (server.rdb_child_pid != -1) {
+        logging.warn("There is a child saving an .rdb. Killing it!", .{});
+        posix.kill(server.rdb_child_pid, posix.SIG.USR1) catch {};
+        rdb.rdbRemoveTempFile(server.rdb_child_pid);
+    }
 
     // Close the listening sockets. Apparently this allows faster restarts.
     closeListeningSockets(true);
 
-    log.warn("Redis is now ready to exit, bye bye...", .{});
+    logging.warn("Redis is now ready to exit, bye bye...", .{});
     return true;
 }
 
+/// Close listening sockets. Also unlink the unix domain socket if
+/// unlink_unix_socket is TRUE.
 fn closeListeningSockets(unlink_unix_socket: bool) void {
     for (0..server.ipfd_count) |i| {
         posix.close(server.ipfd[i]);
     }
-
-    if (server.sofd != -1) posix.close(server.sofd);
-
+    if (server.sofd != -1) {
+        posix.close(server.sofd);
+    }
+    // TODO: cluster
     if (unlink_unix_socket and server.unixsocket != null) {
-        log.info("Removing the unix socket file.", .{});
+        logging.notice("Removing the unix socket file.", .{});
         // don't care if this fails
         posix.unlink(server.unixsocket.?) catch {};
     }
@@ -751,7 +946,7 @@ fn clientsCronHandleTimeout(cli: *Client, now_ms: i64) bool {
         cli.flags & CLIENT_PUBSUB == 0 and // no timeout for Pub/Sub clients
         (now_sec - cli.lastinteraction > server.maxidletime))
     {
-        log.debug("Closing idle client", .{});
+        logging.verbose("Closing idle client", .{});
         cli.free();
         return true;
     } else if (cli.flags & CLIENT_BLOCKED != 0) {
@@ -883,6 +1078,13 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         return true;
     }
 
+    // Loading DB? Return an error if the command has not the
+    // CMD_LOADING flag.
+    if (server.loading and cli.cmd.?.flags & CMD_LOADING == 0) {
+        cli.addReply(Server.shared.loadingerr);
+        return true;
+    }
+
     // Exec the command
     if (cli.flags & CLIENT_MULTI != 0 and
         cli.cmd.?.proc != multi.execCommand and
@@ -938,20 +1140,23 @@ fn populateCommandTable(self: *Server) void {
 }
 
 pub fn call(self: *Server, cli: *Client, flags: i32) void {
-    _ = flags;
+    _ = flags; // TODO:
     self.fixed_time_expire +%= 1;
+
+    // Call the command
     self.updateCachedTime();
     cli.cmd.?.proc(cli);
+
     self.fixed_time_expire -%= 1;
 }
 
 pub fn destroy() void {
     server.el.destroy();
 
+    allocator.free(server.rdb_filename);
     if (server.requirepass) |passwd| {
         allocator.free(passwd);
     }
-
     for (server.bindaddr[0..server.bindaddr_count]) |addr| {
         allocator.free(addr);
     }
@@ -1088,7 +1293,6 @@ const util = @import("util.zig");
 const List = @import("list.zig").List;
 const networking = @import("networking.zig");
 const anet = @import("anet.zig");
-const log = std.log.scoped(.server);
 const evict = @import("evict.zig");
 const posix = std.posix;
 const atomic = @import("atomic.zig");
@@ -1100,8 +1304,12 @@ const commandtable = @import("commandtable.zig");
 pub const Command = commandtable.Command;
 pub const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");
-const c = @cImport({
+const libc = @cImport({
     @cInclude("sys/signal.h");
+    @cInclude("sys/wait.h");
+    @cInclude("sys/errno.h");
+    @cInclude("string.h");
+    @cInclude("unistd.h");
 });
 const assert = std.debug.assert;
 const hasher = @import("hasher.zig");
@@ -1109,3 +1317,6 @@ const pubsub = @import("pubsub.zig");
 const multi = @import("multi.zig");
 const zlua = @import("zlua");
 const scripting = @import("scripting.zig");
+const logging = @import("logging.zig");
+const rdb = @import("rdb.zig");
+const childinfo = @import("childinfo.zig");

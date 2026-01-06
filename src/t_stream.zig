@@ -97,6 +97,7 @@ pub fn xaddCommand(cli: *CLient) void {
     cli.addReplyStreamID(&id);
 
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
 
     if (maxlen >= 0) {
         _ = stream.trim(@intCast(maxlen), approx_maxlen);
@@ -145,6 +146,7 @@ pub fn xdelCommand(cli: *CLient) void {
     }
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
+        server.dirty +%= deleted;
     }
     cli.addReplyLongLong(deleted);
 }
@@ -316,6 +318,7 @@ pub fn xtrimCommand(cli: *CLient) void {
     }
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
+        server.dirty +%= @intCast(deleted);
     }
     cli.addReplyLongLong(@intCast(deleted));
 }
@@ -577,6 +580,7 @@ pub fn xreadCommand(cli: *CLient) void {
                     flags,
                     spi,
                 );
+                if (groups != null) server.dirty +%= 1;
             }
         }
 
@@ -723,6 +727,7 @@ pub fn xgroupCommand(cli: *CLient) void {
         cg = stream.?.createCG(sds.asBytes(groupname), &id);
         if (cg != null) {
             cli.addReply(Server.shared.ok);
+            server.dirty +%= 1;
         } else {
             cli.addReplyBulkString("-BUSYGROUP Consumer Group name already exists");
         }
@@ -735,6 +740,7 @@ pub fn xgroupCommand(cli: *CLient) void {
         }
         cg.?.last_id = id;
         cli.addReply(Server.shared.ok);
+        server.dirty +%= 1;
     } else if (eqlCase(opt, "DESTROY") and cli.argc == 4) {
         if (cg) |group| {
             _ = raxlib.raxRemove(
@@ -745,6 +751,7 @@ pub fn xgroupCommand(cli: *CLient) void {
             );
             group.destroy();
             cli.addReply(Server.shared.cone);
+            server.dirty +%= 1;
         } else {
             cli.addReply(Server.shared.czero);
         }
@@ -753,6 +760,7 @@ pub fn xgroupCommand(cli: *CLient) void {
         // that were yet associated with such a consumer.
         const pending = cg.?.delConsumer(sds.cast(argv[4].v.ptr));
         cli.addReplyLongLong(@intCast(pending));
+        server.dirty +%= 1;
     } else if (eqlCase(opt, "HELP")) {
         cli.addReplyHelp(help);
     } else {
@@ -808,6 +816,7 @@ pub fn xackCommand(cli: *CLient) void {
             _ = raxlib.raxRemove(nack.consumer.?.pel, &buf, buf.len, null);
             nack.destroy();
             acknowledged += 1;
+            server.dirty +%= 1;
         }
     }
     cli.addReplyLongLong(acknowledged);
@@ -1250,7 +1259,7 @@ pub fn xclaimCommand(cli: *CLient) void {
             if (justid) {
                 cli.addReplyStreamID(&id);
             } else {
-                assert(stream.?.replyWithRange(
+                const emitted = stream.?.replyWithRange(
                     cli,
                     &id,
                     &id,
@@ -1260,9 +1269,11 @@ pub fn xclaimCommand(cli: *CLient) void {
                     null,
                     Stream.RWR_RAWENTRIES,
                     null,
-                ) == 1);
+                );
+                if (emitted == 0) cli.addReply(Server.shared.nullbulk);
             }
             arraylen += 1;
+            server.dirty +%= 1;
         }
     }
     cli.setDeferredMultiBulkLength(replylen, arraylen);
@@ -1305,6 +1316,7 @@ pub fn xsetidCommand(cli: *CLient) void {
     }
     stream.last_id = id;
     cli.addReply(Server.shared.ok);
+    server.dirty +%= 1;
 }
 
 /// XINFO CONSUMERS <key> <group>
@@ -1906,7 +1918,7 @@ pub const Stream = struct {
                     // Get the master ID.
                     self.master_id.decode(self.ri.key[0..self.ri.key_len]);
                     // Get the master fields count.
-                    self.lp = @ptrCast(@alignCast(self.ri.data.?));
+                    self.lp = ListPack.cast(self.ri.data.?);
                     self.lp_ele = self.lp.?.first(); // Seek items count
                     self.lp_ele = self.lp.?.next(self.lp_ele.?); // Seek deleted count.
                     self.lp_ele = self.lp.?.next(self.lp_ele.?); // Seek num fields.
@@ -2271,7 +2283,7 @@ pub const Stream = struct {
 
         // Get a reference to the tail node listpack.
         if (raxlib.raxNext(&ri) != 0) {
-            lp = @ptrCast(@alignCast(ri.data.?));
+            lp = ListPack.cast(ri.data.?);
             lp_bytes = lp.?.bytes.get();
         }
 
@@ -2488,7 +2500,7 @@ pub const Stream = struct {
 
         var deleted: usize = 0;
         while (self.length > maxlen and raxlib.raxNext(&ri) != 0) {
-            var lp: ?*ListPack = @ptrCast(@alignCast(ri.data.?));
+            var lp: ?*ListPack = ListPack.cast(ri.data.?);
             var p = lp.?.first();
             const entries: usize = @intCast(ListPack.getInteger(p.?));
 
@@ -2859,12 +2871,12 @@ pub const Stream = struct {
     }
 
     fn freeListPackCallback(ptr: ?*anyopaque) callconv(.c) void {
-        const lp: *ListPack = @ptrCast(@alignCast(ptr.?));
+        const lp: *ListPack = ListPack.cast(ptr.?);
         lp.free();
     }
 
     fn freeCGCallback(ptr: ?*anyopaque) callconv(.c) void {
-        const cg: *CG = @ptrCast(@alignCast(ptr.?));
+        const cg: *CG = CG.cast(ptr.?);
         cg.destroy();
     }
 };

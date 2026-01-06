@@ -259,7 +259,7 @@ inline fn numbersPtr(s: *IntSet, comptime T: type) [*]T {
     return @ptrCast(@alignCast(ptr));
 }
 
-inline fn toBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
+pub inline fn toBytes(s: *IntSet) []align(@alignOf(IntSet)) u8 {
     const mem: [*]align(@alignOf(IntSet)) u8 = @ptrCast(s);
     return mem[0..s.blobLen()];
 }

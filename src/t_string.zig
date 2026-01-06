@@ -141,6 +141,7 @@ pub fn getsetCommand(cli: *Client) void {
     const key = argv[1];
     const val = argv[2];
     cli.db.setKey(key, val);
+    server.dirty +%= 1;
 }
 
 /// INCR key
@@ -194,6 +195,7 @@ pub fn incrbyfloatCommand(cli: *Client) void {
         cli.db.add(key, new);
     }
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
     cli.addReplyBulk(new);
 }
 
@@ -244,6 +246,7 @@ pub fn appendCommand(cli: *Client) void {
         totlen = append.stringLen();
     }
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
     cli.addReplyLongLong(@intCast(totlen));
 }
 
@@ -273,7 +276,11 @@ pub fn setrangeCommand(cli: *Client) void {
             return;
         }
 
-        o = Object.create(.string, sds.newLen(allocator.child, null, length));
+        o = Object.create(.string, sds.newLen(
+            allocator.child,
+            sds.NOINIT.ptr,
+            length,
+        ));
         defer o.?.decrRefCount();
         cli.db.add(key, o.?);
     } else {
@@ -307,6 +314,7 @@ pub fn setrangeCommand(cli: *Client) void {
             sds.getLen(value),
         );
         cli.db.signalModifiedKey(key);
+        server.dirty +%= 1;
     }
     cli.addReplyLongLong(@intCast(sds.getLen(s)));
 }
@@ -417,6 +425,7 @@ fn set(
     }
 
     cli.db.setKey(key, val);
+    server.dirty +%= 1;
     if (expire != null) {
         cli.db.setExpire(
             cli,
@@ -469,6 +478,7 @@ fn incr(cli: *Client, by: i64) void {
     }
 
     cli.db.signalModifiedKey(key);
+    server.dirty +%= 1;
 
     cli.addReply(Server.shared.colon);
     cli.addReply(new);
@@ -502,6 +512,7 @@ fn mset(cli: *Client, nx: bool) void {
         const val = argv[j + 1];
         cli.db.setKey(key, val);
     }
+    server.dirty +%= @intCast(@divExact(cli.argc - 1, 2));
     cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
 
@@ -540,3 +551,4 @@ const memzig = @import("mem.zig");
 const memcpy = memzig.memcpy;
 const util = @import("util.zig");
 const allocator = @import("allocator.zig");
+const server = &Server.instance;

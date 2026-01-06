@@ -93,11 +93,13 @@ pub fn empty(allocator: Allocator) String {
     return new(allocator, "");
 }
 
+pub const NOINIT: []const u8 = "NOINIT";
+
 /// Create a new sds string with the content specified by the 'init' pointer
 /// and 'initlen'.
 ///
-/// If init is null, the buffer is left uninitialized;
-pub fn newLen(allocator: Allocator, init: ?[*]const u8, initlen: usize) String {
+///* If NOINIT is used, the buffer is left uninitialized;
+pub fn newLen(allocator: Allocator, init: [*]const u8, initlen: usize) String {
     // Empty strings are usually created in order to append. Use type 8
     // since type 5 is not good at this.
     var typ = reqType(initlen);
@@ -105,20 +107,22 @@ pub fn newLen(allocator: Allocator, init: ?[*]const u8, initlen: usize) String {
         typ = TYPE_8;
     }
 
+    var mutinit: ?[*]const u8 = init;
     const hdr_len = hdrSize(typ);
     const mem_size = hdr_len + initlen + 1;
     const mem = allocator.alloc(u8, mem_size) catch oom();
-    if (init == null) @memset(mem, 0);
+    if (@intFromPtr(init) == @intFromPtr(NOINIT.ptr)) {
+        mutinit = null;
+    }
 
     const s: String = mem.ptr + hdr_len;
     setType(s, typ);
     setLength(s, initlen);
     setAlloc(s, initlen);
-    if (init) |data| {
-        @branchHint(.likely);
+    if (mutinit) |data| {
         setBuf(s, data[0..initlen]);
-        s[initlen] = 0;
     }
+    s[initlen] = 0;
     return s;
 }
 

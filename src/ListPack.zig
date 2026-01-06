@@ -84,6 +84,10 @@ pub fn new() *ListPack {
     return lp;
 }
 
+pub fn cast(ptr: *anyopaque) *ListPack {
+    return @ptrCast(@alignCast(ptr));
+}
+
 /// Insert, delete or replace the specified element 'ele' at the specified
 /// position 'p', with 'p' being a listpack element pointer obtained with
 /// first(), last(), index(), next(), prev() or seek().
@@ -190,7 +194,7 @@ pub fn insert(
     // Realloc before: we need more room.
     if (new_listpack_bytes > old_listpack_bytes) {
         const new_memory = allocator.child.realloc(
-            lp.memory(),
+            lp.asBytes(),
             new_listpack_bytes,
         ) catch {
             return null;
@@ -217,7 +221,7 @@ pub fn insert(
     // Realloc after: we need to free space.
     if (new_listpack_bytes < old_listpack_bytes) {
         const new_memory = allocator.child.realloc(
-            lp.memory(),
+            lp.asBytes(),
             new_listpack_bytes,
         ) catch {
             return null;
@@ -424,7 +428,7 @@ pub fn seek(self: *ListPack, index: i32) ?[*]u8 {
 }
 
 pub fn free(self: *ListPack) void {
-    allocator.free(self.memory());
+    allocator.free(self.asBytes());
 }
 
 pub inline fn addr(self: *ListPack) [*]align(@alignOf(ListPack)) u8 {
@@ -508,7 +512,7 @@ pub fn getInteger(ele: [*]u8) i64 {
     return util.string2ll(e[0..@intCast(v)]).?;
 }
 
-inline fn memory(self: *ListPack) []align(@alignOf(ListPack)) u8 {
+pub inline fn asBytes(self: *ListPack) []align(@alignOf(ListPack)) u8 {
     return self.addr()[0..self.bytes.get()];
 }
 

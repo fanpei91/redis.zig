@@ -101,6 +101,7 @@ pub fn moveCommand(cli: *Client) void {
 
     // OK! key moved, free the entry in the source DB
     _ = src.delete(key);
+    server.dirty +%= 1;
     cli.addReply(Server.shared.cone);
 }
 
@@ -134,6 +135,7 @@ fn del(cli: *Client, lazy: bool) void {
         if (deleted) {
             cli.db.signalModifiedKey(key);
             numdel += 1;
+            server.dirty +%= 1;
         }
     }
     cli.addReplyLongLong(numdel);
@@ -179,7 +181,7 @@ fn rename(cli: *Client, nx: bool) void {
     _ = cli.db.delete(key);
     cli.db.signalModifiedKey(key);
     cli.db.signalModifiedKey(newkey);
-
+    server.dirty +%= 1;
     cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
 
@@ -332,7 +334,7 @@ pub const Database = struct {
     /// considered valid.
     pub fn setExpire(
         self: *Database,
-        cli: *Client,
+        cli: ?*Client,
         key: *Object,
         when: i64,
     ) void {
@@ -484,7 +486,14 @@ pub const Database = struct {
             return null;
         };
         const val: *Object = entry.val.?;
-        if (flags & Server.LOOKUP_NOTOUCH == 0) {
+
+        // Update the access time for the ageing algorithm.
+        // Don't do it if we have a saving child, as this will trigger
+        // a copy on write madness.
+        if (server.rdb_child_pid == -1 and
+            server.aof_child_pid == -1 and
+            flags & Server.LOOKUP_NOTOUCH == 0)
+        {
             if (server.maxmemory_policy & Server.MAXMEMORY_FLAG_LFU != 0) {
                 updateLFU(val);
             } else {
@@ -534,6 +543,9 @@ pub const Database = struct {
 
         // No expire for this key
         if (when < 0) return false;
+
+        // Don't expire anything while loading. It will be done later.
+        if (server.loading) return false;
 
         var now: i64 = undefined;
         // If we are in the middle of a command execution, we still want to use
