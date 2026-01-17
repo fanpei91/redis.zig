@@ -32,17 +32,17 @@ var threads: [NUM_OPS]std.Thread = undefined;
 var mutex: [NUM_OPS]std.Thread.Mutex = undefined;
 var newjob_cond: [NUM_OPS]std.Thread.Condition = undefined;
 var jobs: [NUM_OPS]*JobList = undefined;
-var cancel: [NUM_OPS]std.atomic.Value(bool) = undefined;
+var pending: [NUM_OPS]u64 = undefined;
 
 pub fn init() std.Thread.SpawnError!void {
     mutex = .{ .{}, .{}, .{} };
     newjob_cond = .{ .{}, .{}, .{} };
-    cancel = .{ .init(false), .init(false), .init(false) };
+    pending = .{ 0, 0, 0 };
     for (0..NUM_OPS) |i| {
         jobs[i] = JobList.create(&.{ .freeVal = Job.free });
         threads[i] = try std.Thread.spawn(
             .{
-                .allocator = allocator.child,
+                .allocator = allocator.impl,
             },
             processBackgroundJobs,
             .{
@@ -54,23 +54,21 @@ pub fn init() std.Thread.SpawnError!void {
 
 fn processBackgroundJobs(job_type: Job.Type) void {
     const i: usize = @intFromEnum(job_type);
-
-    const mtx: *std.Thread.Mutex = &mutex[i];
+    mutex[i].lock();
     const jbs: *JobList = jobs[i];
     const cond: *std.Thread.Condition = &newjob_cond[i];
-
-    mtx.lock();
-    defer mtx.unlock();
-
-    while (!cancel[i].load(.seq_cst)) {
+    while (true) {
         if (jbs.len == 0) {
-            cond.wait(mtx);
+            cond.wait(&mutex[i]);
             continue;
         }
         const ln = jbs.first.?;
-        defer jbs.removeNode(ln);
         const job = ln.value;
+        mutex[i].unlock();
         job.do(job_type);
+        mutex[i].lock();
+        jbs.removeNode(ln);
+        pending[i] -= 1;
     }
 }
 
@@ -87,23 +85,18 @@ pub fn createBackgroundJob(
 
     const i: usize = @intFromEnum(job_type);
     mutex[i].lock();
-    defer mutex[i].unlock();
-
     jobs[i].append(job);
+    pending[i] += 1;
     newjob_cond[i].signal();
+    mutex[i].unlock();
 }
 
-pub fn deinit() void {
-    for (0..cancel.len) |i| cancel[i].store(true, .seq_cst);
-    for (0..newjob_cond.len) |i| newjob_cond[i].signal();
-    for (0..threads.len) |i| threads[i].join();
-    for (jobs, 0..) |j, t| {
-        var it = j.iterator(.forward);
-        while (it.next()) |node| {
-            node.value.do(@as(Job.Type, @enumFromInt(t)));
-        }
-        j.release();
-    }
+/// Return the number of pending jobs of the specified type.
+pub fn pendingJobsOfType(job_type: Job.Type) u64 {
+    const i: usize = @intFromEnum(job_type);
+    mutex[i].lock();
+    defer mutex[i].unlock();
+    return pending[i];
 }
 
 pub const Job = struct {
@@ -122,10 +115,15 @@ pub const Job = struct {
 
     fn do(job: *Job, job_type: Job.Type) void {
         switch (job_type) {
-            .lazyFree => job.lazyFree(),
-            // TODO: closeFile
-            // TODO: aofFsync
-            else => {},
+            .lazyFree => {
+                job.lazyFree();
+            },
+            .closeFile => {
+                posix.close(@intCast(@intFromPtr(job.arg1.?)));
+            },
+            .aofFsync => {
+                config.fsync(@intCast(@intFromPtr(job.arg1.?))) catch {};
+            },
         }
     }
 
@@ -164,3 +162,5 @@ const allocator = @import("allocator.zig");
 const JobList = @import("list.zig").List(void, *Job);
 const lazyfree = @import("lazyfree.zig");
 const log = std.log.scoped(.bio);
+const config = @import("config.zig");
+const posix = std.posix;

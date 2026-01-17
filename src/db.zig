@@ -198,7 +198,7 @@ pub const Database = struct {
         pub const Map = dict.Dict(sds.String, ?*Object);
 
         fn dupeKey(key: sds.String) sds.String {
-            return sds.dupe(allocator.child, key);
+            return sds.dupe(allocator.impl, key);
         }
 
         fn dupeVal(val: ?*Object) ?*Object {
@@ -210,7 +210,7 @@ pub const Database = struct {
         }
 
         fn freeKey(key: sds.String) void {
-            sds.free(allocator.child, key);
+            sds.free(allocator.impl, key);
         }
 
         fn freeVal(val: ?*Object) void {
@@ -517,14 +517,52 @@ pub const Database = struct {
     /// it still exists in the database. The main way this function is called
     /// is via lookupKey*() family of functions.
     ///
-    /// The return value of the function is false if the key is still valid,
-    /// otherwise the function returns true if the key is expired.
+    /// The behavior of the function depends on the replication role of the
+    /// instance, because slave instances do not expire keys, they wait
+    /// for DELs from the master for consistency matters. However even
+    /// slaves will try to have a coherent return value for the function,
+    /// so that read commands executed in the slave side will be able to
+    /// behave like if the key is expired even if still present (because the
+    /// master has yet to propagate the DEL).
+    ///
+    /// In masters as a side effect of finding a key which is expired, such
+    /// key will be evicted from the database. Also this may trigger the
+    /// propagation of a DEL/UNLINK command in AOF / replication stream.
+    ///
+    /// The return value of the function is 0 if the key is still valid,
+    /// otherwise the function returns 1 if the key is expired.
     fn expireIfNeeded(self: *Database, key: *Object) bool {
         if (!self.keyIsExpired(key)) return false;
-        if (server.lazyfree_lazy_expire) {
-            return lazyfree.asyncDelete(self, key);
+
+        // Delete the key.
+        self.propagateExpire(key, server.lazyfree_lazy_expire);
+        return if (server.lazyfree_lazy_expire)
+            lazyfree.asyncDelete(self, key)
+        else
+            self.syncDelete(key);
+    }
+
+    /// Propagate expires into slaves and the AOF file.
+    /// When a key expires in the master, a DEL operation for this key is sent
+    /// to all the slaves and the AOF file if enabled.
+    ///
+    /// This way the key expiry is centralized in one place, and since both
+    /// AOF and the master->slave link guarantee operation ordering, everything
+    /// will be consistent even if we allow write operations against expiring
+    /// keys.
+    pub fn propagateExpire(self: *Database, key: *Object, lazy: bool) void {
+        var argv = [_]*Object{
+            if (lazy) Server.shared.unlink else Server.shared.del,
+            key,
+        };
+        if (server.aof_state != Server.AOF_OFF) {
+            aof.feedAppendOnlyFile(
+                server.delCommand,
+                @intCast(self.id),
+                &argv,
+                argv.len,
+            );
         }
-        return self.syncDelete(key);
     }
 
     /// Delete a key, value, and associated expiration entry if any,
@@ -838,3 +876,4 @@ const IntSet = @import("IntSet.zig");
 const hasher = @import("hasher.zig");
 const zset = @import("t_zset.zig");
 const multi = @import("multi.zig");
+const aof = @import("aof.zig");

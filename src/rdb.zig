@@ -76,9 +76,7 @@ pub fn saveCommand(cli: *Client) void {
         cli.addReplyErr("Background save already in progress");
         return;
     }
-    var rsi: SaveInfo = undefined;
-    const rsiptr = rsi.populate();
-    if (save(server.rdb_filename, rsiptr)) {
+    if (save(server.rdb_filename)) {
         cli.addReply(Server.shared.ok);
     } else {
         cli.addReply(Server.shared.err);
@@ -101,9 +99,6 @@ pub fn bgsaveCommand(cli: *Client) void {
         }
     }
 
-    var rsi: SaveInfo = undefined;
-    const rsiptr = rsi.populate();
-
     if (server.rdb_child_pid != -1) {
         cli.addReplyErr("Background save already in progress");
     } else if (server.aof_child_pid != -1) {
@@ -117,14 +112,14 @@ pub fn bgsaveCommand(cli: *Client) void {
                     "possible.",
             );
         }
-    } else if (saveBackground(server.rdb_filename, rsiptr)) {
+    } else if (saveBackground(server.rdb_filename)) {
         cli.addReplyStatus("Background saving started");
     } else {
         cli.addReply(Server.shared.err);
     }
 }
 
-pub fn saveBackground(filename: []const u8, rsi: ?*SaveInfo) bool {
+pub fn saveBackground(filename: []const u8) bool {
     if (server.aof_child_pid != -1 or server.rdb_child_pid != -1) {
         return false;
     }
@@ -142,16 +137,14 @@ pub fn saveBackground(filename: []const u8, rsi: ?*SaveInfo) bool {
     if (childpid == 0) {
         // Child
         Server.closeChildUnusedResourceAfterFork();
-        Server.redisSetProcTitle("redis-rdb-bgsave");
-        const retval = save(filename, rsi);
+        Server.setProcTitle("redis-rdb-bgsave");
+        const retval = save(filename);
         if (retval) {
-            // TODO: Copy On Write size
             childinfo.send(Server.CHILD_INFO_TYPE_RDB);
         }
         Server.exitFromChild(if (retval) 0 else 1);
     } else {
         // Parent
-        // TODO: server stat
         logging.notice("Background saving started by pid {}", .{childpid});
         server.rdb_save_time_start = std.time.timestamp();
         server.rdb_child_pid = childpid;
@@ -167,9 +160,6 @@ pub fn backgroundSaveDoneHandler(exitcode: c_int, bysignal: c_int) void {
     switch (server.rdb_child_type) {
         Server.RDB_CHILD_TYPE_DISK => {
             backgroundSaveDoneHandlerDisk(exitcode, bysignal);
-        },
-        Server.RDB_CHILD_TYPE_SOCKET => {
-            // TODO:
         },
         else => {
             @panic("Unknown RDB child type");
@@ -200,7 +190,6 @@ fn backgroundSaveDoneHandlerDisk(exitcode: c_int, bysignal: c_int) void {
     server.rdb_child_pid = -1;
     server.rdb_child_type = Server.RDB_CHILD_TYPE_NONE;
     server.rdb_save_time_start = -1;
-    // TODO: Replication Slaves
 }
 
 /// Like loadRio() but takes a filename instead of a rio stream. The
@@ -210,7 +199,7 @@ fn backgroundSaveDoneHandlerDisk(exitcode: c_int, bysignal: c_int) void {
 ///
 /// If you pass an 'rsi' structure initialied with RDB_SAVE_OPTION_INIT, the
 /// loading code will fiil the information fields in the structure.
-pub fn load(filename: []const u8, rsi: ?*SaveInfo) !void {
+pub fn load(filename: []const u8) !void {
     var cwd = std.fs.cwd();
 
     const fp = try cwd.openFile(filename, .{ .mode = .read_only });
@@ -222,10 +211,10 @@ pub fn load(filename: []const u8, rsi: ?*SaveInfo) !void {
     defer fio.file.close();
 
     var rdb = fio.readWriter();
-    try loadRio(&rdb, rsi, false);
+    try loadRio(&rdb, false);
 }
 
-///  Mark that we are loading in the global state and setup the fields
+/// Mark that we are loading in the global state and setup the fields
 /// needed to provide loading stats
 pub fn startLoading(fp: std.fs.File) void {
     server.loading = true;
@@ -239,9 +228,7 @@ pub fn startLoading(fp: std.fs.File) void {
 }
 
 /// Load an RDB file from the rio stream 'rdb'.
-pub fn loadRio(rdb: *rio.ReadWriter, rsi: ?*SaveInfo, loading_aof: bool) !void {
-    _ = rsi;
-
+pub fn loadRio(rdb: *rio.ReadWriter, loading_aof: bool) !void {
     var db = &server.db[0];
 
     rdb.updateChecksum = loadProgressCallback;
@@ -344,9 +331,7 @@ pub fn loadRio(rdb: *rio.ReadWriter, rsi: ?*SaveInfo, loading_aof: bool) !void {
                             "RDB '{s}': {s}",
                             .{ key, val },
                         );
-                    }
-                    // TODO: repl-stream-db, repl-id, repl-offset
-                    else if (eqlCase(key, "lua")) {
+                    } else if (eqlCase(key, "lua")) {
                         // Load the script back in memory.
                         if (server.lua.createFunction(null, auxval) == null) {
                             exitReportCorruptRDB(
@@ -364,7 +349,6 @@ pub fn loadRio(rdb: *rio.ReadWriter, rsi: ?*SaveInfo, loading_aof: bool) !void {
                     }
                     continue; // Read type again.
                 },
-                // TODO: Module
                 else => {},
             }
 
@@ -380,7 +364,6 @@ pub fn loadRio(rdb: *rio.ReadWriter, rsi: ?*SaveInfo, loading_aof: bool) !void {
             // responsible for key expiry. If we would expire keys here, the
             // snapshot taken by the master may not be reflected on the slave.
             if (!loading_aof and expiretime != -1 and expiretime < now) {
-                // TODO: server.masterhost == null
                 // Do nothing, key and val will be freed.
             } else {
                 // Add the new object in the hash table
@@ -452,7 +435,6 @@ pub fn loadProgressCallback(rdb: *rio.ReadWriter, buf: []const u8) void {
         // our cached time since it is used to create and update the last
         // interaction time with clients and for other important things.
         server.updateCachedTime();
-        // TODO: replication
         loadingProgress(rdb.processed_bytes);
         _ = networking.processEventsWhileBlocked() catch {};
     }
@@ -461,7 +443,6 @@ pub fn loadProgressCallback(rdb: *rio.ReadWriter, buf: []const u8) void {
 ///  Refresh the loading progress info
 pub fn loadingProgress(pos: usize) void {
     server.loading_loaded_bytes = pos;
-    // TODO: server stat
 }
 
 /// Loading finished
@@ -481,7 +462,7 @@ pub fn rdbRemoveTempFile(childpid: posix.pid_t) void {
 }
 
 /// Save the DB on disk. Return FALSE on error, TRUE on success.
-pub fn save(filename: []const u8, rsi: ?*SaveInfo) bool {
+pub fn save(filename: []const u8) bool {
     var cwdbuf: [libc.MAXPATHLEN]u8 = undefined;
     var tmpbuf: [255:0]u8 = undefined;
 
@@ -513,7 +494,7 @@ pub fn save(filename: []const u8, rsi: ?*SaveInfo) bool {
     var err: anyerror = undefined;
     biz: {
         var rdb = fio.readWriter();
-        saveRio(&rdb, RDB_SAVE_NONE, rsi) catch |e| {
+        saveRio(&rdb, RDB_SAVE_NONE) catch |e| {
             err = e;
             break :biz;
         };
@@ -523,6 +504,7 @@ pub fn save(filename: []const u8, rsi: ?*SaveInfo) bool {
             err = e;
             break :biz;
         };
+
         fio.file.sync() catch |e| {
             err = e;
             break :biz;
@@ -563,7 +545,7 @@ pub fn save(filename: []const u8, rsi: ?*SaveInfo) bool {
 /// Produces a dump of the database in RDB format sending it to the specified
 /// Redis I/O channel. On failure error is returned and part of the output,
 /// or all the output, can be missing because of I/O errors.
-pub fn saveRio(rdb: *rio.ReadWriter, flags: i32, rsi: ?*SaveInfo) !void {
+pub fn saveRio(rdb: *rio.ReadWriter, flags: i32) !void {
     if (server.rdb_checksum) {
         rdb.updateChecksum = rio.genericUpdateChecksum;
     }
@@ -574,8 +556,7 @@ pub fn saveRio(rdb: *rio.ReadWriter, flags: i32, rsi: ?*SaveInfo) !void {
             unreachable;
         },
     );
-    try saveInfoAuxFields(rdb, flags, rsi);
-    // TODO: Modules AUX
+    try saveInfoAuxFields(rdb, flags);
     for (server.db, 0..) |*db, i| {
         if (db.dict.size() == 0) continue;
         var di = db.dict.iterator(true);
@@ -609,21 +590,8 @@ pub fn saveRio(rdb: *rio.ReadWriter, flags: i32, rsi: ?*SaveInfo) !void {
                 rdb.processed_bytes > processed + Server.AOF_READ_DIFF_INTERVAL_BYTES)
             {
                 processed = rdb.processed_bytes;
-                _ = aof.readDiffFromParent() catch {};
+                aof.readDiffFromParent();
             }
-        }
-    }
-
-    // If we are storing the replication information on disk, persist
-    // the script cache as well: on successful PSYNC after a restart, we need
-    // to be able to process any EVALSHA inside the replication backlog the
-    // master will send us.
-    if (rsi != null and server.lua.scripts.size() != 0) {
-        var di = server.lua.scripts.iterator(false);
-        defer di.release();
-        while (di.next()) |de| {
-            const body = de.val;
-            try saveAuxFieldStrStr(rdb, "lua", sds.castBytes(body.v.ptr));
         }
     }
 
@@ -720,7 +688,6 @@ pub fn saveObjectType(rdb: *rio.ReadWriter, obj: *Object) !void {
                 @panic("Unknown hash encoding");
             }
         },
-        // TODO: MODULE
         .stream => {
             try saveType(rdb, RDB_TYPE_STREAM_LISTPACKS);
         },
@@ -791,12 +758,12 @@ pub fn genericLoadStringObject(
         const buf = if (plain)
             allocator.alignedAlloc(u8, std.mem.Alignment.@"16", len)
         else
-            sds.asBytes(sds.newLen(allocator.child, sds.NOINIT.ptr, len));
+            sds.asBytes(sds.newLen(allocator.impl, sds.NOINIT.ptr, len));
         if (lenptr) |ptr| ptr.* = len;
         errdefer if (plain) {
             allocator.free(buf);
         } else {
-            sds.free(allocator.child, buf.ptr);
+            sds.free(allocator.impl, buf.ptr);
         };
         try rdb.read(buf);
         return buf.ptr;
@@ -867,7 +834,7 @@ fn loadIntegerObject(
             p = allocator.alloc(u8, vs.len);
         } else {
             p = sds.asBytes(sds.newLen(
-                allocator.child,
+                allocator.impl,
                 sds.NOINIT.ptr,
                 vs.len,
             ));
@@ -877,7 +844,7 @@ fn loadIntegerObject(
     } else if (encode) {
         return Object.createStringFromLonglongForValue(val);
     } else {
-        return Object.create(.string, sds.fromLonglong(allocator.child, val));
+        return Object.create(.string, sds.fromLonglong(allocator.impl, val));
     }
 }
 
@@ -1035,9 +1002,7 @@ pub fn saveObject(rdb: *rio.ReadWriter, obj: *Object, key: *Object) !void {
                 try saveStreamConsumers(rdb, cg.consumers);
             }
         }
-    }
-    // TODO: Module
-    else {
+    } else {
         @panic("Unknown object type");
     }
 }
@@ -1124,7 +1089,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                 if (o.encoding == .ht) {
                     _ = Set.Hash.cast(o.v.ptr).add(sds.cast(sdsele), {});
                 } else {
-                    sds.free(allocator.child, sds.cast(sdsele));
+                    sds.free(allocator.impl, sds.cast(sdsele));
                 }
             }
         },
@@ -1187,7 +1152,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                     RDB_LOAD_SDS,
                     null,
                 ));
-                errdefer sds.free(allocator.child, field);
+                errdefer sds.free(allocator.impl, field);
                 const value = sds.cast(try genericLoadStringObject(
                     rdb,
                     RDB_LOAD_SDS,
@@ -1221,8 +1186,8 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                     sds.asBytes(value),
                     .tail,
                 ) };
-                sds.free(allocator.child, field);
-                sds.free(allocator.child, value);
+                sds.free(allocator.impl, field);
+                sds.free(allocator.impl, value);
             }
 
             if (o.encoding == .ht and len > dict.HT_INITIAL_SIZE) {
@@ -1237,7 +1202,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                     RDB_LOAD_SDS,
                     null,
                 ));
-                errdefer sds.free(allocator.child, field);
+                errdefer sds.free(allocator.impl, field);
                 const value = sds.cast(try genericLoadStringObject(
                     rdb,
                     RDB_LOAD_SDS,
@@ -1331,7 +1296,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                         .{},
                     );
                 });
-                defer sds.free(allocator.child, nodekey);
+                defer sds.free(allocator.impl, nodekey);
                 if (sds.getLen(nodekey) != @sizeOf(Stream.Id)) {
                     exitReportCorruptRDB(
                         "Stream node key entry is not the size of a stream ID",
@@ -1386,7 +1351,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                         .{},
                     );
                 });
-                defer sds.free(allocator.child, cgname);
+                defer sds.free(allocator.impl, cgname);
                 var cg_id: Stream.Id = undefined;
                 cg_id.ms = try loadLen(rdb, null);
                 cg_id.seq = try loadLen(rdb, null);
@@ -1437,7 +1402,7 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                             .{},
                         );
                     });
-                    defer sds.free(allocator.child, cname);
+                    defer sds.free(allocator.impl, cname);
                     const consumer = cgroup.lookupConsumer(
                         cname,
                         Stream.SLC_NONE,
@@ -1478,8 +1443,6 @@ pub fn loadObject(rdbtype: u8, rdb: *rio.ReadWriter, key: *Object) !*Object {
                 }
             }
         },
-
-        // TODO: Module
         else => {
             exitReportCorruptRDB("Unknown RDB encoding type {}", .{rdbtype});
         },
@@ -1543,7 +1506,7 @@ fn saveStreamConsumers(rdb: *rio.ReadWriter, consumers: *raxlib.rax) !void {
 }
 
 /// Save a few default AUX fields with information about the RDB generated.
-fn saveInfoAuxFields(rdb: *rio.ReadWriter, flags: i32, rsi: ?*SaveInfo) !void {
+fn saveInfoAuxFields(rdb: *rio.ReadWriter, flags: i32) !void {
     const bits = @bitSizeOf(*anyopaque);
     const aof_preamble = flags & RDB_SAVE_AOF_PREAMBLE != 0;
 
@@ -1553,10 +1516,6 @@ fn saveInfoAuxFields(rdb: *rio.ReadWriter, flags: i32, rsi: ?*SaveInfo) !void {
     try saveAuxFieldStrInt(rdb, "ctime", std.time.timestamp());
     try saveAuxFieldStrInt(rdb, "used-mem", @intCast(allocator.usedMemory()));
 
-    // Handle saving options that generate aux fields.
-    if (rsi) |_| {
-        // TODO: repl-stream-db, repl-id, repl-offset
-    }
     try saveAuxFieldStrInt(rdb, "aof-preamble", @intFromBool(aof_preamble));
 }
 
@@ -1672,13 +1631,13 @@ fn loadLzfStringObject(
     errdefer if (plain) {
         allocator.free(val);
     } else {
-        sds.free(allocator.child, val.ptr);
+        sds.free(allocator.impl, val.ptr);
     };
 
     if (plain) {
         val = allocator.alloc(u8, len);
     } else {
-        val = sds.asBytes(sds.newLen(allocator.child, sds.NOINIT.ptr, len));
+        val = sds.asBytes(sds.newLen(allocator.impl, sds.NOINIT.ptr, len));
     }
     if (lenptr) |ptr| ptr.* = len;
 
@@ -1862,14 +1821,6 @@ fn exitReportCorruptRDB(comptime format: []const u8, args: anytype) noreturn {
     );
     std.process.exit(1);
 }
-
-// TODO:
-pub const SaveInfo = struct {
-    pub fn populate(self: *SaveInfo) ?*SaveInfo {
-        _ = self;
-        return null;
-    }
-};
 
 const REDIS_VERSION = @import("version.zig").REDIS_VERSION;
 const Object = @import("Object.zig");

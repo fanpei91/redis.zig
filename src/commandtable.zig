@@ -149,6 +149,7 @@ pub var table = [_]Command{
     .{ .name = "script", .proc = scritping.scriptCommand, .arity = -2, .sflags = "s" },
     .{ .name = "save", .proc = rdb.saveCommand, .arity = 1, .sflags = "as" },
     .{ .name = "bgsave", .proc = rdb.bgsaveCommand, .arity = -1, .sflags = "as" },
+    .{ .name = "bgrewriteaof", .proc = aof.bgrewriteaofCommand, .arity = 1, .sflags = "as" },
 };
 
 pub const Command = struct {
@@ -178,3 +179,4 @@ const pubsub = @import("pubsub.zig");
 const multi = @import("multi.zig");
 const scritping = @import("scripting.zig");
 const rdb = @import("rdb.zig");
+const aof = @import("aof.zig");

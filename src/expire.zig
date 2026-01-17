@@ -84,6 +84,13 @@ fn expireAt(cli: *Client, basetime: i64, unit: u32) void {
     if (checkAlreadyExpired(when)) {
         assert(cli.db.delete(key));
         server.dirty +%= 1;
+
+        //Replicate/AOF this as an explicit DEL or UNLINK.
+        const cmd = if (server.lazyfree_lazy_expire)
+            Server.shared.unlink
+        else
+            Server.shared.del;
+        cli.rewriteCommandVector(&.{ cmd, key });
         cli.db.signalModifiedKey(key);
         cli.addReply(Server.shared.cone);
         return;
@@ -135,9 +142,36 @@ fn ttl(cli: *Client, output_ms: bool) void {
     }
 }
 
+/// Try to expire a few timed out keys. The algorithm used is adaptive and
+/// will use few CPU cycles if there are few expiring keys, otherwise
+/// it will get more aggressive to avoid that too much memory is used by
+/// keys that can be removed from the keyspace.
+///
+/// No more than CRON_DBS_PER_CALL databases are tested at every
+/// iteration.
+///
+/// This kind of call is used when Redis detects that timelimit_exit is
+/// true, so there is more work to do, and we do it more incrementally from
+/// the beforeSleep() function of the event loop.
+///
+/// Expire cycle type:
+///
+/// If type is ACTIVE_EXPIRE_CYCLE_FAST the function will try to run a
+/// "fast" expire cycle that takes no longer than EXPIRE_FAST_CYCLE_DURATION
+/// microseconds, and is not repeated again before the same amount of time.
+///
+/// If type is ACTIVE_EXPIRE_CYCLE_SLOW, that normal expire cycle is
+/// executed, where the time limit is a percentage of the REDIS_HZ period
+/// as specified by the ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC define.
+pub fn activeExpireCycle(@"type": i32) void {
+    _ = @"type";
+    // TODO:
+}
+
 const std = @import("std");
 const Client = @import("networking.zig").Client;
 const Server = @import("Server.zig");
 const Object = @import("Object.zig");
 const server = &Server.instance;
 const assert = std.debug.assert;
+const networking = @import("networking.zig");

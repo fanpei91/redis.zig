@@ -345,10 +345,10 @@ pub fn sinterstoreCommand(cli: *Client) void {
 
 fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
     var sets = std.ArrayList(*Object).initCapacity(
-        allocator.child,
+        allocator.impl,
         keys.len,
     ) catch allocator.oom();
-    defer sets.deinit(allocator.child);
+    defer sets.deinit(allocator.impl);
 
     for (keys) |key| {
         const sobj = if (dstkey != null)
@@ -370,7 +370,7 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
         if (sobj.?.checkTypeOrReply(cli, .set)) {
             return;
         }
-        sets.append(allocator.child, sobj.?) catch allocator.oom();
+        sets.append(allocator.impl, sobj.?) catch allocator.oom();
     }
 
     // Sort sets from the smallest to largest, this will improve our
@@ -398,7 +398,7 @@ fn sinter(cli: *Client, keys: []*Object, dstkey: ?*Object) void {
 
     var stack_impl = std.heap.stackFallback(
         128,
-        allocator.child,
+        allocator.impl,
     );
     const stack_allocator = stack_impl.get();
     // Iterate all the elements of the first (smallest) set, and test
@@ -502,10 +502,10 @@ const Op = enum {
 };
 fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
     var sets = std.ArrayList(?*Object).initCapacity(
-        allocator.child,
+        allocator.impl,
         keys.len,
     ) catch allocator.oom();
-    defer sets.deinit(allocator.child);
+    defer sets.deinit(allocator.impl);
 
     for (keys) |key| {
         const sobj = if (dstkey != null)
@@ -515,7 +515,7 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
         if (sobj) |obj| if (obj.checkTypeOrReply(cli, .set)) {
             return;
         };
-        sets.append(allocator.child, sobj) catch allocator.oom();
+        sets.append(allocator.impl, sobj) catch allocator.oom();
     }
 
     // Select what DIFF algorithm to use.
@@ -561,7 +561,7 @@ fn sunionDiff(cli: *Client, keys: []*Object, dstkey: ?*Object, op: Op) void {
 
     var stack_impl = std.heap.stackFallback(
         2048,
-        allocator.child,
+        allocator.impl,
     );
     const stack_allocator = stack_impl.get();
 
@@ -697,11 +697,17 @@ pub fn spopCommand(cli: *Client) void {
         },
     }
 
+    // Replicate/AOF this command as an SREM operation
+    cli.rewriteCommandVector(&.{ Server.shared.srem, key, ele });
+
+    // Add the element to the reply
     cli.addReplyBulk(ele);
 
+    // Delete the set if it's empty
     if (Set.size(sobj) == 0) {
         assert(cli.db.delete(key));
     }
+
     // Set has been modified
     cli.db.signalModifiedKey(key);
     server.dirty +%= 1;
@@ -757,6 +763,8 @@ fn spopWithCount(cli: *Client) void {
         it.release();
         // Delete the set as it is now empty
         assert(cli.db.delete(key));
+        // Propagate this command as an DEL operation
+        cli.rewriteCommandVector(&.{ Server.shared.del, key });
         cli.db.signalModifiedKey(key);
         server.dirty +%= 1;
         return;
@@ -764,6 +772,13 @@ fn spopWithCount(cli: *Client) void {
 
     // Send the array length which is common to both the code paths.
     cli.addReplyMultiBulkLen(@intCast(count));
+
+    // Case 2 and 3 require to replicate SPOP as a set of SREM commands.
+    // Prepare our replication argument vector. Also send the array length
+    // which is common to both the code paths.
+    var propargv: [3]*Object = undefined;
+    propargv[0] = Server.shared.srem;
+    propargv[1] = key;
 
     // Elements left after SPOP.
     var remaining = size - @as(u64, @intCast(count));
@@ -777,11 +792,14 @@ fn spopWithCount(cli: *Client) void {
     // the set.
     if (remaining * SPOP_MOVE_STRATEGY_MUL > count) {
         while (count > 0) : (count -= 1) {
+            var objele: *Object = undefined;
+            defer objele.decrRefCount();
             switch (Set.randomElement(sobj)) {
                 .num => |v| {
                     assert(sobj.encoding == .intset);
                     cli.addReplyBulkLongLong(v);
                     const is = IntSet.cast(sobj.v.ptr);
+                    objele = Object.createStringFromLonglong(v);
                     const ret = is.remove(v);
                     assert(ret.success);
                     sobj.v = .{ .ptr = ret.set };
@@ -789,10 +807,21 @@ fn spopWithCount(cli: *Client) void {
                 .s => |v| {
                     assert(sobj.encoding == .ht);
                     cli.addReplyBulkString(sds.asBytes(v));
+                    objele = Object.createString(sds.asBytes(v));
                     const ok = Set.remove(sobj, v);
                     assert(ok);
                 },
             }
+
+            // Replicate/AOF this command as an SREM operation
+            propargv[2] = objele;
+            server.alsoPropagate(
+                server.sremCommand,
+                cli.db.id,
+                &propargv,
+                propargv.len,
+                Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+            );
         }
     } else {
         // CASE 3: The number of elements to return is very big, approaching
@@ -813,7 +842,7 @@ fn spopWithCount(cli: *Client) void {
 
         var stack_impl = std.heap.stackFallback(
             2048,
-            allocator.child,
+            allocator.impl,
         );
         const stack_allocator = stack_impl.get();
 
@@ -830,16 +859,40 @@ fn spopWithCount(cli: *Client) void {
 
         // Transfer the old set to the client.
         var it = Set.Iterator.create(sobj);
-        while (it.next()) |value| switch (value) {
-            .num => |v| cli.addReplyBulkLongLong(v),
-            .s => |v| cli.addReplyBulkString(sds.asBytes(v)),
-        };
+        while (it.next()) |value| {
+            var objele: *Object = undefined;
+            defer objele.decrRefCount();
+            switch (value) {
+                .num => |v| {
+                    objele = Object.createStringFromLonglong(v);
+                    cli.addReplyBulkLongLong(v);
+                },
+                .s => |v| {
+                    objele = Object.createString(sds.asBytes(v));
+                    cli.addReplyBulkString(sds.asBytes(v));
+                },
+            }
+            // Replicate/AOF this command as an SREM operation
+            propargv[2] = objele;
+            server.alsoPropagate(
+                server.sremCommand,
+                cli.db.id,
+                &propargv,
+                propargv.len,
+                Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+            );
+        }
         it.release();
 
         // Assign the new set as the key value.
         cli.db.overwrite(key, newset);
     }
 
+    // Don't propagate the command itself even if we incremented the
+    // dirty counter. We don't want to propagate an SPOP command since
+    // we propagated the command as a set of SREMs operations using
+    // the alsoPropagate() API.
+    Server.preventCommandPropagation(cli);
     cli.db.signalModifiedKey(key);
     server.dirty +%= 1;
 }
@@ -893,7 +946,7 @@ pub const Set = struct {
     fn add(sobj: *Object, value: sds.String) bool {
         if (sobj.encoding == .ht) {
             const h = Hash.cast(sobj.v.ptr);
-            return h.add(sds.dupe(allocator.child, value), {});
+            return h.add(sds.dupe(allocator.impl, value), {});
         }
         if (sobj.encoding == .intset) {
             const llval = sds.asLongLong(value) orelse {
@@ -901,7 +954,7 @@ pub const Set = struct {
                 // The set *was* an intset and this value is not integer
                 // encodable, so dict.add should always work.
                 const h = Hash.cast(sobj.v.ptr);
-                const ok = h.add(sds.dupe(allocator.child, value), {});
+                const ok = h.add(sds.dupe(allocator.impl, value), {});
                 assert(ok);
                 return true;
             };
@@ -940,7 +993,7 @@ pub const Set = struct {
             var it = Iterator.create(sobj);
             while (it.next()) |value| switch (value) {
                 .num => |v| {
-                    const s = sds.fromLonglong(allocator.child, v);
+                    const s = sds.fromLonglong(allocator.impl, v);
                     const ok = h.add(s, {});
                     assert(ok);
                 },
@@ -1092,7 +1145,7 @@ pub const Set = struct {
     };
 
     fn freeKey(key: sds.String) void {
-        sds.free(allocator.child, key);
+        sds.free(allocator.impl, key);
     }
 };
 

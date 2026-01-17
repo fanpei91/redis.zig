@@ -57,6 +57,10 @@ pub fn scriptCommand(cli: *Client) void {
             return;
         };
         cli.addReplyBulkString(sds.asBytes(sha));
+        Server.forceCommandPropagation(
+            cli,
+            Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+        );
     } else if (cli.argc == 2 and eqlCase(opt, "kill")) {
         if (server.lua.caller == null) {
             cli.addReplyErr("-NOTBUSY No scripts in execution right now");
@@ -179,7 +183,7 @@ pub const Lua = struct {
         }
 
         fn gcall(lua: *Lua, protected: bool) c_int {
-            // TODO: server.loading, masterhost, replication...
+            // TODO: server.loading
 
             var raise_error = protected;
             // Cached across calls.
@@ -293,6 +297,7 @@ pub const Lua = struct {
                 }
 
                 // Run the command
+                // TODO: more flags
                 const call_flags = Server.CMD_CALL_SLOWLOG | Server.CMD_CALL_STATS;
                 server.call(cli, call_flags);
 
@@ -308,11 +313,11 @@ pub const Lua = struct {
                     reply = cli.buf[0..cli.bufpos :0];
                     cli.bufpos = 0;
                 } else {
-                    var s = sds.new(allocator.child, cli.buf[0..cli.bufpos]);
+                    var s = sds.new(allocator.impl, cli.buf[0..cli.bufpos]);
                     while (cli.reply.len != 0) {
                         const node = cli.reply.first.?;
                         const rb = node.value;
-                        s = sds.cat(allocator.child, s, rb.slice(0, rb.used));
+                        s = sds.cat(allocator.impl, s, rb.slice(0, rb.used));
                         cli.reply.removeNode(node);
                     }
                     cli.bufpos = 0;
@@ -332,7 +337,7 @@ pub const Lua = struct {
                     lua.sortArray();
                 }
                 if (@intFromPtr(reply.ptr) != @intFromPtr(&cli.buf)) {
-                    sds.free(allocator.child, @ptrCast(reply));
+                    sds.free(allocator.impl, @ptrCast(reply));
                 }
             }
 
@@ -396,16 +401,16 @@ pub const Lua = struct {
             }
 
             // Glue together all the arguments
-            var msg = sds.empty(allocator.child);
-            defer sds.free(allocator.child, msg);
+            var msg = sds.empty(allocator.impl);
+            defer sds.free(allocator.impl, msg);
             for (2..@as(usize, @intCast(argc + 1))) |i| {
                 var len: usize = undefined;
                 const s = lua_tolstring(lua, @intCast(i), &len);
                 if (s != null) {
                     if (i != 2) {
-                        msg = sds.cat(allocator.child, msg, " ");
+                        msg = sds.cat(allocator.impl, msg, " ");
                     }
-                    msg = sds.cat(allocator.child, msg, s[0..len]);
+                    msg = sds.cat(allocator.impl, msg, s[0..len]);
                 }
             }
             logging.raw(@intCast(level), "{s}", .{sds.asBytes(msg)});
@@ -536,7 +541,7 @@ pub const Lua = struct {
         }
 
         fn freeKey(key: sds.String) void {
-            sds.free(allocator.child, key);
+            sds.free(allocator.impl, key);
         }
     };
 
@@ -980,7 +985,7 @@ pub const Lua = struct {
             server.lua.caller.?.protect() catch {};
         }
         if (server.lua.timeout) {
-            _ = networking.processEventsWhileBlocked() catch 0;
+            _ = networking.processEventsWhileBlocked() catch {};
         }
         if (server.lua.kill) {
             logging.warn("Lua script killed by user with SCRIPT KILL.", .{});
@@ -1033,8 +1038,8 @@ pub const Lua = struct {
                 lua_gettable(self.state, -2);
                 if (lua_type(self.state, -1) == LUA_TSTRING) {
                     const s = lua_tolstring(self.state, -1, &len);
-                    const err = sds.new(allocator.child, s[0..len]);
-                    defer sds.free(allocator.child, err);
+                    const err = sds.new(allocator.impl, s[0..len]);
+                    defer sds.free(allocator.impl, err);
                     _ = sds.mapChars(err, "\r\n", "  ");
                     cli.addReplyErr(sds.asBytes(err));
                     lua_pop(self.state, 2);
@@ -1046,8 +1051,8 @@ pub const Lua = struct {
                 lua_gettable(self.state, -2);
                 if (lua_type(self.state, -1) == LUA_TSTRING) {
                     const s = lua_tolstring(self.state, -1, &len);
-                    const ok = sds.new(allocator.child, s[0..len]);
-                    defer sds.free(allocator.child, ok);
+                    const ok = sds.new(allocator.impl, s[0..len]);
+                    defer sds.free(allocator.impl, ok);
                     _ = sds.mapChars(ok, "\r\n", "  ");
                     cli.addReplyBulkString(sds.asBytes(ok));
                     lua_pop(self.state, 1);
@@ -1103,19 +1108,19 @@ pub const Lua = struct {
         const script = sds.castBytes(body.v.ptr);
         sha1hex(funcname[2..], script);
 
-        const sha = sds.new(allocator.child, funcname[2..]);
+        const sha = sds.new(allocator.impl, funcname[2..]);
         if (self.scripts.find(sha)) |de| {
-            sds.free(allocator.child, sha);
+            sds.free(allocator.impl, sha);
             return de.key;
         }
 
-        var funcdef = sds.empty(allocator.child);
-        defer sds.free(allocator.child, funcdef);
-        funcdef = sds.cat(allocator.child, funcdef, "function ");
-        funcdef = sds.cat(allocator.child, funcdef, funcname[0..]);
-        funcdef = sds.cat(allocator.child, funcdef, "() ");
-        funcdef = sds.cat(allocator.child, funcdef, script);
-        funcdef = sds.cat(allocator.child, funcdef, "\nend");
+        var funcdef = sds.empty(allocator.impl);
+        defer sds.free(allocator.impl, funcdef);
+        funcdef = sds.cat(allocator.impl, funcdef, "function ");
+        funcdef = sds.cat(allocator.impl, funcdef, funcname[0..]);
+        funcdef = sds.cat(allocator.impl, funcdef, "() ");
+        funcdef = sds.cat(allocator.impl, funcdef, script);
+        funcdef = sds.cat(allocator.impl, funcdef, "\nend");
 
         if (luaL_loadbuffer(
             self.state,
@@ -1132,7 +1137,7 @@ pub const Lua = struct {
                 );
             }
             lua_pop(self.state, 1);
-            sds.free(allocator.child, sha);
+            sds.free(allocator.impl, sha);
             return null;
         }
 
@@ -1146,7 +1151,7 @@ pub const Lua = struct {
                 );
             }
             lua_pop(self.state, 1);
-            sds.free(allocator.child, sha);
+            sds.free(allocator.impl, sha);
             return null;
         }
 
@@ -1202,8 +1207,8 @@ pub const Lua = struct {
             lua_getinfo(self.state, "nSl", &dbg) != 0)
         {
             const msg = sds.catPrintf(
-                allocator.child,
-                sds.empty(allocator.child),
+                allocator.impl,
+                sds.empty(allocator.impl),
                 "{s}: {}: {s}",
                 .{
                     dbg.source,
@@ -1211,7 +1216,7 @@ pub const Lua = struct {
                     err,
                 },
             );
-            defer sds.free(allocator.child, msg);
+            defer sds.free(allocator.impl, msg);
             lua_pushlstring(self.state, msg, sds.getLen(msg));
         } else {
             lua_pushlstring(self.state, err.ptr, err.len);

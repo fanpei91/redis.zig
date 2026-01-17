@@ -67,7 +67,7 @@ pub fn hincrbyCommand(cli: *Client) void {
     _ = Hash.set(
         hobj,
         field,
-        sds.fromLonglong(allocator.child, value),
+        sds.fromLonglong(allocator.impl, value),
         Server.HASH_SET_TAKE_VALUE,
     );
     cli.db.signalModifiedKey(key);
@@ -110,12 +110,20 @@ pub fn hincrbyfloatCommand(cli: *Client) void {
     _ = Hash.set(
         hobj,
         field,
-        sds.new(allocator.child, s),
+        sds.new(allocator.impl, s),
         Server.HASH_SET_TAKE_VALUE,
     );
     cli.db.signalModifiedKey(key);
     cli.addReplyBulkString(s);
     server.dirty +%= 1;
+
+    // Always replicate HINCRBYFLOAT as an HSET command with the final value
+    // in order to make sure that differences in float pricision or formatting
+    // will not create differences in replicas or after an AOF restart.
+    cli.rewriteCommandArgument(0, Server.shared.hset);
+    const newobj = Object.createRawString(s);
+    defer newobj.decrRefCount();
+    cli.rewriteCommandArgument(3, newobj);
 }
 
 /// HSETNX key field value
@@ -500,8 +508,8 @@ pub const Hash = struct {
         pub fn currentKey(self: *const Iterator) sds.String {
             if (self.encoding == .ziplist) {
                 return switch (self.currentKeyFromZipList()) {
-                    .num => |v| sds.fromLonglong(allocator.child, v),
-                    .str => |v| sds.new(allocator.child, v),
+                    .num => |v| sds.fromLonglong(allocator.impl, v),
+                    .str => |v| sds.new(allocator.impl, v),
                 };
             }
             if (self.encoding == .ht) {
@@ -525,8 +533,8 @@ pub const Hash = struct {
         pub fn currentVal(self: *const Iterator) sds.String {
             if (self.encoding == .ziplist) {
                 return switch (self.currentValFromZipList()) {
-                    .num => |v| sds.fromLonglong(allocator.child, v),
-                    .str => |v| sds.new(allocator.child, v),
+                    .num => |v| sds.fromLonglong(allocator.impl, v),
+                    .str => |v| sds.new(allocator.impl, v),
                 };
             }
             if (self.encoding == .ht) {
@@ -711,10 +719,10 @@ pub const Hash = struct {
         // Free SDS strings we did not referenced elsewhere if the flags
         // want this function to be responsible.
         defer if (field) |f| if (flags & Server.HASH_SET_TAKE_FIELD != 0) {
-            sds.free(allocator.child, f);
+            sds.free(allocator.impl, f);
         };
         defer if (value) |v| if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
-            sds.free(allocator.child, v);
+            sds.free(allocator.impl, v);
         };
 
         if (hobj.encoding == .ziplist) {
@@ -745,12 +753,12 @@ pub const Hash = struct {
         if (hobj.encoding == .ht) {
             const map = Map.cast(hobj.v.ptr);
             if (map.find(key)) |de| {
-                sds.free(allocator.child, de.val);
+                sds.free(allocator.impl, de.val);
                 if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                     de.val = val;
                     value = null;
                 } else {
-                    de.val = sds.dupe(allocator.child, val);
+                    de.val = sds.dupe(allocator.impl, val);
                 }
                 return .update;
             }
@@ -761,13 +769,13 @@ pub const Hash = struct {
                 f = key;
                 field = null;
             } else {
-                f = sds.dupe(allocator.child, key);
+                f = sds.dupe(allocator.impl, key);
             }
             if (flags & Server.HASH_SET_TAKE_VALUE != 0) {
                 v = val;
                 value = null;
             } else {
-                v = sds.dupe(allocator.child, key);
+                v = sds.dupe(allocator.impl, key);
             }
             const ok = map.add(f, v);
             assert(ok);
@@ -842,11 +850,11 @@ pub const Hash = struct {
     };
 
     fn freeKey(key: sds.String) void {
-        sds.free(allocator.child, key);
+        sds.free(allocator.impl, key);
     }
 
     fn freeVal(val: sds.String) void {
-        sds.free(allocator.child, val);
+        sds.free(allocator.impl, val);
     }
 };
 

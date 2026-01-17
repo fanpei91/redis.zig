@@ -208,6 +208,24 @@ pub fn handleClientsBlockedOnKeys() void {
                 unblockClient(receiver);
                 zset.zpop(receiver, &.{rl.key}, where, true, null);
                 zcard -= 1;
+
+                // Replicate the command.
+                const cmd = if (where == .min)
+                    server.zpopminCommand
+                else
+                    server.zpopmaxCommand;
+                var argv: [2]*Object = undefined;
+                argv[0] = Object.createString(cmd.name);
+                argv[1] = rl.key.incrRefCount();
+                server.propagate(
+                    cmd,
+                    receiver.db.id,
+                    &argv,
+                    argv.len,
+                    Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+                );
+                argv[0].decrRefCount();
+                argv[1].decrRefCount();
             }
         }
         // Serve clients blocked on stream key.
@@ -274,7 +292,10 @@ pub fn handleClientsBlockedOnKeys() void {
                     receiver.addReplyMultiBulkLen(1);
                     receiver.addReplyMultiBulkLen(2);
                     receiver.addReplyBulk(rl.key);
-                    const spi: ?*Stream.PropInfo = null; // TODO: PropInfo
+                    const spi: Stream.PropInfo = .{
+                        .keyname = rl.key,
+                        .groupname = receiver.bpop.xread_group.?,
+                    };
                     var flags: i32 = 0;
                     if (noack) flags |= Stream.RWR_NOACK;
                     _ = stream.replyWithRange(
@@ -286,7 +307,7 @@ pub fn handleClientsBlockedOnKeys() void {
                         group,
                         consumer,
                         flags,
-                        spi,
+                        &spi,
                     );
                     // Note that after we unblock the client, 'gt'
                     // and other receiver->bpop stuff are no longer

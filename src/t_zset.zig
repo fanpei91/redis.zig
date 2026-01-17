@@ -790,7 +790,7 @@ fn zrangebylex(cli: *Client, reverse: bool) void {
 
         while (eptr != null and limit != 0) : (limit -= 1) {
             const epo = ZipList.getObject(eptr.?);
-            defer sds.free(allocator.child, epo);
+            defer sds.free(allocator.impl, epo);
             // Abort when the node is no longer in range.
             if (reverse) {
                 if (!lexrange.valueGteMin(epo)) break;
@@ -972,7 +972,7 @@ pub fn zlexcountCommand(cli: *Client) void {
         // Iterate over elements in range
         while (eptr != null) {
             const value = ZipList.getObject(eptr.?);
-            defer sds.free(allocator.child, value);
+            defer sds.free(allocator.impl, value);
             // Abort when the node is no longer in range.
             if (!range.valueLteMax(value)) {
                 break;
@@ -1125,7 +1125,7 @@ pub fn zpop(
     const zset = zobj.?;
     while (count > 0) : (count -= 1) {
         var ele: sds.String = undefined;
-        defer sds.free(allocator.child, ele);
+        defer sds.free(allocator.impl, ele);
         var score: f64 = undefined;
 
         if (zset.encoding == .ziplist) {
@@ -1144,7 +1144,7 @@ pub fn zpop(
             else
                 sl.sl.header.level(0).forward.?;
             // There must be an element in the sorted set.
-            ele = sds.dupe(allocator.child, ln.ele.?);
+            ele = sds.dupe(allocator.impl, ln.ele.?);
             score = ln.score;
         } else {
             @panic("Unknown sorted set encoding");
@@ -1204,8 +1204,17 @@ fn bzpop(cli: *Client, where: Where) void {
         // Non empty zset, this is like a normal ZPOP[MIN|MAX].
         assert(Zset.length(o) != 0);
         zpop(cli, keys[i .. i + 1], where, true, null);
+        // Replicate it as an ZPOP[MIN|MAX] instead of BZPOP[MIN|MAX].
+        cli.rewriteCommandVector(&.{
+            if (where == .max)
+                Server.shared.zpopmax
+            else
+                Server.shared.zpopmin,
+            key,
+        });
         return;
     }
+
     // If we are inside a MULTI/EXEC and the zset is empty the only thing
     // we can do is treating it as a timeout (even with timeout 0).
     if (cli.flags & Server.CLIENT_MULTI != 0) {
@@ -1253,11 +1262,11 @@ fn unionInter(cli: *Client, destkey: *Object, op: Operation) void {
 
     // read keys to be used for input
     var src = std.ArrayList(Operation.Source).initCapacity(
-        allocator.child,
+        allocator.impl,
         @intCast(setnum),
     ) catch oom();
     const items = src.addManyAsSliceAssumeCapacity(@intCast(setnum));
-    defer src.deinit(allocator.child);
+    defer src.deinit(allocator.impl);
 
     var idx: usize = 3;
     for (0..@as(usize, @intCast(setnum))) |i| {
@@ -1646,7 +1655,7 @@ pub const Zset = struct {
                 }
                 return true;
             } else if (!xx) {
-                const elm = sds.dupe(allocator.child, ele);
+                const elm = sds.dupe(allocator.impl, ele);
                 const node = sl.sl.insert(score, elm);
                 const ok = sl.dict.add(elm, &node.score);
                 assert(ok);
@@ -1946,7 +1955,7 @@ pub const ZipListSet = struct {
         var eptr = self.zl.index(-2);
         while (eptr) |ep| {
             const value = ZipList.getObject(ep);
-            defer sds.free(allocator.child, value);
+            defer sds.free(allocator.impl, value);
             if (range.valueLteMax(value)) {
                 // Check if value >= min.
                 if (range.valueGteMin(value)) {
@@ -2004,7 +2013,7 @@ pub const ZipListSet = struct {
         var eptr = self.zl.index(0);
         while (eptr) |ep| {
             const value = ZipList.getObject(ep);
-            defer sds.free(allocator.child, value);
+            defer sds.free(allocator.impl, value);
             if (range.valueGteMin(value)) {
                 // Check if value <= max.
                 if (range.valueLteMax(value)) {
@@ -2064,7 +2073,7 @@ pub const ZipListSet = struct {
             return false;
         };
         const last = ZipList.getObject(eptr);
-        defer sds.free(allocator.child, last);
+        defer sds.free(allocator.impl, last);
         if (!range.valueGteMin(last)) {
             return false;
         }
@@ -2072,7 +2081,7 @@ pub const ZipListSet = struct {
         // First Element
         eptr = self.zl.index(0).?;
         const first = ZipList.getObject(eptr);
-        defer sds.free(allocator.child, first);
+        defer sds.free(allocator.impl, first);
         if (!range.valueLteMax(first)) {
             return false;
         }
@@ -2168,7 +2177,7 @@ pub const ZipListSet = struct {
         // sentinel byte and ZipList.Next() will return NULL.
         while (self.zl.next(eptr)) |_| {
             const value = ZipList.getObject(eptr);
-            defer sds.free(allocator.child, value);
+            defer sds.free(allocator.impl, value);
             if (range.valueLteMax(value)) {
                 // Delete both the element and the score.
                 eptr = self.delete(eptr);
@@ -2440,7 +2449,7 @@ pub const SkipList = struct {
         /// is set to NULL before calling this function.
         pub fn free(self: *Node) void {
             if (self.ele) |ele| {
-                sds.free(allocator.child, ele);
+                sds.free(allocator.impl, ele);
             }
             const parent: *SizedNode = @fieldParentPtr("node", self);
             const mem: [*]align(@alignOf(SizedNode)) u8 = @ptrCast(@alignCast(parent));
@@ -2942,9 +2951,9 @@ const Operation = enum {
             fn getSds(self: *Value) sds.String {
                 if (self.ele == null) {
                     if (self.str) |str| {
-                        self.ele = sds.new(allocator.child, str);
+                        self.ele = sds.new(allocator.impl, str);
                     } else {
-                        self.ele = sds.fromLonglong(allocator.child, self.ll);
+                        self.ele = sds.fromLonglong(allocator.impl, self.ll);
                     }
                     self.flags |= Flags.DIRTY_SDS;
                 }
@@ -2962,12 +2971,12 @@ const Operation = enum {
                     return ele;
                 }
                 if (self.ele) |ele| {
-                    return sds.dupe(allocator.child, ele);
+                    return sds.dupe(allocator.impl, ele);
                 }
                 if (self.str) |str| {
-                    return sds.new(allocator.child, str);
+                    return sds.new(allocator.impl, str);
                 }
-                return sds.fromLonglong(allocator.child, self.ll);
+                return sds.fromLonglong(allocator.impl, self.ll);
             }
         };
 
@@ -2985,7 +2994,7 @@ const Operation = enum {
                     return false;
                 }
                 if (val.flags & Value.Flags.DIRTY_SDS != 0) {
-                    sds.free(allocator.child, val.ele.?);
+                    sds.free(allocator.impl, val.ele.?);
                 }
                 @memset(std.mem.asBytes(val), 0);
 
@@ -3232,12 +3241,12 @@ pub const LexRange = struct {
             },
             '(' => {
                 ex.* = true;
-                dest.* = sds.new(allocator.child, c[1..]);
+                dest.* = sds.new(allocator.impl, c[1..]);
                 return true;
             },
             '[' => {
                 ex.* = false;
-                dest.* = sds.new(allocator.child, c[1..]);
+                dest.* = sds.new(allocator.impl, c[1..]);
                 return true;
             },
             else => return false,
@@ -3284,14 +3293,14 @@ pub const LexRange = struct {
             self.min != Server.shared.maxstring)
         {
             if (self.min) |s| {
-                sds.free(allocator.child, s);
+                sds.free(allocator.impl, s);
             }
         }
         if (self.max != Server.shared.maxstring and
             self.max != Server.shared.minstring)
         {
             if (self.max) |s| {
-                sds.free(allocator.child, s);
+                sds.free(allocator.impl, s);
             }
         }
     }
@@ -3306,7 +3315,7 @@ test SkipList {
     var sl = SkipList.create();
     defer sl.destroy();
 
-    var ele = sds.new(allocator.child, "score 1");
+    var ele = sds.new(allocator.impl, "score 1");
     try expect(sl.getRank(1, ele) == 0);
     const score1 = sl.insert(
         1,
@@ -3316,7 +3325,7 @@ test SkipList {
     try expect(sl.length == 1);
     try expect(sl.getRank(1, ele) == 1);
 
-    ele = sds.new(allocator.child, "score 2");
+    ele = sds.new(allocator.impl, "score 2");
     var score2 = sl.insert(
         2,
         ele,
@@ -3344,7 +3353,7 @@ test SkipList {
 
     score2 = sl.insert(
         2,
-        sds.new(allocator.child, "score 2.0"),
+        sds.new(allocator.impl, "score 2.0"),
     );
     try expect(sl.tail == score2);
     try expect(sl.length == 3);
@@ -3354,7 +3363,7 @@ test SkipList {
     node = sl.getElementByRank(5);
     try expect(node == null);
 
-    ele = sds.new(allocator.child, "deleted");
+    ele = sds.new(allocator.impl, "deleted");
     _ = sl.insert(3, ele);
     try expect(sl.length == 4);
     const deleted = sl.delete(3, ele);

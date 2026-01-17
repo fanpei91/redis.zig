@@ -1,17 +1,17 @@
-pub const child = if (builtin.is_test)
+pub const impl = if (builtin.is_test)
     std.testing.allocator
 else
     debug.allocator();
 
 pub fn alloc(comptime T: type, n: usize) []T {
-    return child.alloc(T, n) catch oom();
+    return impl.alloc(T, n) catch oom();
 }
 
 pub fn realloc(old_mem: anytype, new_n: usize) t: {
     const Slice = @typeInfo(@TypeOf(old_mem)).pointer;
     break :t []align(Slice.alignment) Slice.child;
 } {
-    return child.realloc(old_mem, new_n) catch oom();
+    return impl.realloc(old_mem, new_n) catch oom();
 }
 
 pub fn alignedAlloc(
@@ -20,23 +20,23 @@ pub fn alignedAlloc(
     comptime alignment: ?std.mem.Alignment,
     n: usize,
 ) []T {
-    return child.alignedAlloc(T, alignment, n) catch oom();
+    return impl.alignedAlloc(T, alignment, n) catch oom();
 }
 
 pub fn dupe(comptime T: type, m: []const T) []T {
-    return child.dupe(T, m) catch oom();
+    return impl.dupe(T, m) catch oom();
 }
 
 pub fn free(memory: anytype) void {
-    child.free(memory);
+    impl.free(memory);
 }
 
 pub fn create(comptime T: type) *T {
-    return child.create(T) catch oom();
+    return impl.create(T) catch oom();
 }
 
 pub fn destroy(ptr: anytype) void {
-    child.destroy(ptr);
+    impl.destroy(ptr);
 }
 
 pub inline fn oom() noreturn {

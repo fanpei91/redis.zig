@@ -197,6 +197,12 @@ pub fn incrbyfloatCommand(cli: *Client) void {
     cli.db.signalModifiedKey(key);
     server.dirty +%= 1;
     cli.addReplyBulk(new);
+
+    // Always replicate INCRBYFLOAT as a SET command with the final value
+    // in order to make sure that differences in float precision or formatting
+    // will not create differences in replicas or after an AOF restart.
+    cli.rewriteCommandArgument(0, Server.shared.set);
+    cli.rewriteCommandArgument(2, new);
 }
 
 /// STRLEN key
@@ -233,7 +239,7 @@ pub fn appendCommand(cli: *Client) void {
         const o = cli.db.unshareStringValue(key, obj);
         o.v = .{
             .ptr = sds.cat(
-                allocator.child,
+                allocator.impl,
                 sds.cast(o.v.ptr),
                 sds.castBytes(append.v.ptr),
             ),
@@ -277,7 +283,7 @@ pub fn setrangeCommand(cli: *Client) void {
         }
 
         o = Object.create(.string, sds.newLen(
-            allocator.child,
+            allocator.impl,
             sds.NOINIT.ptr,
             length,
         ));
@@ -306,7 +312,7 @@ pub fn setrangeCommand(cli: *Client) void {
     const obj = o.?;
     var s = sds.cast(obj.v.ptr);
     if (sds.getLen(value) > 0) {
-        obj.v = .{ .ptr = sds.growZero(allocator.child, s, length) };
+        obj.v = .{ .ptr = sds.growZero(allocator.impl, s, length) };
         s = sds.cast(obj.v.ptr);
         memcpy(
             s + @as(usize, @intCast(offset)),

@@ -193,7 +193,7 @@ pub fn insert(
 
     // Realloc before: we need more room.
     if (new_listpack_bytes > old_listpack_bytes) {
-        const new_memory = allocator.child.realloc(
+        const new_memory = allocator.impl.realloc(
             lp.asBytes(),
             new_listpack_bytes,
         ) catch {
@@ -220,7 +220,7 @@ pub fn insert(
 
     // Realloc after: we need to free space.
     if (new_listpack_bytes < old_listpack_bytes) {
-        const new_memory = allocator.child.realloc(
+        const new_memory = allocator.impl.realloc(
             lp.asBytes(),
             new_listpack_bytes,
         ) catch {

@@ -4,11 +4,13 @@ pub const NONE = 0;
 pub const READABLE = 1;
 /// Fire when descriptor is writable.
 pub const WRITABLE = 2;
-/// With WRITABLE, never fire the event if the
-/// READABLE event already fired in the same event
-/// loop iteration. Useful when you want to persist
-/// things to disk before sending replies, and want
-/// to do that in a group fashion.
+/// When set with WRITABLE, inverts the event processing
+/// order: if the same file descriptor becomes both readable
+/// and writable in the same event loop iteration, the
+/// writable event will be processed first, followed by the
+/// readable event. This is useful when you need to persist
+/// data to disk (e.g., AOF fsync in beforeSleep()) before
+/// sending replies to clients.
 pub const BARRIER = 4;
 
 pub const FILE_EVENTS = 1;

@@ -105,7 +105,7 @@ pub const ReadWriter = struct {
         self: *ReadWriter,
         prefix: u8,
         count: i64,
-    ) Error!usize {
+    ) Error!void {
         var cbuf: [128]u8 = undefined;
 
         cbuf[0] = prefix;
@@ -114,33 +114,54 @@ pub const ReadWriter = struct {
         cbuf[llval.len + 2] = '\n';
         const clen = 1 + llval.len + 2;
         try self.write(cbuf[0..clen]);
-        return clen;
     }
 
     /// Write binary-safe string in the format: "$<count>\r\n<payload>\r\n".
-    pub fn writeBulkString(self: *ReadWriter, buf: []const u8) Error!usize {
-        const nwritten = self.writeBulkCount('$', buf.len);
+    pub fn writeBulkString(self: *ReadWriter, buf: []const u8) Error!void {
+        try self.writeBulkCount('$', @intCast(buf.len));
         if (buf.len > 0) {
-            self.write(buf) catch {
-                return 0;
-            };
+            try self.write(buf);
         }
         try self.write("\r\n");
-        return nwritten + buf.len + 2;
     }
 
     /// Write a long long value in format: "$<count>\r\n<payload>\r\n".
-    pub fn writeBulkLongLong(self: *ReadWriter, l: i64) Error!usize {
+    pub fn writeBulkLongLong(self: *ReadWriter, l: i64) Error!void {
         var lbuf: [32]u8 = undefined;
         const str = util.ll2string(&lbuf, l);
-        return self.writeBulkString(str);
+        try self.writeBulkString(str);
     }
 
     /// Write a double value in the format: "$<count>\r\n<payload>\r\n"
-    pub fn writeBulkDouble(self: *ReadWriter, d: f64) Error!usize {
+    pub fn writeBulkDouble(self: *ReadWriter, d: f64) Error!void {
         var dbuf: [128]u8 = undefined;
         const str = util.d2string(&dbuf, d);
-        return self.writeBulkString(str);
+        try self.writeBulkString(str);
+    }
+
+    /// Delegate writing an object to writing a bulk string or bulk long long.
+    pub fn writeBulkObject(self: *ReadWriter, obj: *Object) !void {
+        // Avoid using Object.getDecoded to help copy-on-write (we are often
+        // in a child process when this function is called).
+        if (obj.encoding == .int) {
+            _ = try self.writeBulkLongLong(obj.v.int);
+        } else if (obj.sdsEncoded()) {
+            try self.writeBulkString(sds.castBytes(obj.v.ptr));
+        } else {
+            @panic("Unknown string encoding");
+        }
+    }
+
+    /// Generates a bulk string into the AOF representing the ID 'id'.
+    pub fn writeBulkStreamID(self: *ReadWriter, id: *Stream.Id) !void {
+        const replyid = sds.catPrintf(
+            allocator.impl,
+            sds.empty(allocator.impl),
+            "{}-{}",
+            .{ id.ms, id.seq },
+        );
+        defer sds.free(allocator.impl, replyid);
+        try self.writeBulkString(sds.asBytes(replyid));
     }
 };
 
@@ -154,6 +175,7 @@ pub const FileReadWriter = struct {
     buffered: usize,
     /// sync after 'autosync' bytes written.
     autosync: usize,
+    pos: u64,
 
     pub fn init(self: *FileReadWriter, file: std.fs.File) void {
         self.file = file;
@@ -161,6 +183,7 @@ pub const FileReadWriter = struct {
         self.writer = file.writer(&self.wbuf);
         self.buffered = 0;
         self.autosync = 0;
+        self.pos = 0;
     }
 
     pub fn readWriter(self: *FileReadWriter) ReadWriter {
@@ -193,6 +216,7 @@ pub const FileReadWriter = struct {
     fn read(ptr: *anyopaque, buf: []u8) Error!void {
         const self: *FileReadWriter = @ptrCast(@alignCast(ptr));
         try self.reader.interface.readSliceAll(buf);
+        self.pos = self.reader.logicalPos();
     }
 
     fn write(ptr: *anyopaque, buf: []const u8) Error!void {
@@ -201,9 +225,10 @@ pub const FileReadWriter = struct {
         self.buffered += buf.len;
         if (self.autosync > 0 and self.buffered >= self.autosync) {
             try self.writer.interface.flush();
-            try self.file.sync();
+            try config.fsync(self.file.handle);
             self.buffered = 0;
         }
+        self.pos = self.writer.pos + self.writer.interface.buffered().len;
     }
 
     fn flush(ptr: *anyopaque) Error!void {
@@ -213,7 +238,7 @@ pub const FileReadWriter = struct {
 
     fn tell(ptr: *anyopaque) Error!usize {
         const self: *FileReadWriter = @ptrCast(@alignCast(ptr));
-        return try self.file.getPos();
+        return self.pos;
     }
 };
 
@@ -253,7 +278,7 @@ pub const BufferReadWriter = struct {
 
     fn write(ptr: *anyopaque, buf: []const u8) Error!void {
         const self: *BufferReadWriter = @ptrCast(@alignCast(ptr));
-        self.ptr = sds.cat(allocator.child, self.ptr, buf);
+        self.ptr = sds.cat(allocator.impl, self.ptr, buf);
         self.pos += buf.len;
     }
 
@@ -268,7 +293,7 @@ pub const BufferReadWriter = struct {
     }
 
     pub fn deinit(self: *BufferReadWriter) void {
-        sds.free(allocator.child, self.ptr);
+        sds.free(allocator.impl, self.ptr);
     }
 };
 
@@ -285,7 +310,7 @@ pub const FdsetReadWriter = struct {
         memcpy(self.fds, fds, fds.len);
         self.state = allocator.alloc(?Error, fds.len);
         @memset(self.state, null);
-        self.buf = sds.empty(allocator.child);
+        self.buf = sds.empty(allocator.impl);
         self.pos = 0;
     }
 
@@ -328,7 +353,7 @@ pub const FdsetReadWriter = struct {
         // a given size, we actually write to the sockets.
 
         if (len > 0) {
-            self.buf = sds.cat(allocator.child, self.buf, buf);
+            self.buf = sds.cat(allocator.impl, self.buf, buf);
             len = 0; // Prevent entering the while below if we don't flush.
             if (sds.getLen(self.buf) > Server.PROTO_IOBUF_LEN) {
                 doflush = true;
@@ -402,7 +427,7 @@ pub const FdsetReadWriter = struct {
     pub fn deinit(self: *FdsetReadWriter) void {
         allocator.free(self.fds);
         allocator.free(self.state);
-        sds.free(allocator.child, self.buf);
+        sds.free(allocator.impl, self.buf);
     }
 };
 
@@ -420,3 +445,6 @@ const sds = @import("sds.zig");
 const allocator = @import("allocator.zig");
 const Server = @import("Server.zig");
 const posix = std.posix;
+const config = @import("config.zig");
+const Object = @import("Object.zig");
+const Stream = @import("t_stream.zig").Stream;

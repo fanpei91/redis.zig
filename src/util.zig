@@ -255,7 +255,7 @@ pub fn digits10(v: u64) u32 {
 pub fn getAbsolutePath(filename: []const u8) !sds.String {
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const realpath = try std.fs.realpath(filename, &buffer);
-    return sds.new(allocator.child, realpath);
+    return sds.new(allocator.impl, realpath);
 }
 
 /// Return true if the specified path is just a file basename without any

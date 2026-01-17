@@ -32,45 +32,61 @@ pub fn execCommand(cli: *Client) void {
             break :biz;
         }
 
-        // TODO: server.loading, server.masterhost, server.repl_slace_ro
+        // TODO: server.loading
 
         // Exec all the queued commands
+        var must_propagate = false; // Need to propagate MULTI/EXEC to AOF / slaves?
         unwatchAllKeys(cli); // Unwatch ASAP otherwise we'll waste CPU cycles
         const orig_argv = cli.argv;
         const orig_argc = cli.argc;
         const orig_cmd = cli.cmd;
-
         cli.addReplyMultiBulkLen(
             if (cli.mstate.commands) |commands|
                 @intCast(commands.len)
             else
                 0,
         );
-        if (cli.mstate.commands) |commands| {
-            for (commands) |*cmd| {
-                cli.argv = cmd.argv;
-                cli.argc = cmd.argc;
-                cli.cmd = cmd.cmd;
+        if (cli.mstate.commands) |commands| for (commands) |*cmd| {
+            cli.argv = cmd.argv;
+            cli.argc = cmd.argc;
+            cli.cmd = cmd.cmd;
 
-                server.call(
-                    cli,
-                    if (server.loading)
-                        Server.CMD_CALL_NONE
-                    else
-                        Server.CMD_CALL_FULL,
-                );
-
-                // Commands may alter argc/argv, restore mstate.
-                cmd.argv = cli.argv.?;
-                cmd.argc = cli.argc;
-                cmd.cmd = cli.cmd.?;
+            // Propagate a MULTI request once we encounter the first command which
+            // is not readonly nor an administrative one.
+            // This way we'll deliver the MULTI/..../EXEC block as a whole and
+            // both the AOF and the replication link will have the same consistency
+            // and atomicity guarantees.
+            if (!must_propagate and
+                (cli.cmd.?.flags & (Server.CMD_READONLY | Server.CMD_ADMIN)) == 0)
+            {
+                execCommandPropagateMulti(cli);
+                must_propagate = true;
             }
-        }
+
+            server.call(
+                cli,
+                if (server.loading)
+                    Server.CMD_CALL_NONE
+                else
+                    Server.CMD_CALL_FULL,
+            );
+
+            // Commands may alter argc/argv, restore mstate.
+            cmd.argv = cli.argv.?;
+            cmd.argc = cli.argc;
+            cmd.cmd = cli.cmd.?;
+        };
 
         cli.argv = orig_argv;
         cli.argc = orig_argc;
         cli.cmd = orig_cmd;
         discardTransaction(cli);
+
+        // Make sure the EXEC command will be propagated as well if MULTI
+        // was already propagated.
+        if (must_propagate) {
+            server.dirty +%= 1;
+        }
     }
 }
 
@@ -194,6 +210,22 @@ fn watchForKey(cli: *Client, key: *Object) void {
     cli.watched_keys.append(wk);
 }
 
+/// Send a MULTI command to all the slaves and AOF file. Check the execCommand
+/// implementation for more information.
+pub fn execCommandPropagateMulti(cli: *Client) void {
+    var argv: [1]*Object = .{
+        Server.shared.multi.incrRefCount(),
+    };
+    defer argv[0].decrRefCount();
+    server.propagate(
+        server.multiCommand,
+        cli.db.id,
+        &argv,
+        argv.len,
+        Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+    );
+}
+
 pub const WatchedKey = struct {
     db: *Database,
     key: *Object,
@@ -224,10 +256,10 @@ pub const State = struct {
             argc: usize,
             cmd: *const Server.Command,
         ) void {
-            self.argv = allocator.alloc(*Object, argv.len);
+            self.argv = allocator.alloc(*Object, argc);
             self.argc = argc;
-            @memcpy(self.argv, argv);
-            for (self.argv[0..argc]) |arg| _ = arg.incrRefCount();
+            @memcpy(self.argv, argv[0..argc]);
+            for (self.argv) |arg| _ = arg.incrRefCount();
             self.cmd = cmd;
         }
 

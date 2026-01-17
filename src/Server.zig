@@ -26,11 +26,22 @@ pub const OBJ_SHARED_INTEGERS = 10000;
 pub const OBJ_SHARED_BULKHDR_LEN = 32;
 pub const NET_MAX_WRITES_PER_EVENT = (1024 * 64);
 pub const CONFIG_DEFAULT_RDB_FILENAME = "dump.rdb";
+pub const CONFIG_DEFAULT_AOF_FILENAME = "appendonly.aof";
 pub const CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC = true;
 pub const CONFIG_DEFAULT_RDB_CHECKSUM = true;
 pub const CONFIG_DEFAULT_RDB_COMPRESSION = true;
 pub const AOF_READ_DIFF_INTERVAL_BYTES = (1024 * 10);
 pub const CONFIG_BGSAVE_RETRY_DELAY = 5; // Wait a few secs before trying again.
+pub const CONFIG_DEFAULT_AOF_NO_FSYNC_ON_REWRITE = false;
+pub const CONFIG_DEFAULT_AOF_LOAD_TRUNCATED = true;
+pub const CONFIG_DEFAULT_AOF_REWRITE_INCREMENTAL_FSYNC = true;
+pub const CONFIG_DEFAULT_AOF_USE_RDB_PREAMBLE = true;
+pub const AOF_REWRITE_ITEMS_PER_CMD = 64;
+pub const AOF_REWRITE_PERC = 100;
+pub const AOF_REWRITE_MIN_SIZE = (64 * 1024 * 1024);
+
+pub const ACTIVE_EXPIRE_CYCLE_SLOW = 0;
+pub const ACTIVE_EXPIRE_CYCLE_FAST = 1;
 
 // Protocol and I/O related defines
 pub const PROTO_MAX_QUERYBUF_LEN = 1024 * 1024 * 1024; // 1GB max query buffer.
@@ -44,12 +55,20 @@ pub const REDIS_AUTOSYNC_BYTES = (1024 * 1024 * 32); // fdatasync every 32MB
 pub const PROTO_REQ_INLINE = 1;
 pub const PROTO_REQ_MULTIBULK = 2;
 
+// --- SHUTDOWN flags ---
+/// No flags.
+pub const SHUTDOWN_NOFLAGS = 0;
+/// Force SAVE on SHUTDOWN even if no save
+/// points are configured.
+pub const SHUTDOWN_SAVE = 1;
+/// Don't SAVE on SHUTDOWN.
+pub const SHUTDOWN_NOSAVE = 2;
+
 // Command flags. Please check the command table defined in the redis.c file
 // for more information about the meaning of every flag.
 pub const CMD_WRITE = (1 << 0); // "w" flag
 pub const CMD_READONLY = (1 << 1); // "r" flag
 pub const CMD_DENYOOM = (1 << 2); // "m" flag
-pub const CMD_MODULE = (1 << 3); // Command exported by module.
 pub const CMD_ADMIN = (1 << 4); // "a" flag
 pub const CMD_PUBSUB = (1 << 5); // "p" flag
 pub const CMD_NOSCRIPT = (1 << 6); // "s" flag
@@ -60,8 +79,6 @@ pub const CMD_STALE = (1 << 10); // "t" flag
 pub const CMD_SKIP_MONITOR = (1 << 11); // "M" flag
 pub const CMD_ASKING = (1 << 12); // "k" flag
 pub const CMD_FAST = (1 << 13); // "F" flag
-pub const CMD_MODULE_GETKEYS = (1 << 14); // Use the modules getkeys interface.
-pub const CMD_MODULE_NO_CLUSTER = (1 << 15); // Deny on Redis Cluster.
 
 // Command call flags, see call() function
 pub const CMD_CALL_NONE = 0;
@@ -71,6 +88,11 @@ pub const CMD_CALL_PROPAGATE_AOF = (1 << 2);
 pub const CMD_CALL_PROPAGATE_REPL = (1 << 3);
 pub const CMD_CALL_PROPAGATE = (CMD_CALL_PROPAGATE_AOF | CMD_CALL_PROPAGATE_REPL);
 pub const CMD_CALL_FULL = (CMD_CALL_SLOWLOG | CMD_CALL_STATS | CMD_CALL_PROPAGATE);
+
+// Command propagation flags, see propagate() function
+pub const PROPAGATE_NONE = 0;
+pub const PROPAGATE_AOF = 1;
+pub const PROPAGATE_REPL = 2;
 
 // AOF states
 pub const AOF_OFF = 0; // AOF is off
@@ -87,8 +109,11 @@ pub const CLIENT_LUA = (1 << 8); // This is a non connected client used by Lua
 pub const CLIENT_CLOSE_ASAP = (1 << 10); // Close this client ASAP
 pub const CLIENT_UNIX_SOCKET = (1 << 11); // Client connected via Unix domain socket
 pub const CLIENT_DIRTY_EXEC = (1 << 12); // EXEC will fail for errors while queueing
-pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
+pub const CLIENT_FORCE_AOF = (1 << 14); // Force AOF propagation of current cmd.
 pub const CLIENT_PUBSUB = (1 << 18); // Client is in Pub/Sub mode.
+pub const CLIENT_PREVENT_AOF_PROP = (1 << 19); // Don't propagate to AOF.
+pub const CLIENT_PREVENT_PROP = (CLIENT_PREVENT_AOF_PROP);
+pub const CLIENT_PENDING_WRITE = (1 << 21); // Client has output to send but a write handler is yet not installed.
 pub const CLIENT_LUA_DEBUG_SYNC = (1 << 26); // EVAL debugging without fork()
 pub const CLIENT_PROTECTED = (1 << 28); // Client should not be freed for now.
 
@@ -96,7 +121,7 @@ pub const CLIENT_PROTECTED = (1 << 28); // Client should not be freed for now.
 // if CLIENT_BLOCKED flag is set.
 pub const BLOCKED_NONE = 0; // Not blocked, no CLIENT_BLOCKED flag set.
 pub const BLOCKED_LIST = 1; // BLPOP & co.
-pub const BLOCKED_MODULE = 3; // Blocked by a loadable module.
+pub const BLOCKED_MODULE = 3;
 pub const BLOCKED_STREAM = 4; // XREAD.
 pub const BLOCKED_ZSET = 5; // BZPOP et al.
 
@@ -108,9 +133,6 @@ pub const UNIT_MILLISECONDS = 1;
 pub const RDB_CHILD_TYPE_NONE = 0;
 pub const RDB_CHILD_TYPE_DISK = 1; // RDB is written to disk.
 pub const RDB_CHILD_TYPE_SOCKET = 2; // RDB is written to slave socket.
-
-// SHUTDOWN flags
-pub const SHUTDOWN_NOFLAGS = 0; // No flags.
 
 pub const LRU_BITS = 24;
 pub const LRU_CLOCK_MAX = ((1 << LRU_BITS) - 1); // Max value of obj->lru
@@ -132,7 +154,6 @@ pub const MAXMEMORY_ALLKEYS_LRU = ((4 << 8) | MAXMEMORY_FLAG_LRU | MAXMEMORY_FLA
 pub const MAXMEMORY_ALLKEYS_LFU = ((5 << 8) | MAXMEMORY_FLAG_LFU | MAXMEMORY_FLAG_ALLKEYS);
 pub const MAXMEMORY_ALLKEYS_RANDOM = ((6 << 8) | MAXMEMORY_FLAG_ALLKEYS);
 pub const MAXMEMORY_NO_EVICTION = 7 << 8;
-
 pub const CONFIG_DEFAULT_MAXMEMORY_POLICY = MAXMEMORY_NO_EVICTION;
 
 pub const LOOKUP_NONE = 0;
@@ -150,6 +171,12 @@ pub const OBJ_LIST_COMPRESS_DEPTH = 0;
 
 // Hash table parameters
 pub const HASHTABLE_MIN_FILL = 10; // Minimal hash table fill 10%
+
+// Append only defines
+pub const AOF_FSYNC_NO = 0;
+pub const AOF_FSYNC_ALWAYS = 1;
+pub const AOF_FSYNC_EVERYSEC = 2;
+pub const CONFIG_DEFAULT_AOF_FSYNC = AOF_FSYNC_EVERYSEC;
 
 // Zipped structures related defaults
 pub const OBJ_HASH_MAX_ZIPLIST_ENTRIES = 512;
@@ -175,88 +202,6 @@ pub const CHILD_INFO_TYPE_AOF = 1;
 // Scripting
 pub const LUA_SCRIPT_TIME_LIMIT = 5000; // milliseconds
 
-pub fn needShrinkDictToFit(used: u64, size: u64) bool {
-    return (size > dict.HT_INITIAL_SIZE) and
-        @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;
-}
-
-/// This function is called once a background process of some kind terminates,
-/// as we want to avoid resizing the hash tables when there is a child in order
-/// to play well with copy-on-write (otherwise when a resize happens lots of
-/// memory pages are copied). The goal of this function is to update the ability
-/// for dict.zig to resize the hash tables accordingly to the fact we have o not
-/// running childs.
-pub fn updateDictResizePolicy() void {
-    if (server.rdb_child_pid == -1 and server.aof_child_pid == -1) {
-        dict.enableResize();
-    } else {
-        dict.disableResize();
-    }
-}
-
-pub fn redisSetProcTitle(title: []const u8) void {
-    const mode: []const u8 = ""; // // TODO: cluster, sentinel
-    var buf: [255:0]u8 = undefined;
-    const s = std.fmt.bufPrint(
-        &buf,
-        "{s} {s}:{}{s}",
-        .{
-            title,
-            if (server.bindaddr_count > 0) server.bindaddr[0] else "*",
-            server.port,
-            mode,
-        },
-    ) catch |err| {
-        std.debug.panic("Error: formart proc title: {}", .{err});
-    };
-    buf[s.len] = 0;
-    _ = posix.prctl(
-        posix.PR.SET_NAME,
-        .{ @intFromPtr(&buf), 0, 0, 0 },
-    ) catch |err| {
-        logging.warn("Error set process title to '{s}': {}", .{ s, err });
-    };
-}
-
-/// After fork, the child process will inherit the resources
-/// of the parent process, e.g. fd(socket or flock) etc.
-/// should close the resources not used by the child process, so that if the
-/// parent restarts it can bind/lock despite the child possibly still running.
-pub fn closeChildUnusedResourceAfterFork() void {
-    closeListeningSockets(false);
-    // TODO: cluster, pidfile
-}
-
-/// After an RDB dump or AOF rewrite we exit from children.
-pub fn exitFromChild(retcode: u8) void {
-    std.process.exit(retcode);
-}
-
-pub var shared: Object.Shared = undefined;
-
-pub var instance: Server = undefined;
-
-const Commands = struct {
-    const HashMap = dict.Dict(sds.String, *Command);
-
-    const vtable: *const HashMap.VTable = &.{
-        .hash = hash,
-        .eql = sds.eqlCase,
-        .freeKey = freeKey,
-    };
-
-    fn hash(key: sds.String) hasher.Hash {
-        return hasher.hashcase(sds.asBytes(key), 1024);
-    }
-
-    fn freeKey(key: sds.String) void {
-        sds.free(allocator.child, key);
-    }
-};
-
-pub const ClientList = List(*Client, *Client);
-const ReadyKeys = List(*blocked.ReadyList, *blocked.ReadyList);
-
 const Server = @This();
 // General
 configfile: ?sds.String, // Absolute config file path.
@@ -267,6 +212,7 @@ dynamic_hz: bool, // Change hz value depending on # of clients.
 config_hz: u32, // Configured HZ value. May be different than the actual 'hz' field value if dynamic-hz is enabled.
 hz: u32, // serverCron() calls frequency in hertz
 arch_bits: i32, // 32 or 64 depending on @bitSizeOf(*anyopaque)
+cronloops: i32, // Number of times the cron function run
 requirepass: ?[]u8, // Pass for AUTH command, or null
 db: []Database,
 commands: *Commands.HashMap, // Command table
@@ -293,8 +239,21 @@ loading_start_time: i64,
 loading_total_bytes: u64,
 loading_loaded_bytes: u64,
 loading_process_events_interval_bytes: u64,
+// Fast pointers to often looked up command
+expireCommand: *const Command,
+pexpireCommand: *const Command,
+zpopminCommand: *const Command,
+zpopmaxCommand: *const Command,
+multiCommand: *const Command,
+lpopCommand: *const Command,
+rpopCommand: *const Command,
+lpushCommand: *const Command,
+xgroupCommand: *const Command,
+xclaimCommand: *const Command,
+delCommand: *const Command,
+sremCommand: *const Command,
 // Configuration
-active_expire_enabled: bool, // Can be disabled for testing purposes.
+active_expire_enabled: bool,
 maxidletime: u32, // Client timeout in seconds
 dbnum: u32, // Total number of configured DBs
 tcpkeepalive: i32, // Set SO_KEEPALIVE if non-zero.
@@ -313,9 +272,45 @@ rdb_compression: bool, // Use compression in RDB?
 rdb_bgsave_scheduled: bool, // BGSAVE when possible if true.
 lastbgsave_status: bool, // OK: true, ERR: false
 rdb_save_time_start: i64, // Current RDB save start time.
+saveparams: std.ArrayList(SaveParam), // Save points array for RDB
 // AOF persistence
 aof_child_pid: posix.pid_t, //  PID if rewriting process
 aof_state: i32, // AOF_(ON|OFF|WAIT_REWRITE)
+aof_fd: posix.fd_t, // File descriptor of currently selected AOF file
+aof_filename: []u8, // Name of the AOF file
+aof_selected_db: i32, // Currently selected DB in AOF
+aof_buf: sds.String, // AOF buffer, written before entering the event loop
+aof_flush_postponed_start: i64, // UNIX time of postponed AOF flush
+aof_last_write_status: bool, // OK: true, ERR: false
+aof_fsync: i32, // Kind of fsync() policy
+aof_no_fsync_on_rewrite: bool, // Don't fsync if a rewrite is in progress.
+aof_current_size: usize, // AOF current size.
+aof_fsync_offset: usize, // AOF offset which is already synced to disk.
+aof_last_fsync: i64, // UNIX time of last fsync()
+aof_delayed_fsync: u64, // delayed AOF fsync() counter
+aof_last_write_err: ?anyerror, // Valid if aof_last_write_status is false
+aof_load_truncated: bool, // Don't stop on unexpected AOF EOF.
+aof_rewrite_base_size: usize, // AOF size on latest startup or rewrite.
+aof_rewrite_scheduled: bool, // Rewrite once BGSAVE terminates.
+aof_rewrite_time_start: i64, // Current AOF rewrite start time.
+aof_rewrite_time_last: i64, // Time used by last AOF rewrite run.
+// AOF pipes used to communicate between parent and child during rewrite.
+aof_pipe_write_data_to_child: posix.fd_t,
+aof_pipe_read_data_from_parent: posix.fd_t,
+aof_pipe_write_ack_to_parent: posix.fd_t,
+aof_pipe_read_ack_from_child: posix.fd_t,
+aof_pipe_write_ack_to_child: posix.fd_t,
+aof_pipe_read_ack_from_parent: posix.fd_t,
+aof_stop_sending_diff: bool, // If true stop sending accumulated diffs to child process.
+aof_child_diff: sds.String, // AOF diff accumulator child side.
+aof_rewrite_incremental_fsync: bool, // fsync incrementally while aof rewriting?
+aof_use_rdb_preamble: bool, // Use RDB preamble on AOF rewrites.
+aof_rewrite_buf_blocks: ?*List(void, *aof.RwBlock), // Hold changes during an AOF rewrite.
+aof_lastbgrewrite_status: bool, // OK: true, ERR: false
+aof_rewrite_perc: i32, // Rewrite AOF if % growth is > M and...
+aof_rewrite_min_size: usize, // the AOF file is at least N bytes.
+// Propagation of commands in AOF / replication
+also_prpagate: RedisOpArray, // Additional command to propagate.
 // Limits
 maxclients: u32, // Max number of simultaneous clients
 maxmemory: u64, // Max number of memory bytes to use
@@ -354,153 +349,184 @@ lua: scripting.Lua,
 
 pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     server.configfile = configfile;
-    server.config_hz = CONFIG_DEFAULT_HZ;
-    server.arch_bits = @bitSizeOf(*anyopaque);
-    server.requirepass = null;
-    errdefer if (server.requirepass) |passwd| allocator.free(passwd);
-    server.commands = Commands.HashMap.create(Commands.vtable);
-    errdefer server.commands.destroy();
-    server.populateCommandTable();
-    server.shutdown_asap = false;
-    server.dynamic_hz = CONFIG_DEFAULT_DYNAMIC_HZ;
-    server.port = CONFIG_DEFAULT_SERVER_PORT;
-    server.tcp_backlog = CONFIG_DEFAULT_TCP_BACKLOG;
-    server.bindaddr = undefined;
-    server.bindaddr_count = 0;
-    errdefer {
-        for (0..server.bindaddr_count) |i| {
-            allocator.free(server.bindaddr[i]);
-        }
-    }
-    server.ipfd = undefined;
-    server.ipfd_count = 0;
-    server.unixsocket = null;
-    errdefer if (server.unixsocket) |unixsocket| allocator.free(unixsocket);
-    server.sofd = -1;
-    server.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
-    server.protected_mode = CONFIG_DEFAULT_PROTECTED_MODE;
-    server.fixed_time_expire = 0;
-    server.loading = false;
-    server.loading_process_events_interval_bytes = 1024 * 1024 * 2;
-    server.active_expire_enabled = true;
-    server.maxidletime = CONFIG_DEFAULT_CLIENT_TIMEOUT;
-    server.dbnum = CONFIG_DEFAULT_DBNUM;
-    server.tcpkeepalive = CONFIG_DEFAULT_TCP_KEEPALIVE;
-    server.client_max_querybuf_len = PROTO_MAX_QUERYBUF_LEN;
-    server.dirty = 0;
-    server.rdb_child_pid = -1;
-    server.rdb_child_type = RDB_CHILD_TYPE_NONE;
-    server.rdb_filename = allocator.dupe(u8, CONFIG_DEFAULT_RDB_FILENAME);
-    errdefer allocator.free(server.rdb_filename);
-    server.rdb_save_incremental_fsync = CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC;
-    server.lastsave = std.time.timestamp(); // At startup we consider the DB saved.
-    server.lastbgsave_try = 0; // At startup we never tried to BGSAVE.
-    server.lastbgsave_status = true;
-    server.rdb_save_time_start = -1;
-    server.rdb_checksum = CONFIG_DEFAULT_RDB_CHECKSUM;
-    server.rdb_compression = CONFIG_DEFAULT_RDB_COMPRESSION;
-    server.rdb_bgsave_scheduled = false;
-    server.aof_child_pid = -1;
-    server.aof_state = AOF_OFF;
-    server.maxclients = CONFIG_DEFAULT_MAX_CLIENTS;
-    server.maxmemory = CONFIG_DEFAULT_MAXMEMORY;
-    server.maxmemory_policy = CONFIG_DEFAULT_MAXMEMORY_POLICY;
-    server.maxmemory_samples = CONFIG_DEFAULT_MAXMEMORY_SAMPLES;
-    server.proto_max_bulk_len = CONFIG_DEFAULT_PROTO_MAX_BULK_LEN;
-    server.lfu_log_factor = CONFIG_DEFAULT_LFU_LOG_FACTOR;
-    server.lfu_decay_time = CONFIG_DEFAULT_LFU_DECAY_TIME;
-    server.lruclock = .init(0);
-    server.lruclock.store(evict.getLRUClock());
-    server.unixtime = .init(0);
-    server.updateCachedTime();
-    server.pubsub_channels = .create(&.{
+    server.initConfig();
+    try config.load(server, configfile, options);
+    try server.init();
+    try bio.init();
+}
+
+fn initConfig(self: *Server) void {
+    self.config_hz = CONFIG_DEFAULT_HZ;
+    self.arch_bits = @bitSizeOf(*anyopaque);
+    self.requirepass = null;
+    self.commands = Commands.HashMap.create(Commands.vtable);
+    self.populateCommandTable();
+    self.expireCommand = self.lookupCommandByString("expire");
+    self.pexpireCommand = self.lookupCommandByString("pexpire");
+    self.zpopminCommand = self.lookupCommandByString("zpopmin");
+    self.zpopmaxCommand = self.lookupCommandByString("zpopmax");
+    self.multiCommand = self.lookupCommandByString("multi");
+    self.lpopCommand = self.lookupCommandByString("lpop");
+    self.rpopCommand = self.lookupCommandByString("rpop");
+    self.lpushCommand = self.lookupCommandByString("lpush");
+    self.xgroupCommand = self.lookupCommandByString("xgroup");
+    self.xclaimCommand = self.lookupCommandByString("xclaim");
+    self.delCommand = self.lookupCommandByString("del");
+    self.sremCommand = self.lookupCommandByString("srem");
+    self.shutdown_asap = false;
+    self.dynamic_hz = CONFIG_DEFAULT_DYNAMIC_HZ;
+    self.port = CONFIG_DEFAULT_SERVER_PORT;
+    self.tcp_backlog = CONFIG_DEFAULT_TCP_BACKLOG;
+    self.bindaddr_count = 0;
+    self.ipfd_count = 0;
+    self.unixsocket = null;
+    self.sofd = -1;
+    self.unixsocketperm = CONFIG_DEFAULT_UNIX_SOCKET_PERM;
+    self.protected_mode = CONFIG_DEFAULT_PROTECTED_MODE;
+    self.loading = false;
+    self.loading_process_events_interval_bytes = 1024 * 1024 * 2;
+    self.active_expire_enabled = true;
+    self.maxidletime = CONFIG_DEFAULT_CLIENT_TIMEOUT;
+    self.dbnum = CONFIG_DEFAULT_DBNUM;
+    self.tcpkeepalive = CONFIG_DEFAULT_TCP_KEEPALIVE;
+    self.client_max_querybuf_len = PROTO_MAX_QUERYBUF_LEN;
+
+    self.rdb_filename = allocator.dupe(u8, CONFIG_DEFAULT_RDB_FILENAME);
+    self.rdb_save_incremental_fsync = CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC;
+    self.saveparams = .empty;
+    config.appendServerSaveParams(self, 60 * 60, 1); // save after 1 hour and 1 change
+    config.appendServerSaveParams(self, 300, 100); // save after 5 minutes and 100 changes
+    config.appendServerSaveParams(self, 60, 10000); // save after 1 minute and 10000 changes
+    self.rdb_checksum = CONFIG_DEFAULT_RDB_CHECKSUM;
+    self.rdb_compression = CONFIG_DEFAULT_RDB_COMPRESSION;
+
+    self.aof_state = AOF_OFF;
+    self.aof_filename = allocator.dupe(u8, CONFIG_DEFAULT_AOF_FILENAME);
+    self.aof_selected_db = -1; // Make sure the first time will not match
+    self.aof_flush_postponed_start = 0;
+    self.aof_fd = -1;
+    self.aof_fsync = CONFIG_DEFAULT_AOF_FSYNC;
+    self.aof_no_fsync_on_rewrite = CONFIG_DEFAULT_AOF_NO_FSYNC_ON_REWRITE;
+    self.aof_last_fsync = std.time.timestamp();
+    self.aof_delayed_fsync = 0;
+    self.aof_load_truncated = CONFIG_DEFAULT_AOF_LOAD_TRUNCATED;
+    self.aof_rewrite_base_size = 0;
+    self.aof_rewrite_scheduled = false;
+    self.aof_rewrite_time_start = -1;
+    self.aof_rewrite_time_last = -1;
+    self.aof_rewrite_incremental_fsync = CONFIG_DEFAULT_AOF_REWRITE_INCREMENTAL_FSYNC;
+    self.aof_use_rdb_preamble = CONFIG_DEFAULT_AOF_USE_RDB_PREAMBLE;
+    self.aof_rewrite_buf_blocks = null;
+    self.aof_lastbgrewrite_status = true;
+    self.aof_rewrite_perc = AOF_REWRITE_PERC;
+    self.aof_rewrite_min_size = AOF_REWRITE_MIN_SIZE;
+
+    self.maxclients = CONFIG_DEFAULT_MAX_CLIENTS;
+    self.maxmemory = CONFIG_DEFAULT_MAXMEMORY;
+    self.maxmemory_policy = CONFIG_DEFAULT_MAXMEMORY_POLICY;
+    self.maxmemory_samples = CONFIG_DEFAULT_MAXMEMORY_SAMPLES;
+    self.proto_max_bulk_len = CONFIG_DEFAULT_PROTO_MAX_BULK_LEN;
+    self.lfu_log_factor = CONFIG_DEFAULT_LFU_LOG_FACTOR;
+    self.lfu_decay_time = CONFIG_DEFAULT_LFU_DECAY_TIME;
+    self.lruclock = .init(0);
+    self.lruclock.store(evict.getLRUClock());
+
+    self.unixtime = .init(0);
+    self.updateCachedTime();
+
+    self.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
+    self.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
+    self.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
+    self.hash_max_ziplist_value = OBJ_HASH_MAX_ZIPLIST_VALUE;
+    self.hash_max_ziplist_entries = OBJ_HASH_MAX_ZIPLIST_ENTRIES;
+    self.set_max_intset_entries = OBJ_SET_MAX_INTSET_ENTRIES;
+    self.zset_max_ziplist_entries = OBJ_ZSET_MAX_ZIPLIST_ENTRIES;
+    self.zset_max_ziplist_value = OBJ_ZSET_MAX_ZIPLIST_VALUE;
+    self.stream_node_max_bytes = OBJ_STREAM_NODE_MAX_BYTES;
+    self.stream_node_max_entries = OBJ_STREAM_NODE_MAX_ENTRIES;
+}
+
+fn init(self: *Server) !void {
+    setupSignalHandlers();
+
+    self.hz = self.config_hz;
+    self.cronloops = 0;
+
+    self.dirty = 0;
+    self.rdb_child_pid = -1;
+    self.rdb_child_type = RDB_CHILD_TYPE_NONE;
+    self.lastsave = std.time.timestamp(); // At startup we consider the DB saved.
+    self.lastbgsave_try = 0; // At startup we never tried to BGSAVE.
+    self.lastbgsave_status = true;
+    self.rdb_save_time_start = -1;
+    self.rdb_bgsave_scheduled = false;
+
+    self.aof_child_pid = -1;
+    self.aof_last_write_status = true;
+    self.aof_buf = sds.empty(allocator.impl);
+    server.aof_last_write_err = null;
+    aof.rewriteBufferReset();
+
+    self.pubsub_channels = .create(&.{
         .hash = Object.hash,
         .eql = Object.equalStrings,
         .dupeKey = Object.incrRefCount,
         .freeKey = Object.decrRefCount,
         .freeVal = ClientList.release,
     });
-    errdefer server.pubsub_channels.destroy();
-    server.pubsub_patterns = .create(&.{
+    self.pubsub_patterns = .create(&.{
         .eql = pubsub.Pattern.eql,
         .freeVal = pubsub.Pattern.destroy,
     });
-    errdefer server.pubsub_patterns.release();
-    server.lazyfree_lazy_expire = CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE;
-    server.list_max_ziplist_size = OBJ_LIST_MAX_ZIPLIST_SIZE;
-    server.list_compress_depth = OBJ_LIST_COMPRESS_DEPTH;
-    server.hash_max_ziplist_value = OBJ_HASH_MAX_ZIPLIST_VALUE;
-    server.hash_max_ziplist_entries = OBJ_HASH_MAX_ZIPLIST_ENTRIES;
-    server.set_max_intset_entries = OBJ_SET_MAX_INTSET_ENTRIES;
-    server.zset_max_ziplist_entries = OBJ_ZSET_MAX_ZIPLIST_ENTRIES;
-    server.zset_max_ziplist_value = OBJ_ZSET_MAX_ZIPLIST_VALUE;
-    server.stream_node_max_bytes = OBJ_STREAM_NODE_MAX_BYTES;
-    server.stream_node_max_entries = OBJ_STREAM_NODE_MAX_ENTRIES;
-    server.ready_keys = ReadyKeys.create(&.{
+
+    self.ready_keys = ReadyKeys.create(&.{
         .freeVal = blocked.ReadyList.destroy,
     });
-    errdefer server.ready_keys.release();
-    server.unblocked_clients = ClientList.create(&.{});
-    errdefer server.unblocked_clients.release();
-
-    try config.load(server, configfile, options);
-    server.hz = server.config_hz;
-
-    setupSignalHandlers();
-
-    server.clients = ClientList.create(&.{});
-    errdefer server.clients.release();
-    server.clients_index = raxlib.raxNew();
-    server.clients_pending_write = ClientList.create(&.{});
-    errdefer server.clients_pending_write.release();
-    server.clients_to_close = ClientList.create(&.{});
-    errdefer server.clients_to_close.release();
-    server.next_client_id = .init(1);
+    self.unblocked_clients = ClientList.create(&.{});
+    self.fixed_time_expire = 0;
+    self.clients = ClientList.create(&.{});
+    self.clients_index = raxlib.raxNew();
+    self.clients_pending_write = ClientList.create(&.{});
+    self.clients_to_close = ClientList.create(&.{});
+    self.next_client_id = .init(1);
 
     shared = Object.Shared.create();
-    errdefer shared.destroy();
-
-    try server.adjustOpenFilesLimit();
-    server.el = try ae.EventLoop.create(
-        @intCast(server.maxclients + CONFIG_FDSET_INCR),
+    try self.adjustOpenFilesLimit();
+    self.el = try ae.EventLoop.create(
+        @intCast(self.maxclients + CONFIG_FDSET_INCR),
     );
-    errdefer server.el.destroy();
+
+    self.db = allocator.alloc(Database, self.dbnum);
+    for (0..self.dbnum) |i| {
+        self.db[i] = Database.create(i);
+    }
 
     // Open the TCP listening socket for the user commands.
-    if (server.port != 0) try server.listenToPort();
+    if (self.port != 0) try self.listenToPort();
 
     // Open the listening Unix domain socket.
-    if (server.unixsocket) |unixsocket| {
+    if (self.unixsocket) |unixsocket| {
         posix.unlink(unixsocket) catch {};
-        server.sofd = anet.unixServer(
+        self.sofd = anet.unixServer(
             unixsocket,
-            server.unixsocketperm,
-            server.tcp_backlog,
+            self.unixsocketperm,
+            self.tcp_backlog,
         ) catch |err| {
             logging.warn("Openning Unix socket: {}", .{err});
             return err;
         };
-        try anet.nonBlock(server.sofd);
+        try anet.nonBlock(self.sofd);
     }
 
-    if (server.ipfd_count == 0 and server.sofd < 0) {
+    if (self.ipfd_count == 0 and self.sofd < 0) {
         logging.warn("Configured to not listen anywhere, exiting", .{});
         return error.NoListenSockets;
-    }
-
-    server.db = allocator.alloc(Database, server.dbnum);
-    errdefer allocator.free(server.db);
-    var dbi: usize = 0;
-    errdefer for (0..dbi + 1) |j| server.db[j].destroy();
-    for (0..server.dbnum) |i| {
-        server.db[i] = Database.create(i);
-        dbi = i;
     }
 
     // Create the timer callback, this is our way to process many background
     // operations incrementally, like clients timeout, eviction of unaccessed
     // expired keys and so forth.
-    _ = server.el.createTimeEvent(
+    _ = self.el.createTimeEvent(
         1,
         serverCron,
         null,
@@ -508,8 +534,8 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
     );
     // Create an event handler for accepting new connections in TCP and Unix
     // domain sockets.
-    for (server.ipfd[0..server.ipfd_count]) |fd| {
-        server.el.createFileEvent(
+    for (self.ipfd[0..self.ipfd_count]) |fd| {
+        self.el.createFileEvent(
             fd,
             ae.READABLE,
             networking.acceptHandler,
@@ -519,9 +545,9 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
             return err;
         };
     }
-    if (server.sofd > 0) {
-        server.el.createFileEvent(
-            server.sofd,
+    if (self.sofd > 0) {
+        self.el.createFileEvent(
+            self.sofd,
             ae.READABLE,
             networking.acceptHandler,
             null,
@@ -531,27 +557,39 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
         };
     }
 
-    // TODO: Open the AOF file if needed.
+    // Open the AOF file if needed.
+    if (self.aof_state == AOF_ON) {
+        const flags: posix.O = .{
+            .ACCMODE = .WRONLY,
+            .APPEND = true,
+            .CREAT = true,
+        };
+        self.aof_fd = posix.open(
+            server.aof_filename,
+            flags,
+            0o644,
+        ) catch |err| {
+            logging.warn("Can't open the append-only file: {}", .{err});
+            std.process.exit(1);
+        };
+    }
 
     // 32 bit instances are limited to 4GB of address space, so if there is
     // no explicit limit in the user provided configuration we set a limit
     // at 3 GB using maxmemory with 'noeviction' policy'. This avoids
     // useless crashes of the Redis instance for out of memory.
-    if (server.arch_bits == 32 and server.maxmemory == 0) {
+    if (self.arch_bits == 32 and self.maxmemory == 0) {
         logging.warn(
             "32 bit instance detected but no memory limit set. " ++
                 "Setting 3 GB maxmemory limit with 'noeviction' policy now.",
             .{},
         );
-        server.maxmemory = 3 * 1024 * 1024 * 1024; // 3GB
-        server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
+        self.maxmemory = 3 * 1024 * 1024 * 1024; // 3GB
+        self.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
 
-    server.lua.init(true);
-    server.lua.time_limit = LUA_SCRIPT_TIME_LIMIT;
-    errdefer server.lua.deinit();
-
-    try bio.init();
+    self.lua.init(true);
+    self.lua.time_limit = LUA_SCRIPT_TIME_LIMIT;
 }
 
 /// This function will try to raise the max number of open files accordingly to
@@ -728,13 +766,22 @@ pub fn up(self: *Server) !void {
 fn beforeSleep(el: *ae.EventLoop) !void {
     _ = el;
 
+    // Run a fast expire cycle (the called function will return
+    // ASAP if a fast cycle is not needed).
+    if (server.active_expire_enabled) {
+        expire.activeExpireCycle(ACTIVE_EXPIRE_CYCLE_FAST);
+    }
+
     // Try to process pending commands for clients that were just unblocked.
     if (server.unblocked_clients.len != 0) {
         blocked.processUnblockedClients();
     }
 
+    // Write the AOF buffer on disk.
+    aof.flushAppendOnlyFile(false);
+
     // Handle write with pending output buffers.
-    _ = try networking.handleClientsWithPendingWrites();
+    _ = networking.handleClientsWithPendingWrites() catch {};
 }
 
 /// This is our timer interrupt, called server.hz times per second.
@@ -789,11 +836,34 @@ fn serverCron(
         server.shutdown_asap = false;
     }
 
+    // Show some info about non-empty databases
+    if (runWithPeriod(5000)) {
+        for (server.db, 0..) |*db, i| {
+            const size = db.dict.slots();
+            const used = db.dict.size();
+            const vkeys = db.expires.size();
+            if (used > 0 or vkeys > 0) {
+                logging.verbose(
+                    "DB {}: {} keys ({} volatile) in {} slots HT.",
+                    .{ i, used, vkeys, size },
+                );
+            }
+        }
+    }
+
     // We need to do a few operations on clients asynchronously.
     clientsCron();
 
     // Handle background operations on Redis databases.
     databaseCron();
+
+    // Start a scheduled AOF rewrite if this was requested by the user while
+    // a BGSAVE was in progress.
+    if (server.rdb_child_pid == -1 and server.aof_child_pid == -1 and
+        server.aof_rewrite_scheduled)
+    {
+        _ = aof.rewriteAppendOnlyFileBackground();
+    }
 
     // Check if a background saving of AOF rewrite in progress terminated.
     if (server.rdb_child_pid != -1 or server.aof_child_pid != -1) {
@@ -820,12 +890,67 @@ fn serverCron(
                 if (bysignal == 0 and exitcode == 0) {
                     childinfo.receive();
                 }
+            } else if (pid == server.aof_child_pid) {
+                aof.backgroundRewriteDoneHandler(exitcode, bysignal);
+                if (bysignal == 0 and exitcode == 0) {
+                    childinfo.receive();
+                }
             }
-            // TODO: AOF child pid
+
             updateDictResizePolicy();
             childinfo.closePipe();
         }
-    } // TODO: save params, AOF
+    } else {
+        // If there is not a background saving/rewrite in progress check if
+        // we have to save/rewrite now.
+        for (server.saveparams.items) |*sp| {
+            // Save if we reached the given amount of changes,
+            // the given amount of seconds, and if the latest bgsave was
+            // successful or if, in case of an error, at least
+            // CONFIG_BGSAVE_RETRY_DELAY seconds already elapsed.
+            if (server.dirty >= sp.changes and
+                server.unixtime.get() - server.lastsave > sp.seconds and
+                (server.unixtime.get() - server.lastbgsave_try > CONFIG_BGSAVE_RETRY_DELAY or
+                    server.lastbgsave_status == true))
+            {
+                logging.notice(
+                    "{} changes in {} seconds. Saving...",
+                    .{ sp.changes, sp.seconds },
+                );
+                _ = rdb.saveBackground(server.rdb_filename);
+                break;
+            }
+        }
+        // Trigger an AOF rewrite if needed.
+        if (server.aof_state == Server.AOF_ON and server.rdb_child_pid == -1 and
+            server.aof_child_pid == -1 and server.aof_rewrite_perc != 0 and
+            server.aof_current_size > server.aof_rewrite_min_size)
+        {
+            const base: usize = @max(server.aof_rewrite_base_size, 1);
+            const growth = @divFloor(server.aof_current_size * 100, base) - 100;
+            if (growth >= server.aof_rewrite_perc) {
+                logging.notice(
+                    "Starting automatic rewriting of AOF on {}% growth",
+                    .{growth},
+                );
+                _ = aof.rewriteAppendOnlyFileBackground();
+            }
+        }
+    }
+
+    // AOF postponed flush: Try at every cron cycle if the slow fsync
+    // completed.
+    if (server.aof_flush_postponed_start != 0) {
+        aof.flushAppendOnlyFile(false);
+    }
+
+    // AOF write errors: in this case we have a buffer to flush as well and
+    // clear the AOF error in case of success to make the DB writable again,
+    // however to try every second is enough in case of 'hz' is set to
+    // an higher frequency.
+    if (runWithPeriod(1000) and server.aof_last_write_status == false) {
+        aof.flushAppendOnlyFile(false);
+    }
 
     // Close clients that need to be closed asynchronous.
     networking.freeClientsInAsyncFreeQueue();
@@ -842,18 +967,19 @@ fn serverCron(
         ((server.unixtime.get() - server.lastbgsave_try > CONFIG_BGSAVE_RETRY_DELAY) or
             server.lastbgsave_status == true))
     {
-        var rsi: rdb.SaveInfo = undefined;
-        const rsiptr = rsi.populate();
-        if (rdb.saveBackground(server.rdb_filename, rsiptr)) {
+        if (rdb.saveBackground(server.rdb_filename)) {
             server.rdb_bgsave_scheduled = false;
         }
     }
 
+    server.cronloops +%= 1;
     return @intCast(@divFloor(1000, server.hz));
 }
 
 fn prepareForShutdown(flags: i32) bool {
-    _ = flags;
+    const save = flags & SHUTDOWN_SAVE != 0;
+    const nosave = flags & SHUTDOWN_NOSAVE != 0;
+
     logging.warn("User requested shutdown..", .{});
 
     // Kill the saving child if there is a background saving in progress.
@@ -863,6 +989,43 @@ fn prepareForShutdown(flags: i32) bool {
         logging.warn("There is a child saving an .rdb. Killing it!", .{});
         posix.kill(server.rdb_child_pid, posix.SIG.USR1) catch {};
         rdb.rdbRemoveTempFile(server.rdb_child_pid);
+    }
+
+    if (server.aof_state != AOF_OFF) {
+        // Kill the AOF saving child as the AOF we already have may be longer
+        // but contains the full dataset anyway.
+        if (server.aof_child_pid != -1) {
+            // If we have AOF enabled but haven't written the AOF yet, don't
+            // shutdown or else the dataset will be lost.
+            if (server.aof_state == AOF_WAIT_REWRITE) {
+                logging.warn("Writing initial AOF, can't exit.", .{});
+                return false;
+            }
+            logging.warn(
+                "There is a child rewriting the AOF. Killing it!",
+                .{},
+            );
+            posix.kill(server.aof_child_pid, posix.SIG.USR1) catch {};
+        }
+        // Append only file: flush buffers and fsync() the AOF at exit
+        logging.notice("Calling fsync() on the AOF file.", .{});
+        aof.flushAppendOnlyFile(true);
+        config.fsync(server.aof_fd) catch {};
+    }
+
+    // Create a new RDB file before exiting.
+    if ((server.saveparams.items.len > 0 and !nosave) or save) {
+        logging.notice("Saving the final RDB snapshot before exiting.", .{});
+        // Snapshotting. Perform a SYNC SAVE and exit
+        if (!rdb.save(server.rdb_filename)) {
+            // Ooops.. error saving! The best we can do is to continue
+            // operating. Note that if there was a background saving process,
+            // in the next cron() Redis will be notified that the background
+            // saving aborted, handling special stuff like slaves pending for
+            // synchronization...
+            logging.warn("Error trying to save the DB, can't exit.", .{});
+            return false;
+        }
     }
 
     // Close the listening sockets. Apparently this allows faster restarts.
@@ -881,7 +1044,7 @@ fn closeListeningSockets(unlink_unix_socket: bool) void {
     if (server.sofd != -1) {
         posix.close(server.sofd);
     }
-    // TODO: cluster
+
     if (unlink_unix_socket and server.unixsocket != null) {
         logging.notice("Removing the unix socket file.", .{});
         // don't care if this fails
@@ -889,7 +1052,7 @@ fn closeListeningSockets(unlink_unix_socket: bool) void {
     }
 }
 
-///  This function is called by serverCron() and is used in order to perform
+/// This function is called by serverCron() and is used in order to perform
 /// operations on clients that are important to perform constantly. For instance
 /// we use this function in order to disconnect clients after a timeout, including
 /// clients blocked in some blocking command with a non-zero timeout.
@@ -980,7 +1143,7 @@ fn clientsCronResizeQueryBuffer(cli: *Client) bool {
         // at least a few kbytes.
         if (sds.getAvail(cli.querybuf) > 4 * 1024) {
             cli.querybuf = sds.removeAvailSpace(
-                allocator.child,
+                allocator.impl,
                 cli.querybuf,
             );
         }
@@ -1022,8 +1185,8 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     cli.lastcmd = cli.cmd;
     if (cli.cmd == null) {
         multi.flagTransaction(cli);
-        var args = sds.empty(allocator.child);
-        defer sds.free(allocator.child, args);
+        var args = sds.empty(allocator.impl);
+        defer sds.free(allocator.impl, args);
         var i: usize = 1;
         while (i < cli.argc and sds.getLen(args) < 128) : (i += 1) {
             const arg: sds.String = @ptrCast(cli.argv.?[i].v.ptr);
@@ -1032,7 +1195,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
                 remaining = sds.getLen(arg);
             }
             args = sds.catPrintf(
-                allocator.child,
+                allocator.impl,
                 args,
                 "`{s}`, ",
                 .{arg[0..remaining]},
@@ -1058,7 +1221,7 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
     }
 
     // Check if the user is authenticated
-    if (server.requirepass != null and !cli.authenticated and
+    if (self.requirepass != null and !cli.authenticated and
         cli.cmd.?.proc != authCommand)
     {
         multi.flagTransaction(cli);
@@ -1074,16 +1237,19 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         cli.cmd.?.proc != pubsub.psubscribeCommand and
         cli.cmd.?.proc != pubsub.punsubscribeCommand)
     {
-        cli.addReplyErr("only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in this context");
+        cli.addReplyErr("only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING " ++
+            "/ QUIT allowed in this context");
         return true;
     }
 
     // Loading DB? Return an error if the command has not the
     // CMD_LOADING flag.
-    if (server.loading and cli.cmd.?.flags & CMD_LOADING == 0) {
+    if (self.loading and cli.cmd.?.flags & CMD_LOADING == 0) {
         cli.addReply(Server.shared.loadingerr);
         return true;
     }
+
+    // TODO: handle lua script too slow.
 
     // Exec the command
     if (cli.flags & CLIENT_MULTI != 0 and
@@ -1095,8 +1261,8 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         multi.queueMultiCommand(cli);
         cli.addReply(Server.shared.queued);
     } else {
-        self.call(cli, 0);
-        if (server.ready_keys.len > 0) {
+        self.call(cli, CMD_CALL_FULL);
+        if (self.ready_keys.len > 0) {
             blocked.handleClientsBlockedOnKeys();
         }
     }
@@ -1109,6 +1275,27 @@ pub fn lookupCommand(self: *Server, cmd: sds.String) ?*Command {
         return null;
     };
     return command;
+}
+
+pub fn lookupCommandByString(self: *Server, cmd: []const u8) *Command {
+    const name = sds.new(allocator.impl, cmd);
+    defer sds.free(allocator.impl, name);
+    return self.commands.fetchValue(name).?;
+}
+
+/// Lookup the command in the current table, if not found also check in
+/// the original table containing the original command names unaffected by
+/// redis.conf rename-command statement.
+///
+/// This is used by functions rewriting the argument vector such as
+/// rewriteClientCommandVector() in order to set client->cmd pointer
+/// correctly even if the command was renamed.
+pub fn lookupCommandOrOriginal(self: *Server, name: sds.String) ?*Command {
+    const cmd = self.commands.fetchValue(name) orelse {
+        // TODO: fetch from original commands
+        return null;
+    };
+    return cmd;
 }
 
 fn populateCommandTable(self: *Server) void {
@@ -1133,71 +1320,226 @@ fn populateCommandTable(self: *Server) void {
             }
         }
         assert(self.commands.add(
-            sds.new(allocator.child, command.name),
+            sds.new(allocator.impl, command.name),
             @constCast(command),
         ));
     }
 }
 
+/// call() is the core of Redis execution of a command.
+///
+/// The following flags can be passed:
+/// CMD_CALL_NONE        No flags.
+/// CMD_CALL_SLOWLOG     Check command speed and log in the slow log if needed.
+/// CMD_CALL_STATS       Populate command stats.
+/// CMD_CALL_PROPAGATE_AOF   Append command to AOF if it modified the dataset
+///                          or if the client flags are forcing propagation.
+/// CMD_CALL_PROPAGATE_REPL  Send command to salves if it modified the dataset
+///                          or if the client flags are forcing propagation.
+/// CMD_CALL_PROPAGATE   Alias for PROPAGATE_AOF|PROPAGATE_REPL.
+/// CMD_CALL_FULL        Alias for SLOWLOG|STATS|PROPAGATE.
+///
+/// The exact propagation behavior depends on the client flags.
+/// Specifically:
+///
+/// 1. If the client flags CLIENT_FORCE_AOF or CLIENT_FORCE_REPL are set
+///    and assuming the corresponding CMD_CALL_PROPAGATE_AOF/REPL is set
+///    in the call flags, then the command is propagated even if the
+///    dataset was not affected by the command.
+/// 2. If the client flags CLIENT_PREVENT_REPL_PROP or CLIENT_PREVENT_AOF_PROP
+///    are set, the propagation into AOF or to slaves is not performed even
+///    if the command modified the dataset.
+///
+/// Note that regardless of the client flags, if CMD_CALL_PROPAGATE_AOF
+/// or CMD_CALL_PROPAGATE_REPL are not set, then respectively AOF or
+/// slaves propagation will never occur.
+///
+/// Client flags are modified by the implementation of a given command
+/// using the following API:
+///
+/// forceCommandPropagation(Client *cli, flags: i32);
+/// preventCommandPropagation(Client *cli);
+/// preventCommandAOF(Client *cli);
 pub fn call(self: *Server, cli: *Client, flags: i32) void {
-    _ = flags; // TODO:
+    const clien_old_flags = cli.flags;
     self.fixed_time_expire +%= 1;
 
+    // Initialization: clear the flags that must be set by the command on
+    // demand, and initialize the array for additional commands propagation.
+    cli.flags &= ~@as(i32, CLIENT_FORCE_AOF | CLIENT_PREVENT_PROP);
+    const prev_also_propagate = self.also_prpagate;
+    self.also_prpagate.init();
+
     // Call the command
+    var dirty = self.dirty;
     self.updateCachedTime();
     cli.cmd.?.proc(cli);
+    dirty = self.dirty -% dirty;
+    if (dirty < 0) dirty = 0;
+
+    // If the caller is Lua, we want to force the EVAL caller to propagate
+    // the script if the command flag or client flag are forcing the
+    // propagation.
+    if (cli.flags & CLIENT_LUA != 0 and self.lua.caller != null) {
+        if (cli.flags & CLIENT_FORCE_AOF != 0) {
+            self.lua.caller.?.flags |= CLIENT_FORCE_AOF;
+        }
+    }
+
+    // Propagate the command into the AOF and replication link
+    if (flags & CMD_CALL_PROPAGATE != 0 and
+        cli.flags & CLIENT_PREVENT_PROP != CLIENT_PREVENT_PROP)
+    {
+        var propagate_flags: i32 = PROPAGATE_NONE;
+
+        // Check if the command operated changes in the data set. If so
+        // set for replication / AOF propagation.
+        if (dirty > 0) {
+            propagate_flags |= (PROPAGATE_AOF | PROPAGATE_REPL);
+        }
+
+        // If the client forced AOF / replication of the command, set
+        // the flags regardless of the command effects on the data set.
+        if (cli.flags & CLIENT_FORCE_AOF != 0) {
+            propagate_flags |= PROPAGATE_AOF;
+        }
+
+        // However prevent AOF / replication propagation if the command
+        // implementations called preventCommandPropagation() or similar,
+        // or if we don't have the call() flags to do so.
+        if (cli.flags & CLIENT_PREVENT_AOF_PROP != 0 or
+            flags & CMD_CALL_PROPAGATE_AOF == 0)
+        {
+            propagate_flags &= @as(i32, PROPAGATE_AOF);
+        }
+
+        // Call propagate() only if at least one of AOF / replication
+        // propagation is needed.
+        if (propagate_flags != PROPAGATE_NONE) {
+            self.propagate(
+                cli.cmd.?,
+                cli.db.id,
+                cli.argv.?,
+                cli.argc,
+                propagate_flags,
+            );
+        }
+    }
+
+    // Restore the old  flags, since call() can be executed recursively.
+    cli.flags &= ~@as(i32, CLIENT_FORCE_AOF);
+    cli.flags |= clien_old_flags & (CLIENT_FORCE_AOF | CLIENT_PREVENT_PROP);
+
+    // Handle the alsoPropagate() API to handle commands that want to propagate
+    // multiple separated commands. Note that alsoPropagate() is not affected
+    // by CLIENT_PREVENT_PROP flag.
+    if (self.also_prpagate.ops) |ops| {
+        if (flags & CMD_CALL_PROPAGATE != 0) {
+            for (ops) |*op| {
+                var target = op.target;
+                if (flags & CMD_CALL_PROPAGATE_AOF == 0) {
+                    target &= ~@as(i32, PROPAGATE_AOF);
+                }
+                if (target != 0) {
+                    self.propagate(
+                        op.cmd,
+                        op.dbid,
+                        op.argv,
+                        op.argc,
+                        target,
+                    );
+                }
+            }
+        }
+        server.also_prpagate.free();
+    }
+    self.also_prpagate = prev_also_propagate;
 
     self.fixed_time_expire -%= 1;
 }
 
-pub fn destroy() void {
-    server.el.destroy();
-
-    allocator.free(server.rdb_filename);
-    if (server.requirepass) |passwd| {
-        allocator.free(passwd);
+/// Propagate the specified command (in the context of the specified database id)
+/// to AOF and Slaves.
+///
+/// flags are an xor between:
+/// + PROPAGATE_NONE (no propagation of command at all)
+/// + PROPAGATE_AOF (propagate into the AOF file if is enabled)
+/// + PROPAGATE_REPL (propagate into the replication link)
+///
+/// This should not be used inside commands implementation since it will not
+/// wrap the resulting commands in MULTI/EXEC. Use instead:
+///     alsoPropagate()
+///     preventCommandPropagation()
+///     forceCommandPropagation()
+///
+/// However for functions that need to (also) propagate out of the context of a
+/// command execution, for example when serving a blocked client, you
+/// want to use propagate().
+pub fn propagate(
+    self: *Server,
+    cmd: *const Command,
+    dbid: usize,
+    argv: []const *Object,
+    argc: usize,
+    flags: i32,
+) void {
+    if (self.aof_state != AOF_OFF and flags & PROPAGATE_AOF != 0) {
+        aof.feedAppendOnlyFile(cmd, @intCast(dbid), argv, argc);
     }
-    for (server.bindaddr[0..server.bindaddr_count]) |addr| {
-        allocator.free(addr);
+}
+
+/// Used inside commands to schedule the propagation of additional commands
+/// after the current command is propagated to AOF / Replication.
+///
+/// 'cmd' must be a pointer to the Redis command to replicate, dbid is the
+/// database ID the command should be propagated into.
+/// Arguments of the command to propagte are passed as an array of redis
+/// objects pointers of len 'argc', using the 'argv' vector.
+///
+/// The function does not take a reference to the passed 'argv' vector,
+/// so it is up to the caller to release the passed argv (but it is usually
+/// stack allocated).  The function autoamtically increments ref count of
+/// passed objects, so the caller does not need to.
+pub fn alsoPropagate(
+    self: *Server,
+    cmd: *const Command,
+    dbid: usize,
+    argv: []const *Object,
+    argc: usize,
+    target: i32,
+) void {
+    // No propagation during loading.
+    if (self.loading) {
+        return;
     }
 
-    for (server.db) |*db| {
-        db.destroy();
+    const argvcopy = allocator.alloc(*Object, argc);
+    for (argv[0..argc], 0..) |arg, i| {
+        argvcopy[i] = arg.incrRefCount();
     }
-    allocator.free(server.db);
+    self.also_prpagate.append(
+        cmd,
+        dbid,
+        argvcopy,
+        argvcopy.len,
+        target,
+    );
+}
 
-    server.commands.destroy();
+/// Avoid that the executed command is propagated at all. This way we
+/// are free to just propagate what we want using the alsoPropagate()
+/// API.
+pub fn preventCommandPropagation(cli: *Client) void {
+    cli.flags |= CLIENT_PREVENT_PROP;
+}
 
-    var clients_iter = server.clients.iterator(.forward);
-    while (clients_iter.next()) |node| {
-        var cli = node.value;
-        cli.free();
+/// It is possible to call the function forceCommandPropagation() inside a
+/// Redis command implementation in order to to force the propagation of a
+/// specific command execution into AOF.
+pub fn forceCommandPropagation(cli: *Client, flags: i32) void {
+    if (flags & PROPAGATE_AOF != 0) {
+        cli.flags |= CLIENT_FORCE_AOF;
     }
-    server.clients.release();
-    raxlib.raxFree(server.clients_index);
-    server.clients_pending_write.release();
-    server.clients_to_close.release();
-    server.ready_keys.release();
-    server.unblocked_clients.release();
-
-    server.pubsub_channels.destroy();
-    server.pubsub_patterns.release();
-
-    for (server.ipfd[0..server.ipfd_count]) |fd| {
-        posix.close(fd);
-    }
-
-    if (server.unixsocket) |unixsocket| {
-        posix.unlink(unixsocket) catch {};
-        allocator.free(unixsocket);
-    }
-    if (server.sofd != -1) posix.close(server.sofd);
-
-    server.lua.deinit();
-    bio.deinit();
-    shared.destroy();
-
-    instance = undefined;
 }
 
 // AUTH password
@@ -1267,6 +1609,166 @@ pub fn timeCommand(cli: *Client) void {
     cli.addReplyBulkLongLong(usec);
 }
 
+pub fn needShrinkDictToFit(used: u64, size: u64) bool {
+    return (size > dict.HT_INITIAL_SIZE) and
+        @divFloor(used *| 100, size) < HASHTABLE_MIN_FILL;
+}
+
+/// This function is called once a background process of some kind terminates,
+/// as we want to avoid resizing the hash tables when there is a child in order
+/// to play well with copy-on-write (otherwise when a resize happens lots of
+/// memory pages are copied). The goal of this function is to update the ability
+/// for dict.zig to resize the hash tables accordingly to the fact we have o not
+/// running childs.
+pub fn updateDictResizePolicy() void {
+    if (server.rdb_child_pid == -1 and server.aof_child_pid == -1) {
+        dict.enableResize();
+    } else {
+        dict.disableResize();
+    }
+}
+
+pub fn setProcTitle(title: []const u8) void {
+    const mode: []const u8 = "";
+    var buf: [255:0]u8 = undefined;
+    const s = std.fmt.bufPrint(
+        &buf,
+        "{s} {s}:{}{s}",
+        .{
+            title,
+            if (server.bindaddr_count > 0) server.bindaddr[0] else "*",
+            server.port,
+            mode,
+        },
+    ) catch |err| {
+        std.debug.panic("Error: formart proc title: {}", .{err});
+    };
+    buf[s.len] = 0;
+    _ = posix.prctl(
+        posix.PR.SET_NAME,
+        .{ @intFromPtr(&buf), 0, 0, 0 },
+    ) catch |err| {
+        logging.warn("Error set process title to '{s}': {}", .{ s, err });
+    };
+}
+
+/// After fork, the child process will inherit the resources
+/// of the parent process, e.g. fd(socket or flock) etc.
+/// should close the resources not used by the child process, so that if the
+/// parent restarts it can bind/lock despite the child possibly still running.
+pub fn closeChildUnusedResourceAfterFork() void {
+    closeListeningSockets(false);
+    // TODO: cluster, pidfile
+}
+
+/// After an RDB dump or AOF rewrite we exit from children.
+pub fn exitFromChild(retcode: u8) void {
+    std.process.exit(retcode);
+}
+
+/// Using this function you can run code inside serverCron() with the
+/// specified period, specified in milliseconds.
+/// The actual resolution depends on server.hz.
+inline fn runWithPeriod(ms: i64) bool {
+    return ms <= @divFloor(1000, server.hz) or
+        @rem(
+            server.cronloops,
+            @divFloor(ms, @divFloor(1000, server.hz)),
+        ) == 0;
+}
+
+pub var shared: Object.Shared = undefined;
+
+pub var instance: Server = undefined;
+
+const Commands = struct {
+    const HashMap = dict.Dict(sds.String, *Command);
+
+    const vtable: *const HashMap.VTable = &.{
+        .hash = hash,
+        .eql = sds.eqlCase,
+        .freeKey = freeKey,
+    };
+
+    fn hash(key: sds.String) hasher.Hash {
+        return hasher.hashcase(sds.asBytes(key), 1024);
+    }
+
+    fn freeKey(key: sds.String) void {
+        sds.free(allocator.impl, key);
+    }
+};
+
+pub const ClientList = List(*Client, *Client);
+const ReadyKeys = List(*blocked.ReadyList, *blocked.ReadyList);
+
+/// Defines an array of Redis operations. There is an API to add to this
+/// structure in a easy way.
+///
+/// redisOpArrayInit();
+/// redisOpArrayAppend();
+/// redisOpArrayFree();
+pub const RedisOpArray = struct {
+    /// The redisOp structure defines a Redis Operation, that is an instance of
+    /// a command with an argument vector, database ID, propagation target
+    /// (PROPAGATE_*), and command pointer.
+    ///
+    /// Currently only used to additionally propagate more commands to
+    /// AOF/Replication after the propagation of the executed command.
+    pub const RedisOp = struct {
+        argv: []*Object,
+        argc: usize,
+        dbid: usize,
+        target: i32,
+        cmd: *const Command,
+    };
+
+    ops: ?[]RedisOp,
+
+    pub fn init(self: *RedisOpArray) void {
+        self.ops = null;
+    }
+
+    pub fn append(
+        self: *RedisOpArray,
+        cmd: *const Command,
+        dbid: usize,
+        argv: []*Object,
+        argc: usize,
+        target: i32,
+    ) void {
+        const numops = if (self.ops) |ops| ops.len else 0;
+        self.ops = if (self.ops != null)
+            allocator.alloc(RedisOp, 1)
+        else
+            allocator.realloc(self.ops.?, self.ops.?.len + 1);
+        self.ops.?[numops] = .{
+            .argv = argv,
+            .argc = argc,
+            .dbid = dbid,
+            .target = target,
+            .cmd = cmd,
+        };
+    }
+
+    pub fn free(self: *RedisOpArray) void {
+        if (self.ops) |ops| {
+            for (ops) |op| {
+                for (0..op.argc) |i| {
+                    op.argv[i].decrRefCount();
+                }
+                allocator.free(op.argv);
+            }
+            allocator.free(ops);
+        }
+    }
+};
+
+pub const SaveParam = struct {
+    seconds: i32,
+    changes: i32,
+};
+
 test {
     _ = @import("sds.zig");
     _ = @import("IntSet.zig");
@@ -1320,3 +1822,5 @@ const scripting = @import("scripting.zig");
 const logging = @import("logging.zig");
 const rdb = @import("rdb.zig");
 const childinfo = @import("childinfo.zig");
+const aof = @import("aof.zig");
+const expire = @import("expire.zig");

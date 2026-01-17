@@ -156,6 +156,18 @@ pub const Shared = struct {
     punsubscribebulk: *Object,
     messagebulk: *Object,
     pmessagebulk: *Object,
+    set: *Object,
+    hset: *Object,
+    unlink: *Object,
+    del: *Object,
+    rpoplpush: *Object,
+    lpop: *Object,
+    lpush: *Object,
+    rpop: *Object,
+    srem: *Object,
+    zpopmin: *Object,
+    zpopmax: *Object,
+    multi: *Object,
     integers: [Server.OBJ_SHARED_INTEGERS]*Object,
     bulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // $<value>\r\n
     mbulkhdr: [Server.OBJ_SHARED_BULKHDR_LEN]*Object, // *<value>\r\n
@@ -166,123 +178,123 @@ pub const Shared = struct {
         var self: Shared = undefined;
         self.crlf = Object.create(
             .string,
-            sds.new(allocator.child, "\r\n"),
+            sds.new(allocator.impl, "\r\n"),
         );
         self.ok = Object.create(
             .string,
-            sds.new(allocator.child, "+OK\r\n"),
+            sds.new(allocator.impl, "+OK\r\n"),
         );
         self.err = Object.create(
             .string,
-            sds.new(allocator.child, "-ERR\r\n"),
+            sds.new(allocator.impl, "-ERR\r\n"),
         );
         self.emptybulk = Object.create(
             .string,
-            sds.new(allocator.child, "$0\r\n\r\n"),
+            sds.new(allocator.impl, "$0\r\n\r\n"),
         );
         self.czero = Object.create(
             .string,
-            sds.new(allocator.child, ":0\r\n"),
+            sds.new(allocator.impl, ":0\r\n"),
         );
         self.cone = Object.create(
             .string,
-            sds.new(allocator.child, ":1\r\n"),
+            sds.new(allocator.impl, ":1\r\n"),
         );
         self.cnegone = Object.create(
             .string,
-            sds.new(allocator.child, ":-1\r\n"),
+            sds.new(allocator.impl, ":-1\r\n"),
         );
         self.nullbulk = Object.create(
             .string,
-            sds.new(allocator.child, "$-1\r\n"),
+            sds.new(allocator.impl, "$-1\r\n"),
         );
         self.nullmultibulk = Object.create(
             .string,
-            sds.new(allocator.child, "*-1\r\n"),
+            sds.new(allocator.impl, "*-1\r\n"),
         );
         self.emptymultibulk = Object.create(
             .string,
-            sds.new(allocator.child, "*0\r\n"),
+            sds.new(allocator.impl, "*0\r\n"),
         );
         self.pong = Object.create(
             .string,
-            sds.new(allocator.child, "+PONG\r\n"),
+            sds.new(allocator.impl, "+PONG\r\n"),
         );
         self.queued = Object.create(
             .string,
-            sds.new(allocator.child, "+QUEUED\r\n"),
+            sds.new(allocator.impl, "+QUEUED\r\n"),
         );
         self.emptyscan = Object.create(
             .string,
-            sds.new(allocator.child, "*2\r\n$1\r\n0\r\n*0\r\n"),
+            sds.new(allocator.impl, "*2\r\n$1\r\n0\r\n*0\r\n"),
         );
         self.wrongtypeerr = Object.create(
             .string,
             sds.new(
-                allocator.child,
+                allocator.impl,
                 "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
             ),
         );
         self.nokeyerr = Object.create(
             .string,
-            sds.new(allocator.child, "-ERR no such key\r\n"),
+            sds.new(allocator.impl, "-ERR no such key\r\n"),
         );
         self.syntaxerr = Object.create(
             .string,
-            sds.new(allocator.child, "-ERR syntax error\r\n"),
+            sds.new(allocator.impl, "-ERR syntax error\r\n"),
         );
         self.sameobjecterr = Object.create(
             .string,
             sds.new(
-                allocator.child,
+                allocator.impl,
                 "-ERR source and destination objects are the same\r\n",
             ),
         );
         self.outofrangeerr = Object.create(
             .string,
-            sds.new(allocator.child, "-ERR index out of range\r\n"),
+            sds.new(allocator.impl, "-ERR index out of range\r\n"),
         );
         self.noscripterr = Object.create(
             .string,
-            sds.new(allocator.child, "-NOSCRIPT No matching script. Please use EVAL.\r\n"),
+            sds.new(allocator.impl, "-NOSCRIPT No matching script. Please use EVAL.\r\n"),
         );
         self.loadingerr = Object.create(
             .string,
-            sds.new(allocator.child, "-LOADING Redis is loading the dataset in memory\r\n"),
+            sds.new(allocator.impl, "-LOADING Redis is loading the dataset in memory\r\n"),
         );
         self.noautherr = Object.create(
             .string,
-            sds.new(allocator.child, "-NOAUTH Authentication required.\r\n"),
+            sds.new(allocator.impl, "-NOAUTH Authentication required.\r\n"),
         );
         self.oomerr = Object.create(
             .string,
             sds.new(
-                allocator.child,
+                allocator.impl,
                 "-OOM command not allowed when used memory > 'maxmemory'.\r\n",
             ),
         );
         self.execaborterr = Object.create(
             .string,
             sds.new(
-                allocator.child,
+                allocator.impl,
                 "-EXECABORT Transaction discarded because of previous errors.\r\n",
             ),
         );
         self.busykeyerr = Object.create(
             .string,
-            sds.new(allocator.child, "-BUSYKEY Target key name already exists.\r\n"),
+            sds.new(allocator.impl, "-BUSYKEY Target key name already exists.\r\n"),
         );
         self.space = Object.create(
             .string,
-            sds.new(allocator.child, " "),
+            sds.new(allocator.impl, " "),
         );
         self.colon = Object.create(
             .string,
-            sds.new(allocator.child, ":"),
+            sds.new(allocator.impl, ":"),
         );
         self.plus = Object.create(
             .string,
-            sds.new(allocator.child, "+"),
+            sds.new(allocator.impl, "+"),
         );
         self.subscribebulk = Object.createString("$9\r\nsubscribe\r\n");
         self.psubscribebulk = Object.createString("$10\r\npsubscribe\r\n");
@@ -290,6 +302,18 @@ pub const Shared = struct {
         self.punsubscribebulk = Object.createString("$12\r\npunsubscribe\r\n");
         self.messagebulk = Object.createString("$7\r\nmessage\r\n");
         self.pmessagebulk = Object.createString("$8\r\npmessage\r\n");
+        self.set = Object.createString("SET");
+        self.hset = Object.createString("HSET");
+        self.unlink = Object.createString("UNLINK");
+        self.del = Object.createString("DEL");
+        self.rpoplpush = Object.createString("RPOPLPUSH");
+        self.lpop = Object.createString("LPOP");
+        self.lpush = Object.createString("LPUSH");
+        self.rpop = Object.createString("RPOP");
+        self.srem = Object.createString("SREM");
+        self.zpopmin = Object.createString("ZPOPMIN");
+        self.zpopmax = Object.createString("ZPOPMAX");
+        self.multi = Object.createString("MULTI");
         for (0..Server.OBJ_SHARED_INTEGERS) |i| {
             var obj = Object.createInt(@intCast(i));
             self.integers[i] = obj.makeShared();
@@ -298,8 +322,8 @@ pub const Shared = struct {
             self.bulkhdr[i] = Object.create(
                 .string,
                 sds.catPrintf(
-                    allocator.child,
-                    sds.empty(allocator.child),
+                    allocator.impl,
+                    sds.empty(allocator.impl),
                     "${}\r\n",
                     .{i},
                 ),
@@ -307,58 +331,16 @@ pub const Shared = struct {
             self.mbulkhdr[i] = Object.create(
                 .string,
                 sds.catPrintf(
-                    allocator.child,
-                    sds.empty(allocator.child),
+                    allocator.impl,
+                    sds.empty(allocator.impl),
                     "*{}\r\n",
                     .{i},
                 ),
             );
         }
-        self.minstring = sds.new(allocator.child, "minstring");
-        self.maxstring = sds.new(allocator.child, "maxstring");
+        self.minstring = sds.new(allocator.impl, "minstring");
+        self.maxstring = sds.new(allocator.impl, "maxstring");
         return self;
-    }
-
-    pub fn destroy(self: *Shared) void {
-        self.crlf.decrRefCount();
-        self.ok.decrRefCount();
-        self.err.decrRefCount();
-        self.emptybulk.decrRefCount();
-        self.czero.decrRefCount();
-        self.cone.decrRefCount();
-        self.cnegone.decrRefCount();
-        self.nullbulk.decrRefCount();
-        self.nullmultibulk.decrRefCount();
-        self.emptymultibulk.decrRefCount();
-        self.pong.decrRefCount();
-        self.queued.decrRefCount();
-        self.emptyscan.decrRefCount();
-        self.wrongtypeerr.decrRefCount();
-        self.nokeyerr.decrRefCount();
-        self.syntaxerr.decrRefCount();
-        self.sameobjecterr.decrRefCount();
-        self.outofrangeerr.decrRefCount();
-        self.noscripterr.decrRefCount();
-        self.loadingerr.decrRefCount();
-        self.noautherr.decrRefCount();
-        self.oomerr.decrRefCount();
-        self.execaborterr.decrRefCount();
-        self.busykeyerr.decrRefCount();
-        self.space.decrRefCount();
-        self.colon.decrRefCount();
-        self.plus.decrRefCount();
-        self.subscribebulk.decrRefCount();
-        self.psubscribebulk.decrRefCount();
-        self.unsubscribebulk.decrRefCount();
-        self.punsubscribebulk.decrRefCount();
-        self.messagebulk.decrRefCount();
-        self.pmessagebulk.decrRefCount();
-        for (self.integers) |obj| obj.free();
-        for (self.bulkhdr) |obj| obj.decrRefCount();
-        for (self.mbulkhdr) |obj| obj.decrRefCount();
-        sds.free(allocator.child, self.minstring);
-        sds.free(allocator.child, self.maxstring);
-        self.* = undefined;
     }
 };
 
@@ -430,7 +412,7 @@ pub fn createString(str: []const u8) *Object {
 }
 
 pub fn createRawString(str: []const u8) *Object {
-    const s = sds.newLen(allocator.child, str.ptr, str.len);
+    const s = sds.newLen(allocator.impl, str.ptr, str.len);
     return create(.string, s);
 }
 
@@ -460,6 +442,18 @@ fn createEmbeddedString(str: []const u8) *Object {
     obj.v = .{ .ptr = s };
 
     return obj;
+}
+
+pub fn createFromStreamID(id: *const Stream.Id) *Object {
+    return create(
+        .string,
+        sds.catPrintf(
+            allocator.impl,
+            sds.empty(allocator.impl),
+            "{}-{}",
+            .{ id.ms, id.seq },
+        ),
+    );
 }
 
 /// Always demanding to create a shared object if possible.
@@ -507,7 +501,7 @@ fn createStringFromLonglongWithOptions(value: i64, from_shared: bool) *Object {
         return o;
     }
 
-    const s = sds.fromLonglong(allocator.child, value);
+    const s = sds.fromLonglong(allocator.impl, value);
     return create(.string, s);
 }
 
@@ -628,7 +622,7 @@ pub fn decrRefCount(self: *Object) void {
             .zset => self.freeZset(),
             .hash => self.freeHash(),
             .stream => self.freeStream(),
-            else => unreachable, // TODO: module
+            else => unreachable,
         }
         self.free();
         return;
@@ -728,7 +722,7 @@ pub fn tryEncoding(self: *Object) *Object {
             return obj.incrRefCount();
         } else {
             if (self.encoding == .raw) {
-                sds.free(allocator.child, sds.cast(self.v.ptr));
+                sds.free(allocator.impl, sds.cast(self.v.ptr));
                 self.encoding = .int;
                 self.v = .{ .int = value };
                 return self;
@@ -773,7 +767,7 @@ pub fn trimStringIfNeeded(self: *Object) void {
     }
     var s = sds.cast(self.v.ptr);
     if (sds.getAvail(s) > sds.getLen(s) / 10) {
-        s = sds.removeAvailSpace(allocator.child, s);
+        s = sds.removeAvailSpace(allocator.impl, s);
         self.v = .{ .ptr = s };
     }
 }
@@ -934,7 +928,7 @@ pub fn free(self: *Object) void {
 fn freeString(self: *Object) void {
     if (self.encoding == .raw) {
         const s: sds.String = sds.cast(self.v.ptr);
-        sds.free(allocator.child, s);
+        sds.free(allocator.impl, s);
     }
 }
 
@@ -992,16 +986,6 @@ fn freeHash(self: *Object) void {
 fn freeStream(self: *Object) void {
     const s: *Stream = .cast(self.v.ptr);
     s.destroy();
-}
-
-test createEmbeddedString {
-    try Server.create(null, null);
-    defer Server.destroy();
-
-    var o = createEmbeddedString("hello");
-    defer o.decrRefCount();
-    const s: sds.String = @ptrCast(o.v.ptr);
-    try expectEqualStrings("hello", sds.asBytes(s));
 }
 
 const std = @import("std");

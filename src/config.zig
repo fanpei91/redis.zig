@@ -16,6 +16,12 @@ const maxmemory_policy_enum = [_]configEnum{
     .{ .name = "noeviction", .val = Server.MAXMEMORY_NO_EVICTION },
 };
 
+const aof_fsync_enum = [_]configEnum{
+    .{ .name = "everysec", .val = Server.AOF_FSYNC_EVERYSEC },
+    .{ .name = "always", .val = Server.AOF_FSYNC_ALWAYS },
+    .{ .name = "no", .val = Server.AOF_FSYNC_NO },
+};
+
 /// Get enum value from name. If there is no match std.math.minInt(i32) is
 /// returned.
 fn configEnumGetValue(ce: []const configEnum, name: []const u8) i32 {
@@ -39,8 +45,8 @@ pub fn load(
     filename: ?sds.String,
     options: ?sds.String,
 ) !void {
-    var config = sds.empty(allocator.child);
-    defer sds.free(allocator.child, config);
+    var config = sds.empty(allocator.impl);
+    defer sds.free(allocator.impl, config);
     var buf: [Server.CONFIG_MAX_LINE]u8 = undefined;
 
     if (filename) |f| {
@@ -58,13 +64,13 @@ pub fn load(
         while (true) {
             const nread = try fp.read(&buf);
             if (nread == 0) break;
-            config = sds.cat(allocator.child, config, buf[0..nread]);
+            config = sds.cat(allocator.impl, config, buf[0..nread]);
         }
     }
 
     if (options) |o| {
-        config = sds.cat(allocator.child, config, "\n");
-        config = sds.cat(allocator.child, config, sds.asBytes(o));
+        config = sds.cat(allocator.impl, config, "\n");
+        config = sds.cat(allocator.impl, config, sds.asBytes(o));
     }
 
     return try loadFromString(server, config);
@@ -74,8 +80,8 @@ fn loadFromString(
     server: *Server,
     config: sds.String,
 ) (error{InvalidConfig})!void {
-    const lines = sds.split(allocator.child, sds.asBytes(config), "\n");
-    defer sds.freeSplitRes(allocator.child, lines);
+    const lines = sds.split(allocator.impl, sds.asBytes(config), "\n");
+    defer sds.freeSplitRes(allocator.impl, lines);
     var err: ?[]const u8 = null;
     var i: usize = 0;
     var linenum: usize = 0;
@@ -91,11 +97,11 @@ fn loadFromString(
             if (bytes.len == 0 or bytes[0] == '#') continue;
 
             // Split into arguments
-            const argv = sds.splitArgs(allocator.child, bytes) orelse {
+            const argv = sds.splitArgs(allocator.impl, bytes) orelse {
                 err = "Unbalanced quotes in configuration line";
                 break :biz;
             };
-            defer sds.freeSplitRes(allocator.child, argv);
+            defer sds.freeSplitRes(allocator.impl, argv);
             const argc = argv.len;
 
             // Skip this line if the resulting command vector is empty.
@@ -465,12 +471,114 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "save")) {
+                if (argc == 3) {
+                    const seconds = std.fmt.parseInt(
+                        i32,
+                        sds.asBytes(argv[1]),
+                        10,
+                    ) catch 0;
+                    const changes = std.fmt.parseInt(
+                        i32,
+                        sds.asBytes(argv[2]),
+                        10,
+                    ) catch -1;
+                    if (seconds < 1 or changes < 0) {
+                        err = "Invalid save parameters";
+                        break :biz;
+                    }
+                    appendServerSaveParams(server, seconds, changes);
+                } else if (argc == 2 and eql(sds.asBytes(argv[1]), "")) {
+                    resetServerSaveParams(server);
+                }
+                continue;
+            }
+
             if (eql(option, "appendonly") and argc == 2) {
                 const yes = parseYesNo(sds.asBytes(argv[1])) catch {
                     err = YES_NO_ARG_ERR;
                     break :biz;
                 };
                 server.aof_state = if (yes) Server.AOF_ON else Server.AOF_OFF;
+                continue;
+            }
+
+            if (eql(option, "appendfilename") and argc == 2) {
+                const path = sds.asSentinelBytes(argv[1]);
+                if (!util.pathIsBaseName(path)) {
+                    err = "appendfilename can't be a path, just a filename";
+                    break :biz;
+                }
+                allocator.free(server.aof_filename);
+                server.aof_filename = allocator.dupe(u8, path);
+                continue;
+            }
+
+            if (eql(option, "appendfsync") and argc == 2) {
+                server.aof_fsync = configEnumGetValue(
+                    &aof_fsync_enum,
+                    sds.castBytes(argv[1]),
+                );
+                if (server.aof_fsync == std.math.minInt(i32)) {
+                    err = "argument must be 'no', 'always' or 'everysec'";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "no-appendfsync-on-rewrite") and argc == 2) {
+                const yes = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                server.aof_no_fsync_on_rewrite = yes;
+                continue;
+            }
+
+            if (eql(option, "aof-load-truncated") and argc == 2) {
+                const yes = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                server.aof_load_truncated = yes;
+                continue;
+            }
+
+            if (eql(option, "aof-rewrite-incremental-fsync") and argc == 2) {
+                const yes = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                server.aof_rewrite_incremental_fsync = yes;
+                continue;
+            }
+
+            if (eql(option, "aof-use-rdb-preamble") and argc == 2) {
+                const yes = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                server.aof_use_rdb_preamble = yes;
+                continue;
+            }
+
+            if (eql(option, "auto-aof-rewrite-percentage") and argc == 2) {
+                server.aof_rewrite_perc = std.fmt.parseInt(
+                    i32,
+                    sds.asBytes(argv[1]),
+                    10,
+                ) catch -1;
+                if (server.aof_rewrite_perc < 0) {
+                    err = "Invalid negative percentage for AOF auto rewrite";
+                    break :biz;
+                }
+                continue;
+            }
+
+            if (eql(option, "auto-aof-rewrite-min-size") and argc == 2) {
+                server.aof_rewrite_min_size = memtosize(
+                    sds.asBytes(argv[1]),
+                ) catch 0;
                 continue;
             }
 
@@ -576,6 +684,32 @@ test memtosize {
     );
 }
 
+pub fn appendServerSaveParams(server: *Server, seconds: i32, changes: i32) void {
+    server.saveparams.append(allocator.impl, .{
+        .seconds = seconds,
+        .changes = changes,
+    }) catch allocator.oom();
+}
+
+pub fn resetServerSaveParams(server: *Server) void {
+    server.saveparams.deinit(allocator.impl);
+    server.saveparams = .empty;
+}
+
+// pub fn fsync(fd: posix.fd_t) posix.SyncError!void {
+//     if (builtin.os.tag == .linux) {
+//         return posix.fdatasync(fd);
+//     }
+//     return posix.fsync(fd);
+// }
+
+pub const fsync = if (builtin.os.tag == .linux)
+    posix.fdatasync
+else
+    posix.fsync;
+
+const posix = std.posix;
+const builtin = @import("builtin");
 const std = @import("std");
 const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");

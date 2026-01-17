@@ -83,7 +83,7 @@ pub const Client = struct {
             return reply;
         }
 
-        fn dupe(reply: *ReplyBlock) *ReplyBlock {
+        pub fn dupe(reply: *ReplyBlock) *ReplyBlock {
             const old_bytes = reply.mem();
             const new = ReplyBlock.create(reply.size);
             const new_bytes = new.mem();
@@ -109,7 +109,7 @@ pub const Client = struct {
             return ptr[0 .. @sizeOf(ReplyBlock) + self.size];
         }
 
-        fn destroy(reply: *ReplyBlock) void {
+        pub fn destroy(reply: *ReplyBlock) void {
             allocator.free(reply.mem());
         }
     };
@@ -195,7 +195,7 @@ pub const Client = struct {
         cli.client_list_node = null;
         cli.reqtype = 0;
         cli.querybuf_peak = 0;
-        cli.querybuf = sds.empty(allocator.child);
+        cli.querybuf = sds.empty(allocator.impl);
         cli.qb_pos = 0;
         cli.argv = null;
         cli.argc = 0;
@@ -343,6 +343,65 @@ pub const Client = struct {
         }
     }
 
+    /// Rewrite the command vector of the client. All the new objects ref count
+    /// is incremented. The old command vector is freed, and the old objects
+    /// ref count is decremented.
+    pub fn rewriteCommandVector(self: *Client, va: []const *Object) void {
+        const argv = allocator.alloc(*Object, va.len);
+        for (va, 0..) |arg, i| {
+            argv[i] = arg.incrRefCount();
+        }
+        // We free the objects in the original vector at the end, so we are
+        // sure that if the same objects are reused in the new vector the
+        // refcount gets incremented before it gets decremented. *
+        for (0..self.argc, self.argv.?) |_, arg| {
+            arg.decrRefCount();
+        }
+        allocator.free(self.argv.?);
+
+        // Replace argv and argc with our new versions.
+        self.argv = argv;
+        self.argc = argv.len;
+        self.cmd = server.lookupCommandOrOriginal(
+            sds.cast(self.argv.?[0].v.ptr),
+        );
+        assert(self.cmd != null);
+    }
+
+    /// Rewrite a single item in the command vector.
+    /// The new val ref count is incremented, and the old decremented.
+    ///
+    /// It is possible to specify an argument over the current size of the
+    /// argument vector: in this case the array of objects gets reallocated
+    /// and self.argc set to the max value. However it's up to the caller to
+    ///
+    /// 1. Make sure there are no "holes" and all the arguments are set.
+    /// 2. If the original argument vector was longer than the one we
+    ///    want to end with, it's up to the caller to set self.argc and
+    ///    free the no longer used objects on self.argv.
+    pub fn rewriteCommandArgument(
+        self: *Client,
+        i: usize,
+        newval: *Object,
+    ) void {
+        if (i < self.argc) {
+            self.argv.?[i].decrRefCount();
+        }
+        if (i >= self.argc) {
+            self.argv = allocator.realloc(self.argv.?, i + 1);
+            self.argc = self.argv.?.len;
+        }
+        self.argv.?[i] = newval.incrRefCount();
+
+        // If this is the command name make sure to fix self.cmd.
+        if (i == 0) {
+            self.cmd = server.lookupCommandOrOriginal(
+                sds.cast(self.argv.?[0].v.ptr),
+            );
+            assert(self.cmd != null);
+        }
+    }
+
     /// This function is called every time, in the client structure 'c', there is
     /// more query buffer to process, because we read more data from the socket
     /// or because a client was blocked and later reactivated, so there could be
@@ -430,9 +489,9 @@ pub const Client = struct {
             linefeed += 1;
         }
         const query = querybuf[self.qb_pos .. self.qb_pos + newline];
-        const aux = sds.new(allocator.child, query);
-        defer sds.free(allocator.child, aux);
-        const args = sds.splitArgs(allocator.child, sds.asSentinelBytes(aux)) orelse {
+        const aux = sds.new(allocator.impl, query);
+        defer sds.free(allocator.impl, aux);
+        const args = sds.splitArgs(allocator.impl, sds.asSentinelBytes(aux)) orelse {
             self.addReplyErr(
                 "Protocol error: unbalanced quotes in request",
             );
@@ -590,7 +649,7 @@ pub const Client = struct {
                         // Hint the sds library about the amount of bytes this
                         // string is going to contain.
                         self.querybuf = sds.makeRoomFor(
-                            allocator.child,
+                            allocator.impl,
                             self.querybuf,
                             @intCast(bulklen.? + 2),
                         );
@@ -621,7 +680,7 @@ pub const Client = struct {
                 // Assume that if we saw a fat argument we'll see another one
                 // likely...
                 self.querybuf = sds.newLen(
-                    allocator.child,
+                    allocator.impl,
                     sds.NOINIT.ptr,
                     @intCast(self.bulklen + 2),
                 );
@@ -670,12 +729,12 @@ pub const Client = struct {
     /// of REPL.
     pub fn addReplyStreamID(self: *Client, id: *Stream.Id) void {
         const replyid = sds.catPrintf(
-            allocator.child,
-            sds.empty(allocator.child),
+            allocator.impl,
+            sds.empty(allocator.impl),
             "{}-{}",
             .{ id.ms, id.seq },
         );
-        defer sds.free(allocator.child, replyid);
+        defer sds.free(allocator.impl, replyid);
         self.addReplyBulkString(sds.asBytes(replyid));
     }
 
@@ -683,8 +742,8 @@ pub const Client = struct {
         const argv = self.argv.?;
         const reply = self.addDeferredMultiBulkLength();
 
-        const cmd = sds.new(allocator.child, sds.castBytes(argv[0].v.ptr));
-        defer sds.free(allocator.child, cmd);
+        const cmd = sds.new(allocator.impl, sds.castBytes(argv[0].v.ptr));
+        defer sds.free(allocator.impl, cmd);
         sds.toUpper(cmd);
 
         self.addReplyStatusFormat(
@@ -704,9 +763,9 @@ pub const Client = struct {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        var status = sds.empty(allocator.child);
-        defer sds.free(allocator.child, status);
-        status = sds.catPrintf(allocator.child, status, fmt, args);
+        var status = sds.empty(allocator.impl);
+        defer sds.free(allocator.impl, status);
+        status = sds.catPrintf(allocator.impl, status, fmt, args);
         self.addReplyStatus(sds.asBytes(status));
     }
 
@@ -721,8 +780,8 @@ pub const Client = struct {
     /// subcommands in response to an unknown subcommand or argument error.
     pub fn addReplySubcommandSyntaxError(self: *Client) void {
         const argv = self.argv.?;
-        const cmd = sds.new(allocator.child, sds.castBytes(argv[0].v.ptr));
-        defer sds.free(allocator.child, cmd);
+        const cmd = sds.new(allocator.impl, sds.castBytes(argv[0].v.ptr));
+        defer sds.free(allocator.impl, cmd);
         sds.toUpper(cmd);
         // zig fmt: off
         self.addReplyErrFormat(
@@ -865,9 +924,9 @@ pub const Client = struct {
         comptime fmt: []const u8,
         args: anytype,
     ) void {
-        var s = sds.empty(allocator.child);
-        defer sds.free(allocator.child, s);
-        s = sds.catPrintf(allocator.child, s, fmt, args);
+        var s = sds.empty(allocator.impl);
+        defer sds.free(allocator.impl, s);
+        s = sds.catPrintf(allocator.impl, s, fmt, args);
         const bytes = sds.asBytes(s);
         // Make sure there are no newlines in the string, otherwise invalid protocol
         // is emitted.
@@ -973,6 +1032,12 @@ pub const Client = struct {
         if (self.flags & Server.CLIENT_LUA != 0) {
             return true;
         }
+
+        // Fake client for AOF loading.
+        if (self.fd <= 0) {
+            return false;
+        }
+
         // Schedule the client to write the output buffers to the socket, unless
         // it should already be setup to do so (it has already pending data).
         if (!self.hasPendingReplies()) {
@@ -1107,7 +1172,7 @@ pub const Client = struct {
         }
 
         // Free the query buffer
-        sds.free(allocator.child, self.querybuf);
+        sds.free(allocator.impl, self.querybuf);
         self.querybuf = undefined;
 
         // Deallocate structures used to block on blocking ops.
@@ -1268,10 +1333,26 @@ pub fn handleClientsWithPendingWrites() !usize {
         // If after the synchronous writes above we still have data to
         // output to the client, we need to install the writable handler.
         if (cli.hasPendingReplies()) {
-            // TODO: AOF
+            var ae_flags: i32 = ae.WRITABLE;
+            // For the fsync=always policy, we need to ensure that replies are
+            // sent only after AOF data has been fsync'd to disk by beforeSleep().
+            // AE_BARRIER guarantees this by inverting the event processing order:
+            // if the same FD becomes both readable and writable in the same
+            // event loop iteration, the writable event (sending replies) will be
+            // processed first, followed by the readable event (receiving new
+            // commands). This ensures that:
+            // 1. Replies are sent after beforeSleep()'s fsync
+            // 2. New commands received after replies will be processed in the
+            //    next iteration, allowing their AOF data to be fsync'd before
+            //    their replies are sent.
+            if (server.aof_state == Server.AOF_ON and
+                server.aof_fsync == Server.AOF_FSYNC_ALWAYS)
+            {
+                ae_flags |= ae.BARRIER;
+            }
             server.el.createFileEvent(
                 cli.fd,
-                ae.WRITABLE,
+                ae_flags,
                 sendReplyToClient,
                 cli,
             ) catch {
@@ -1318,7 +1399,7 @@ fn readQueryFromClient(
     if (cli.querybuf_peak < qblen) {
         cli.querybuf_peak = qblen;
     }
-    cli.querybuf = sds.makeRoomFor(allocator.child, cli.querybuf, readlen);
+    cli.querybuf = sds.makeRoomFor(allocator.impl, cli.querybuf, readlen);
     const nread = posix.read(
         fd,
         cli.querybuf[qblen .. qblen + readlen],
@@ -1340,9 +1421,9 @@ fn readQueryFromClient(
     cli.lastinteraction = server.unixtime.get();
     if (sds.getLen(cli.querybuf) > server.client_max_querybuf_len) {
         defer cli.free();
-        var bytes = sds.empty(allocator.child);
-        defer sds.free(allocator.child, bytes);
-        bytes = sds.catRepr(allocator.child, bytes, cli.querybuf[0..64]);
+        var bytes = sds.empty(allocator.impl);
+        defer sds.free(allocator.impl, bytes);
+        bytes = sds.catRepr(allocator.impl, bytes, cli.querybuf[0..64]);
         log.warn(
             "Closing client that reached max query buffer length (qbuf initial bytes: {s})",
             .{sds.asBytes(bytes)},
@@ -1350,7 +1431,13 @@ fn readQueryFromClient(
         return;
     }
 
-    cli.processInputBuffer();
+    // Time to process the buffer. If the client is a master we need to
+    // compute the difference between the applied offset before and after
+    // processing the buffer, to understand how much of the replication stream
+    // was actually applied to the master state: this quantity, and its
+    // corresponding part of the replication stream, will be propagated to
+    // the sub-slaves and to the replication backlog.
+    cli.processInputBufferAndReplicate();
 }
 
 /// Write event handler. Just send data to the client.

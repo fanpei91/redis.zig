@@ -332,8 +332,8 @@ pub fn get(entry: [*]u8) ?Value {
 pub fn getObject(ptr: [*]u8) sds.String {
     const value = get(ptr).?;
     return switch (value) {
-        .num => |v| sds.fromLonglong(allocator.child, v),
-        .str => |v| sds.new(allocator.child, v),
+        .num => |v| sds.fromLonglong(allocator.impl, v),
+        .str => |v| sds.new(allocator.impl, v),
     };
 }
 

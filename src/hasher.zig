@@ -16,7 +16,7 @@ pub fn hash(key: []const u8) Hash {
 pub fn hashcase(key: []const u8, comptime max_len: usize) Hash {
     var stack_impl = std.heap.stackFallback(
         max_len,
-        allocator.child,
+        allocator.impl,
     );
     const stack_allocator = stack_impl.get();
     const s = sds.new(stack_allocator, key);

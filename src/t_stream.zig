@@ -9,6 +9,8 @@ pub fn xaddCommand(cli: *CLient) void {
     // If true only delete whole radix tree nodes, so the maxium length is not
     // applied verbatim.
     var approx_maxlen: bool = false;
+    // Index of the count in MAXLEN, for rewriting.
+    var maxlen_arg_idx: usize = 0;
 
     // Parse options.
     //
@@ -43,6 +45,7 @@ pub fn xaddCommand(cli: *CLient) void {
                 return;
             }
             i += 1;
+            maxlen_arg_idx = i;
         } else {
             // If we are here is a syntax error or a valid ID.
             if (!Stream.Id.parseOrReply(cli, argv[i], &id, 0, true)) return;
@@ -101,7 +104,16 @@ pub fn xaddCommand(cli: *CLient) void {
 
     if (maxlen >= 0) {
         _ = stream.trim(@intCast(maxlen), approx_maxlen);
+        if (approx_maxlen) {
+            rewriteApproxMaxlen(cli, stream, maxlen_arg_idx);
+        }
     }
+
+    // Let's rewrite the ID argument with the one actually generated for
+    // AOF/replication propagation.
+    const idarg = Object.createFromStreamID(&id);
+    defer idarg.decrRefCount();
+    cli.rewriteCommandArgument(i, idarg);
 
     // We need to signal to blocked clients that there is new data on this
     // stream.
@@ -278,6 +290,8 @@ pub fn xtrimCommand(cli: *CLient) void {
     // If TRUE only delete whole radix tree nodes, so
     // the maxium length is not applied verbatim.
     var approx_maxlen = false;
+    // Index of the count in MAXLEN, for rewriting.
+    var maxlen_arg_idx: usize = 0;
 
     // Parse options.
     var i: usize = 2; // Start of options.
@@ -302,6 +316,7 @@ pub fn xtrimCommand(cli: *CLient) void {
                 return;
             }
             i += 1;
+            maxlen_arg_idx = i;
         } else {
             cli.addReply(Server.shared.syntaxerr);
             return;
@@ -319,6 +334,9 @@ pub fn xtrimCommand(cli: *CLient) void {
     if (deleted > 0) {
         cli.db.signalModifiedKey(key);
         server.dirty +%= @intCast(deleted);
+        if (approx_maxlen) {
+            rewriteApproxMaxlen(cli, stream, maxlen_arg_idx);
+        }
     }
     cli.addReplyLongLong(@intCast(deleted));
 }
@@ -565,7 +583,10 @@ pub fn xreadCommand(cli: *CLient) void {
                     );
                 }
 
-                const spi: ?*Stream.PropInfo = null; // TODO: PropInfo
+                const spi: Stream.PropInfo = .{
+                    .keyname = argv[i + streams_arg],
+                    .groupname = groupname.?,
+                };
                 var flags: i32 = 0;
                 if (noack) flags |= Stream.RWR_NOACK;
                 if (serve_history) flags |= Stream.RWR_HISTORY;
@@ -578,7 +599,7 @@ pub fn xreadCommand(cli: *CLient) void {
                     if (groups != null) groups.?[i] else null,
                     consumer,
                     flags,
-                    spi,
+                    &spi,
                 );
                 if (groups != null) server.dirty +%= 1;
             }
@@ -632,7 +653,10 @@ pub fn xreadCommand(cli: *CLient) void {
         cli.addReply(Server.shared.nullmultibulk);
     }
 
-    // cleanup
+    // Cleanup:
+    // The command is propagated (in the READGROUP form) as a side effect
+    // of calling lower level APIs. So stop any implicit propagation.
+    Server.preventCommandPropagation(cli);
     if (groups) |grps| allocator.free(grps);
     if (!std.meta.eql(ids, &static_ids)) allocator.free(ids);
 }
@@ -1115,6 +1139,7 @@ pub fn xclaimCommand(cli: *CLient) void {
     // are trailing options.
     const now = std.time.milliTimestamp();
     var last_id: Stream.Id = .{ .ms = 0, .seq = 0 };
+    var propagare_last_id = false;
     while (j < cli.argc) : (j += 1) {
         const moreargs = cli.argc - 1 - j; //Number of additional arguments.
         const opt = sds.castBytes(argv[j].v.ptr);
@@ -1160,6 +1185,7 @@ pub fn xclaimCommand(cli: *CLient) void {
 
     if (last_id.compare(&group.?.last_id) == .gt) {
         group.?.last_id = last_id;
+        propagare_last_id = true;
     }
 
     if (deliverytime != -1) {
@@ -1273,10 +1299,18 @@ pub fn xclaimCommand(cli: *CLient) void {
                 if (emitted == 0) cli.addReply(Server.shared.nullbulk);
             }
             arraylen += 1;
+            // Propagate this change.
+            propagateXCLAIM(cli, key, group.?, argv[2], argv[j], nack);
+            propagare_last_id = false; // Will be propagated by XCLAIM itself.
             server.dirty +%= 1;
         }
     }
+    if (propagare_last_id) {
+        propagateGroupID(cli, key, group.?, argv[2]);
+        server.dirty +%= 1;
+    }
     cli.setDeferredMultiBulkLength(replylen, arraylen);
+    Server.preventCommandPropagation(cli);
 }
 
 /// XSETID key last-id
@@ -1461,6 +1495,111 @@ pub fn xinfoCommand(cli: *CLient) void {
     }
 }
 
+/// We propagate MAXLEN ~ <count> as MAXLEN = <resulting-len-of-stream>
+/// otherwise trimming is no longer determinsitic on replicas / AOF.
+fn rewriteApproxMaxlen(cli: *CLient, s: *Stream, maxlen_arg_idx: usize) void {
+    const maxlen_obj = Object.createStringFromLonglong(@intCast(s.length));
+    const equal_obj = Object.createString("=");
+
+    cli.rewriteCommandArgument(maxlen_arg_idx, maxlen_obj);
+    cli.rewriteCommandArgument(maxlen_arg_idx - 1, equal_obj);
+
+    maxlen_obj.decrRefCount();
+    equal_obj.decrRefCount();
+}
+
+/// We need this when we want to propoagate the new last-id of a consumer group
+/// that was consumed by XREADGROUP with the NOACK option: in that case we can't
+/// propagate the last ID just using the XCLAIM LASTID option, so we emit
+///
+///  XGROUP SETID <key> <groupname> <id>
+fn propagateGroupID(
+    cli: *CLient,
+    key: *Object,
+    group: *Stream.CG,
+    groupname: *Object,
+) void {
+    var argv = [_]*Object{
+        Object.createString("XGROUP"),
+        Object.createString("SETID"),
+        key,
+        groupname,
+        Object.createFromStreamID(&group.last_id),
+    };
+    // We use progagate() because this code path is not always called from
+    // the command execution context. Moreover this will just alter the
+    // consumer group state, and we don't need MULTI/EXEC wrapping because
+    // there is no message state cross-message atomicity required.
+    server.propagate(
+        server.xgroupCommand,
+        cli.db.id,
+        &argv,
+        argv.len,
+        Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+    );
+    argv[0].decrRefCount();
+    argv[1].decrRefCount();
+    argv[4].decrRefCount();
+}
+
+/// As a result of an explicit XCLAIM or XREADGROUP command, new entries
+/// are created in the pending list of the stream and consumers. We need
+/// to propagate this changes in the form of XCLAIM commands.
+fn propagateXCLAIM(
+    cli: *CLient,
+    key: *Object,
+    group: *Stream.CG,
+    groupname: *Object,
+    id: *Object,
+    nack: *Stream.NACK,
+) void {
+    // We need to generate an XCLAIM that will work in a idempotent fashion:
+    //
+    // XCLAIM <key> <group> <consumer> 0 <id> TIME <milliseconds-unix-time>
+    //        RETRYCOUNT <count> FORCE JUSTID LASTID <id>.
+    //
+    // Note that JUSTID is useful in order to avoid that XCLAIM will do
+    // useless work in the slave side, trying to fetch the stream item.
+    var argv: [14]*Object = undefined;
+    argv[0] = Object.createString("XCLAIM");
+    argv[1] = key;
+    argv[2] = groupname;
+    argv[3] = Object.createString(sds.asBytes(nack.consumer.?.name));
+    argv[4] = Object.createStringFromLonglong(0);
+    argv[5] = id;
+    argv[6] = Object.createString("TIME");
+    argv[7] = Object.createStringFromLonglong(nack.delivery_time);
+    argv[8] = Object.createString("RETRYCOUNT");
+    argv[9] = Object.createStringFromLonglong(@intCast(nack.delivery_count));
+    argv[10] = Object.createString("FORCE");
+    argv[11] = Object.createString("JUSTID");
+    argv[12] = Object.createString("LASTID");
+    argv[13] = Object.createFromStreamID(&group.last_id);
+
+    // We use progagate() because this code path is not always called from
+    // the command execution context. Moreover this will just alter the
+    // consumer group state, and we don't need MULTI/EXEC wrapping because
+    // there is no message state cross-message atomicity required.
+    server.propagate(
+        server.xclaimCommand,
+        cli.db.id,
+        &argv,
+        argv.len,
+        Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+    );
+    argv[0].decrRefCount();
+    argv[3].decrRefCount();
+    argv[4].decrRefCount();
+    argv[6].decrRefCount();
+    argv[7].decrRefCount();
+    argv[8].decrRefCount();
+    argv[9].decrRefCount();
+    argv[10].decrRefCount();
+    argv[11].decrRefCount();
+    argv[12].decrRefCount();
+    argv[13].decrRefCount();
+}
+
 pub const Stream = struct {
     /// Don't let listpacks grow too big, even if the user config allows it.
     /// Doing so can lead to an overflow (trying to store more than 32bit length
@@ -1567,7 +1706,7 @@ pub const Stream = struct {
         /// This is the reverse of decode(): the decoded ID will be stored
         /// in the 'self' structure passed by reference. The buffer 'buf'
         /// must point to a 128 bit big-endian encoded ID.
-        pub fn decode(self: *Id, buf: []u8) void {
+        pub fn decode(self: *Id, buf: []const u8) void {
             assert(buf.len >= @sizeOf(Id));
             self.ms = readInt(u64, buf[0..8], .big);
             self.seq = readInt(u64, buf[8..16], .big);
@@ -1669,7 +1808,7 @@ pub const Stream = struct {
         /// Create consumer with the specified name.
         pub fn create(name: sds.String) *Consumer {
             const consumer = allocator.create(Consumer);
-            consumer.name = sds.dupe(allocator.child, name);
+            consumer.name = sds.dupe(allocator.impl, name);
             consumer.pel = raxlib.raxNew();
             return consumer;
         }
@@ -1688,7 +1827,7 @@ pub const Stream = struct {
             // between the consumer and the main stream PEL.
             raxlib.raxFree(self.pel);
 
-            sds.free(allocator.child, self.name);
+            sds.free(allocator.impl, self.name);
             allocator.destroy(self);
         }
     };
@@ -2660,9 +2799,9 @@ pub const Stream = struct {
         group: ?*CG,
         consumer: ?*Consumer,
         flags: i32,
-        spi: ?*PropInfo,
+        spi: ?*const PropInfo,
     ) usize {
-        _ = spi;
+        var propagare_last_id = false;
 
         // If the client is asking for some history, we serve it using a
         // different function, so that we return entries *solely* from its
@@ -2695,6 +2834,7 @@ pub const Stream = struct {
             // Update the group last_id if needed.
             if (group) |cg| if (id.compare(&cg.last_id) == .gt) {
                 cg.last_id = id;
+                propagare_last_id = true;
             };
 
             // Emit a two elements array for each item. The first is
@@ -2773,6 +2913,29 @@ pub const Stream = struct {
                     );
                 } else if (group_inserted == 1 and consumer_inserted == 0) {
                     @panic("NACK half-created. Should not be possible.");
+                }
+
+                // Propagate as XCLAIM.
+                if (spi) |pi| {
+                    const idarg = Object.createFromStreamID(&id);
+                    defer idarg.decrRefCount();
+                    propagateXCLAIM(
+                        cli,
+                        pi.keyname,
+                        group.?,
+                        pi.groupname,
+                        idarg,
+                        nack,
+                    );
+                }
+            } else {
+                if (propagare_last_id) {
+                    propagateGroupID(
+                        cli,
+                        spi.?.keyname,
+                        group.?,
+                        spi.?.groupname,
+                    );
                 }
             }
 

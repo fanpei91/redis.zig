@@ -58,6 +58,13 @@ pub fn rpoplpushCommand(cli: *Client) void {
     }
     cli.db.signalModifiedKey(touchedkey);
     server.dirty +%= 1;
+    if (cli.cmd.?.proc == brpoplpushCommand) {
+        cli.rewriteCommandVector(&.{
+            Server.shared.rpoplpush,
+            argv[1],
+            argv[2],
+        });
+    }
 }
 
 /// LINSERT key <BEFORE | AFTER> pivot element
@@ -414,6 +421,14 @@ fn bpop(cli: *Client, where: Where) void {
         }
         cli.db.signalModifiedKey(key);
         server.dirty +%= 1;
+        // Replicate it as an [LR]POP instead of B[LR]POP.
+        cli.rewriteCommandVector(&.{
+            if (where == .head)
+                Server.shared.lpop
+            else
+                Server.shared.rpop,
+            key,
+        });
         return;
     }
 
@@ -565,8 +580,7 @@ pub fn serveClientBlockedOnList(
     value: *Object,
     where: Where,
 ) bool {
-    _ = db;
-    _ = where;
+    var argv: [3]*Object = undefined;
 
     // BRPOPLPUSH
     if (dstkey) |dst| {
@@ -575,9 +589,41 @@ pub fn serveClientBlockedOnList(
             @branchHint(.unlikely);
             return false;
         };
+        // Propagate the RPOP operation.
+        argv[0] = Server.shared.rpop;
+        argv[1] = key;
+        server.propagate(
+            server.rpopCommand,
+            db.id,
+            argv[0..2],
+            2,
+            Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+        );
         rpoplpush(receiver, dst, dstobj, value);
+        // Propagate the LPUSH operation.
+        argv[0] = Server.shared.lpush;
+        argv[1] = key;
+        argv[2] = value;
+        server.propagate(
+            server.lpushCommand,
+            db.id,
+            &argv,
+            argv.len,
+            Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+        );
         return true;
     }
+
+    // Propagate the [LR]POP operation.
+    argv[0] = if (where == .head) Server.shared.lpop else Server.shared.rpop;
+    argv[1] = key;
+    server.propagate(
+        if (where == .head) server.lpopCommand else server.rpopCommand,
+        db.id,
+        argv[0..2],
+        2,
+        Server.PROPAGATE_AOF | Server.PROPAGATE_REPL,
+    );
 
     // BLPOP/BRPOP
     receiver.addReplyMultiBulkLen(2);

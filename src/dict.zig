@@ -365,7 +365,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
             }
 
             var items = std.ArrayList(*Entry).initCapacity(
-                allocator.child,
+                allocator.impl,
                 count,
             ) catch allocator.oom();
 
@@ -400,7 +400,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
                         empty_visits = 0;
                         while (entry) |ent| {
                             items.append(
-                                allocator.child,
+                                allocator.impl,
                                 ent,
                             ) catch allocator.oom();
                             entry = ent.next;
@@ -412,7 +412,7 @@ pub fn Dict(comptime Key: type, comptime Value: type) type {
                 i = (i + 1) & max_sizemask; // Increment index by 1.
             }
 
-            return items.toOwnedSlice(allocator.child) catch allocator.oom();
+            return items.toOwnedSlice(allocator.impl) catch allocator.oom();
         }
 
         pub const scanEntryFunc = *const fn (privdata: ?*anyopaque, e: *const Entry) void;
@@ -759,21 +759,21 @@ test "add() | addOrFind() || find() | fetchVal()" {
     const cnt = 100;
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator.child,
+            allocator.impl,
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator.child,
+            allocator.impl,
             "val-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = sds.new(allocator.child, key);
-        const sval = sds.new(allocator.child, val);
+        const skey = sds.new(allocator.impl, key);
+        const sval = sds.new(allocator.impl, val);
         var added = dict.add(
             skey,
             sval,
@@ -789,23 +789,23 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     for (0..cnt) |i| {
         const key = std.fmt.allocPrint(
-            allocator.child,
+            allocator.impl,
             "key-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(key);
 
         const val = std.fmt.allocPrint(
-            allocator.child,
+            allocator.impl,
             "val-{}",
             .{i},
         ) catch unreachable;
         defer allocator.free(val);
 
-        const skey = sds.new(allocator.child, key);
-        defer sds.free(allocator.child, skey);
-        const sval = sds.new(allocator.child, val);
-        defer sds.free(allocator.child, sval);
+        const skey = sds.new(allocator.impl, key);
+        defer sds.free(allocator.impl, skey);
+        const sval = sds.new(allocator.impl, val);
+        defer sds.free(allocator.impl, sval);
 
         const found = dict.find(skey);
         try expect(found != null);
@@ -827,9 +827,9 @@ test "add() | addOrFind() || find() | fetchVal()" {
 
     try expectEqual(cnt, dict.size());
 
-    const key = sds.new(allocator.child, "addOrFind");
+    const key = sds.new(allocator.impl, "addOrFind");
     const new_entry = dict.addOrFind(key);
-    const val = sds.new(allocator.child, "value");
+    const val = sds.new(allocator.impl, "value");
     dict.setVal(new_entry, val);
     const existing_entry = dict.addOrFind(key);
     try expectEqual(new_entry, existing_entry);
@@ -866,9 +866,9 @@ test "replace()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new(allocator.child, "k1");
-    _ = dict.add(key, sds.new(allocator.child, "v1"));
-    const ret = dict.replace(key, sds.new(allocator.child, "v2"));
+    const key = sds.new(allocator.impl, "k1");
+    _ = dict.add(key, sds.new(allocator.impl, "v1"));
+    const ret = dict.replace(key, sds.new(allocator.impl, "v2"));
     try expectEqual(.replace, ret);
 
     const found = dict.find(key);
@@ -879,8 +879,8 @@ test "delete()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new(allocator.child, "k1");
-    _ = dict.add(key, sds.new(allocator.child, "v1"));
+    const key = sds.new(allocator.impl, "k1");
+    _ = dict.add(key, sds.new(allocator.impl, "v1"));
     const deleted = dict.delete(key);
 
     try expect(deleted);
@@ -891,8 +891,8 @@ test "unlink() | freeUnlinkedEntry()" {
     const dict = TestDict.create();
     defer dict.destroy();
 
-    const key = sds.new(allocator.child, "key1");
-    _ = dict.add(key, sds.new(allocator.child, "val2"));
+    const key = sds.new(allocator.impl, "key1");
+    _ = dict.add(key, sds.new(allocator.impl, "val2"));
     const unlinked = dict.unlink(key);
     try expect(unlinked != null);
     try expectEqual(0, dict.size());
@@ -942,8 +942,8 @@ test "iterator() | fingerprint()" {
     try expectEqual(count, iters);
     iter.release();
 
-    const key = sds.new(allocator.child, "nokey");
-    defer sds.free(allocator.child, key);
+    const key = sds.new(allocator.impl, "nokey");
+    defer sds.free(allocator.impl, key);
     _ = dict.find(key);
     try expect(fp != dict.fingerprint());
 }
@@ -987,31 +987,31 @@ const TestDict = struct {
     fn batchAdd(dict: *HashMap, cnt: usize) void {
         for (0..cnt) |i| {
             const key = std.fmt.allocPrint(
-                allocator.child,
+                allocator.impl,
                 "key-{}",
                 .{i},
             ) catch unreachable;
             defer allocator.free(key);
 
             const val = std.fmt.allocPrint(
-                allocator.child,
+                allocator.impl,
                 "val-{}",
                 .{i},
             ) catch unreachable;
             defer allocator.free(val);
             _ = dict.add(
-                sds.new(allocator.child, key),
-                sds.new(allocator.child, val),
+                sds.new(allocator.impl, key),
+                sds.new(allocator.impl, val),
             );
         }
     }
 
     fn freeKey(key: sds.String) void {
-        sds.free(allocator.child, key);
+        sds.free(allocator.impl, key);
     }
 
     fn freeVal(val: sds.String) void {
-        sds.free(allocator.child, val);
+        sds.free(allocator.impl, val);
     }
 };
 
