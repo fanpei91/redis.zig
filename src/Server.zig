@@ -763,7 +763,6 @@ fn sigShutdownHandler(sig: i32) callconv(.c) void {
 
 pub fn up(self: *Server) !void {
     self.el.setBeforeSleepProc(beforeSleep);
-    // TODO: after sleep
     try self.el.main();
 }
 
@@ -983,7 +982,7 @@ fn serverCron(
     return @intCast(@divFloor(1000, server.hz));
 }
 
-fn prepareForShutdown(flags: i32) bool {
+pub fn prepareForShutdown(flags: i32) bool {
     const save = flags & SHUTDOWN_SAVE != 0;
     const nosave = flags & SHUTDOWN_NOSAVE != 0;
 
@@ -1328,7 +1327,19 @@ pub fn processCommand(self: *Server, cli: *Client) bool {
         return true;
     }
 
-    // TODO: handle lua script too slow.
+    // Lua script too slow? Only allow a limited number of commands.
+    if (server.lua.timeout and cli.cmd.?.proc != authCommand and
+        !(cli.cmd.?.proc == dbt.shutdownCommand and
+            cli.argc == 2 and
+            toLower(sds.castBytes(cli.argv.?[1].v.ptr)[0]) == 'n') and
+        !(cli.cmd.?.proc == scripting.scriptCommand and
+            cli.argc == 2 and
+            toLower(sds.castBytes(cli.argv.?[1].v.ptr)[0]) == 'k'))
+    {
+        multi.flagTransaction(cli);
+        cli.addReply(shared.slowscripterr);
+        return true;
+    }
 
     // Exec the command
     if (cli.flags & CLIENT_MULTI != 0 and
@@ -1737,7 +1748,7 @@ pub fn setProcTitle(title: []const u8) void {
 /// parent restarts it can bind/lock despite the child possibly still running.
 pub fn closeChildUnusedResourceAfterFork() void {
     closeListeningSockets(false);
-    // TODO: cluster, pidfile
+    // TODO: pidfile
 }
 
 /// After an RDB dump or AOF rewrite we exit from children.
@@ -1903,3 +1914,5 @@ const rdb = @import("rdb.zig");
 const childinfo = @import("childinfo.zig");
 const aof = @import("aof.zig");
 const expire = @import("expire.zig");
+const dbt = @import("db.zig");
+const toLower = std.ascii.toLower;

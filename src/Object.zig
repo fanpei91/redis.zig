@@ -147,6 +147,7 @@ pub const Shared = struct {
     oomerr: *Object,
     execaborterr: *Object,
     busykeyerr: *Object,
+    slowscripterr: *Object,
     space: *Object,
     colon: *Object,
     plus: *Object,
@@ -283,6 +284,10 @@ pub const Shared = struct {
         self.busykeyerr = Object.create(
             .string,
             sds.new(allocator.impl, "-BUSYKEY Target key name already exists.\r\n"),
+        );
+        self.slowscripterr = Object.create(
+            .string,
+            sds.new(allocator.impl, "-BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.\r\n"),
         );
         self.space = Object.create(
             .string,

@@ -185,6 +185,40 @@ fn rename(cli: *Client, nx: bool) void {
     cli.addReply(if (nx) Server.shared.cone else Server.shared.ok);
 }
 
+// SHUTDOWN [NOSAVE | SAVE]
+pub fn shutdownCommand(cli: *Client) void {
+    const argv = cli.argv.?;
+    var flags: i32 = Server.SHUTDOWN_NOFLAGS;
+
+    if (cli.argc > 2) {
+        cli.addReply(Server.shared.syntaxerr);
+        return;
+    } else if (cli.argc == 2) {
+        if (caseEql(sds.castBytes(argv[1].v.ptr), "nosave")) {
+            flags |= Server.SHUTDOWN_NOSAVE;
+        } else if (caseEql(sds.castBytes(argv[1].v.ptr), "save")) {
+            flags |= Server.SHUTDOWN_SAVE;
+        } else {
+            cli.addReply(Server.shared.syntaxerr);
+            return;
+        }
+    }
+
+    // When SHUTDOWN is called while the server is loading a dataset in
+    // memory we need to make sure no attempt is performed to save
+    // the dataset on shutdown (otherwise it could overwrite the current DB
+    // with half-read data).
+    //
+    // Also when in Sentinel mode clear the SAVE flag and force NOSAVE.
+    if (server.loading) {
+        flags = (flags & ~@as(i32, Server.SHUTDOWN_SAVE)) | Server.SHUTDOWN_NOSAVE;
+    }
+    if (Server.prepareForShutdown(flags)) {
+        std.process.exit(0);
+    }
+    cli.addReplyErr("Errors trying to SHUTDOWN. Check logs.");
+}
+
 pub fn select(cli: *Client, id: i64) bool {
     if (id < 0 or id >= server.dbnum) {
         return false;

@@ -32,8 +32,6 @@ pub fn execCommand(cli: *Client) void {
             break :biz;
         }
 
-        // TODO: server.loading
-
         // Exec all the queued commands
         var must_propagate = false; // Need to propagate MULTI/EXEC to AOF / slaves?
         unwatchAllKeys(cli); // Unwatch ASAP otherwise we'll waste CPU cycles

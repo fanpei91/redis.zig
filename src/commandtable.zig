@@ -21,6 +21,7 @@ pub var table = [_]Command{
     .{ .name = "randomkey", .proc = db.randomkeyCommand, .arity = 1, .sflags = "rR" },
     .{ .name = "move", .proc = db.moveCommand, .arity = 3, .sflags = "wF" },
     .{ .name = "scan", .proc = db.scanCommand, .arity = -2, .sflags = "rR" },
+    .{ .name = "shutdown", .proc = db.shutdownCommand, .arity = -1, .sflags = "aslt" },
     .{ .name = "ttl", .proc = expire.ttlCommand, .arity = 2, .sflags = "rFR" },
     .{ .name = "pttl", .proc = expire.pttlCommand, .arity = 2, .sflags = "rFR" },
     .{ .name = "persist", .proc = expire.persistCommand, .arity = 2, .sflags = "wF" },
