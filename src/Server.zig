@@ -3,6 +3,7 @@ pub const CONFIG_DEFAULT_DYNAMIC_HZ = true; // Adapt hz to # of clients.
 pub const CONFIG_DEFAULT_HZ = 10; // Time interrupt calls/sec.
 pub const CONFIG_MIN_HZ = 1;
 pub const CONFIG_MAX_HZ = 500;
+pub const CONFIG_DEFAULT_ACTIVE_REHASHING = true;
 pub const CONFIG_DEFAULT_TCP_BACKLOG = 511; // TCP listen backlog.
 pub const CONFIG_DEFAULT_CLIENT_TIMEOUT = 0; // Default client timeout: infinite
 pub const CONFIG_DEFAULT_SERVER_PORT = 6379; // TCP port.
@@ -40,8 +41,12 @@ pub const AOF_REWRITE_ITEMS_PER_CMD = 64;
 pub const AOF_REWRITE_PERC = 100;
 pub const AOF_REWRITE_MIN_SIZE = (64 * 1024 * 1024);
 
+pub const CRON_DBS_PER_CALL = 16;
 pub const ACTIVE_EXPIRE_CYCLE_SLOW = 0;
 pub const ACTIVE_EXPIRE_CYCLE_FAST = 1;
+pub const ACTIVE_EXPIRE_CYCLE_FAST_DURATION = 1000; // Microseconds
+pub const ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC = 25; // CPU max % for keys collection
+pub const ACTIVE_EXPIRE_CYCLE_LOOKUPS_PER_LOOP = 20; // Loopkups per loop.
 
 // Protocol and I/O related defines
 pub const PROTO_MAX_QUERYBUF_LEN = 1024 * 1024 * 1024; // 1GB max query buffer.
@@ -216,6 +221,7 @@ cronloops: i32, // Number of times the cron function run
 requirepass: ?[]u8, // Pass for AUTH command, or null
 db: []Database,
 commands: *Commands.HashMap, // Command table
+activerehashing: bool, // Incremental rehash in serverCron()
 // Networking
 clients: *ClientList, // List of active clients
 clients_index: [*c]raxlib.rax, // Active clients dictionary by client ID.
@@ -358,6 +364,7 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
 fn initConfig(self: *Server) void {
     self.config_hz = CONFIG_DEFAULT_HZ;
     self.arch_bits = @bitSizeOf(*anyopaque);
+    self.activerehashing = CONFIG_DEFAULT_ACTIVE_REHASHING;
     self.requirepass = null;
     self.commands = Commands.HashMap.create(Commands.vtable);
     self.populateCommandTable();
@@ -1160,7 +1167,79 @@ fn clientsCronResizeQueryBuffer(cli: *Client) bool {
 /// incrementally in Redis databases, such as active key expiring, resizing,
 /// rehashing.
 fn databaseCron() void {
-    // TODO:
+    // Expire keys by random sampling.
+    if (server.active_expire_enabled) {
+        expire.activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
+    }
+
+    // Perform hash tables rehashing if needed, but only if there are no
+    // other processes saving the DB on disk. Otherwise rehashing is bad
+    // as will cause a lot of copy-on-write of memory pages.
+    if (server.rdb_child_pid == -1 and server.aof_child_pid == -1) {
+        // We use global counters so if we stop the computation at a given
+        // DB we'll be able to start from the successive in the next
+        // cron loop iteration.
+        const State = struct {
+            var resize_db: usize = 0;
+            var rehash_db: usize = 0;
+        };
+        // Don't test more DBs than we have.
+        const dbs_per_call = @min(CRON_DBS_PER_CALL, server.dbnum);
+
+        // Resize
+        for (0..dbs_per_call) |_| {
+            tryResizeHashTables(@rem(State.resize_db, server.dbnum));
+            State.resize_db +%= 1;
+        }
+
+        // Rehash
+        if (server.activerehashing) {
+            for (0..dbs_per_call) |_| {
+                const work_done = incrementallyRehash(State.rehash_db);
+                if (work_done) {
+                    // If the function did some work, stop here, we'll do
+                    // more at the next cron loop.
+                    break;
+                } else {
+                    // If this db didn't need rehash, we'll try the next one.
+                    State.rehash_db += 1;
+                    State.rehash_db = @rem(State.rehash_db, server.dbnum);
+                }
+            }
+        }
+    }
+}
+
+/// If the percentage of used slots in the HT reaches HASHTABLE_MIN_FILL
+/// we resize the hash table to save memory
+fn tryResizeHashTables(dbid: usize) void {
+    const db = &server.db[dbid];
+    if (needShrinkDictToFit(db.dict.size(), db.dict.slots())) {
+        _ = db.dict.shrinkToFit();
+    }
+    if (needShrinkDictToFit(db.expires.size(), db.expires.slots())) {
+        _ = db.expires.shrinkToFit();
+    }
+}
+
+/// Our hash table implementation performs rehashing incrementally while
+/// we write/read from the hash table. Still if the server is idle, the hash
+/// table will use two tables for a long time. So we try to use 1 millisecond
+/// of CPU time at every call of this function to perform some rehahsing.
+///
+/// The function returns TRUE if some rehashing was performed, otherwise FALSE
+/// is returned.
+fn incrementallyRehash(dbid: usize) bool {
+    const db = &server.db[dbid];
+    if (db.dict.isRehashing()) {
+        db.dict.rehashMilliseconds(1);
+        return true; // already used our millisecond for this loop...
+    }
+    if (db.expires.isRehashing()) {
+        db.expires.rehashMilliseconds(1);
+        return true; // already used our millisecond for this loop...
+    }
+    return false;
 }
 
 /// If this function gets called we already read a whole

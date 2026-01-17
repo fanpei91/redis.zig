@@ -219,12 +219,14 @@ pub const Database = struct {
         }
     };
 
+    pub const Expires = dict.Dict(sds.String, i64);
+
     /// Database ID
     id: usize,
     /// The keyspace for this DB
     dict: *Hash.Map,
     /// Timeout of keys with a timeout set
-    expires: *dict.Dict(sds.String, i64),
+    expires: *Expires,
     /// Keys with clients waiting for data (BLPOP)
     blocking_keys: *dict.Dict(*Object, *Server.ClientList),
     /// Blocked keys that received a PUSH
@@ -567,7 +569,7 @@ pub const Database = struct {
 
     /// Delete a key, value, and associated expiration entry if any,
     /// from the DB.
-    fn syncDelete(self: *Database, key: *Object) bool {
+    pub fn syncDelete(self: *Database, key: *Object) bool {
         const skey = sds.cast(key.v.ptr);
         if (self.expires.size() > 0) {
             _ = self.expires.delete(skey);

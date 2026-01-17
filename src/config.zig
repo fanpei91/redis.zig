@@ -134,6 +134,14 @@ fn loadFromString(
                 continue;
             }
 
+            if (eql(option, "activerehashing") and argc == 2) {
+                server.activerehashing = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
             if (eql(option, "tcp-backlog") and argc == 2) {
                 server.tcp_backlog = std.fmt.parseInt(
                     u32,
