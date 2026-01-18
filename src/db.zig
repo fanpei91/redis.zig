@@ -899,7 +899,6 @@ const server = &Server.instance;
 const Object = @import("Object.zig");
 const evict = @import("evict.zig");
 const sds = @import("sds.zig");
-const log = std.log.scoped(.db);
 const lazyfree = @import("lazyfree.zig");
 const blocked = @import("blocked.zig");
 const dict = @import("dict.zig");

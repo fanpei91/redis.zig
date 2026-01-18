@@ -1081,7 +1081,7 @@ pub const Client = struct {
                 const bytes = self.buf[self.sentlen..self.bufpos];
                 const nwritten = posix.write(self.fd, bytes) catch |err| {
                     if (err != posix.WriteError.WouldBlock) {
-                        log.debug("Error writing to client: {}", .{err});
+                        logging.verbose("Error writing to client: {}", .{err});
                         self.free();
                         return false;
                     }
@@ -1109,7 +1109,7 @@ pub const Client = struct {
                 const bytes = obj.slice(self.sentlen, objlen);
                 const nwritten = posix.write(self.fd, bytes) catch |err| {
                     if (err != posix.WriteError.WouldBlock) {
-                        log.debug("Error writing to client: {}", .{err});
+                        logging.verbose("Error writing to client: {}", .{err});
                         self.free();
                         return false;
                     }
@@ -1236,7 +1236,7 @@ pub fn acceptHandler(
     while (calls > 0) : (calls -= 1) {
         const csk = anet.accept(fd) catch |err| {
             if (err != posix.AcceptError.WouldBlock) {
-                log.warn("Accepting client connection: {}", .{err});
+                logging.warn("Accepting client connection: {}", .{err});
             }
             return;
         };
@@ -1245,16 +1245,16 @@ pub fn acceptHandler(
         var flags: i32 = 0;
         if (csk.addr.any.family == posix.AF.UNIX) {
             flags |= Server.CLIENT_UNIX_SOCKET;
-            log.info("Accepted connection to {s}", .{server.unixsocket.?});
+            logging.verbose("Accepted connection to {s}", .{server.unixsocket.?});
         } else {
-            log.info("Accepted {s}", .{addr});
+            logging.verbose("Accepted {s}", .{addr});
         }
 
         const c = Client.create(
             csk.fd,
             flags,
         ) catch |err| {
-            log.warn(
+            logging.warn(
                 "Error registering fd event for the new client: {} (fd={})",
                 .{ err, fd },
             );
@@ -1406,13 +1406,13 @@ fn readQueryFromClient(
     ) catch |err| switch (err) {
         posix.ReadError.WouldBlock => return,
         else => {
-            log.info("Reading from client: {}", .{err});
+            logging.verbose("Reading from client: {}", .{err});
             cli.free();
             return;
         },
     };
     if (nread == 0) {
-        log.info("Client closed connection", .{});
+        logging.verbose("Client closed connection", .{});
         cli.free();
         return;
     }
@@ -1424,7 +1424,7 @@ fn readQueryFromClient(
         var bytes = sds.empty(allocator.impl);
         defer sds.free(allocator.impl, bytes);
         bytes = sds.catRepr(allocator.impl, bytes, cli.querybuf[0..64]);
-        log.warn(
+        logging.warn(
             "Closing client that reached max query buffer length (qbuf initial bytes: {s})",
             .{sds.asBytes(bytes)},
         );
@@ -1483,7 +1483,7 @@ const allocator = @import("allocator.zig");
 const ae = @import("ae.zig");
 const posix = std.posix;
 const anet = @import("anet.zig");
-const log = std.log.scoped(.networking);
+const logging = @import("logging.zig");
 const Server = @import("Server.zig");
 const db = @import("db.zig");
 const sds = @import("sds.zig");

@@ -758,9 +758,9 @@ fn rewriteBufferAppend(s: []const u8) void {
             const numbloks = server.aof_rewrite_buf_blocks.?.len;
             if (@rem(numbloks + 1, 10) == 0) {
                 const level = if (@rem(numbloks + 1, 100) == 0)
-                    logging.WARNING
+                    logging.Level.warning
                 else
-                    logging.NOTICE;
+                    logging.Level.notice;
                 logging.raw(
                     level,
                     "Background AOF buffer size: {} MB",

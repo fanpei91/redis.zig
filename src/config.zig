@@ -22,6 +22,25 @@ const aof_fsync_enum = [_]configEnum{
     .{ .name = "no", .val = Server.AOF_FSYNC_NO },
 };
 
+const loglevel_enum = [_]configEnum{
+    .{ .name = "debug", .val = @intFromEnum(logging.Level.debug) },
+    .{ .name = "verbose", .val = @intFromEnum(logging.Level.verbose) },
+    .{ .name = "notice", .val = @intFromEnum(logging.Level.notice) },
+    .{ .name = "warning", .val = @intFromEnum(logging.Level.warning) },
+};
+
+const syslog_facility_enum = [_]configEnum{
+    .{ .name = "user", .val = @intCast(libc.LOG_USER) },
+    .{ .name = "local0", .val = @intCast(libc.LOG_LOCAL0) },
+    .{ .name = "local1", .val = @intCast(libc.LOG_LOCAL1) },
+    .{ .name = "local2", .val = @intCast(libc.LOG_LOCAL2) },
+    .{ .name = "local3", .val = @intCast(libc.LOG_LOCAL3) },
+    .{ .name = "local4", .val = @intCast(libc.LOG_LOCAL4) },
+    .{ .name = "local5", .val = @intCast(libc.LOG_LOCAL5) },
+    .{ .name = "local6", .val = @intCast(libc.LOG_LOCAL6) },
+    .{ .name = "local7", .val = @intCast(libc.LOG_LOCAL7) },
+};
+
 /// Get enum value from name. If there is no match std.math.minInt(i32) is
 /// returned.
 fn configEnumGetValue(ce: []const configEnum, name: []const u8) i32 {
@@ -56,7 +75,7 @@ pub fn load(
             fp = std.fs.File.stdin();
         } else {
             fp = std.fs.openFileAbsolute(filepath, .{}) catch |err| {
-                log.warn("Can't open config file '{s}'", .{filepath});
+                logging.warn("Can't open config file '{s}'", .{filepath});
                 return err;
             };
         }
@@ -131,6 +150,67 @@ fn loadFromString(
                     err = YES_NO_ARG_ERR;
                     break :biz;
                 };
+                continue;
+            }
+
+            if (eql(option, "loglevel") and argc == 2) {
+                const verbosity = configEnumGetValue(
+                    &loglevel_enum,
+                    sds.asBytes(argv[1]),
+                );
+                if (verbosity == std.math.minInt(i32)) {
+                    err = "Invalid log level. " ++
+                        "Must be one of debug, verbose, notice, warning";
+                    break :biz;
+                }
+                server.verbosity = @enumFromInt(verbosity);
+                continue;
+            }
+
+            if (eql(option, "logfile") and argc == 2) {
+                allocator.free(server.logfile);
+                server.logfile = sds.asSentinelBytes(argv[1]);
+                if (server.logfile.len != 0) {
+                    // Test if we are able to open the file. The server will not
+                    // be able to abort just for this problem later...
+                    const fp = libc.fopen(server.logfile, "a");
+                    if (fp == null) {
+                        err = sds.asBytes(sds.catPrintf(
+                            allocator.impl,
+                            sds.empty(allocator.impl),
+                            "Can't open the log file: {s}",
+                            .{libc.strerror(std.c._errno().*)},
+                        ));
+                        break :biz;
+                    }
+                    _ = libc.fclose(fp);
+                }
+                continue;
+            }
+
+            if (eql(option, "syslog-enabled") and argc == 2) {
+                server.syslog_enabled = parseYesNo(sds.asBytes(argv[1])) catch {
+                    err = YES_NO_ARG_ERR;
+                    break :biz;
+                };
+                continue;
+            }
+
+            if (eql(option, "syslog-ident") and argc == 2) {
+                allocator.free(server.syslog_ident);
+                server.syslog_ident = allocator.dupeZ(u8, sds.asBytes(argv[1]));
+                continue;
+            }
+
+            if (eql(option, "syslog-facility") and argc == 2) {
+                server.syslog_facility = configEnumGetValue(
+                    &syslog_facility_enum,
+                    sds.asBytes(argv[1]),
+                );
+                if (server.syslog_facility == std.math.minInt(i32)) {
+                    err = "Invalid log facility. Must be one of USER or between LOCAL0-LOCAL7";
+                    break :biz;
+                }
                 continue;
             }
 
@@ -595,12 +675,14 @@ fn loadFromString(
         }
         return;
     }
-    log.err("*** CONFIG FILE ERROR ***", .{});
-    log.err("Reading the configuration file, at line {}", .{linenum});
-    log.err(">>> '{s}'", .{sds.asBytes(lines[i])});
+    var writer = std.fs.File.stderr().writer(&.{}).interface;
+    writer.print("*** CONFIG FILE ERROR ***", .{}) catch {};
+    writer.print("Reading the configuration file, at line {}", .{linenum}) catch {};
+    writer.print(">>> '{s}'", .{sds.asBytes(lines[i])}) catch {};
     if (err) |e| {
-        log.err("{s}", .{e});
+        writer.print("{s}", .{e}) catch {};
     }
+    writer.flush() catch {};
     return error.InvalidConfig;
 }
 
@@ -722,6 +804,11 @@ const std = @import("std");
 const allocator = @import("allocator.zig");
 const sds = @import("sds.zig");
 const Server = @import("Server.zig");
-const log = std.log.scoped(.config);
 const expectEqual = std.testing.expectEqual;
 const util = @import("util.zig");
+const logging = @import("logging.zig");
+const libc = @cImport({
+    @cInclude("sys/syslog.h");
+    @cInclude("stdio.h");
+    @cInclude("string.h");
+});

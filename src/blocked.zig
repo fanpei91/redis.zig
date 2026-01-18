@@ -522,7 +522,6 @@ const server = &Server.instance;
 const list = @import("t_list.zig");
 const List = list.List;
 const sds = @import("sds.zig");
-const log = std.log.scoped(.blocked);
 const assert = std.debug.assert;
 const zset = @import("t_zset.zig");
 const Zset = zset.Zset;

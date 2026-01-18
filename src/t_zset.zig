@@ -3393,7 +3393,6 @@ const Object = @import("Object.zig");
 const server = &Server.instance;
 const ZipList = @import("ZipList.zig");
 const util = @import("util.zig");
-const log = std.log.scoped(.zset);
 const db = @import("db.zig");
 const blocked = @import("blocked.zig");
 const IntSet = @import("IntSet.zig");

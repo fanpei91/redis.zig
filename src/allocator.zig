@@ -23,6 +23,10 @@ pub fn alignedAlloc(
     return impl.alignedAlloc(T, alignment, n) catch oom();
 }
 
+pub fn dupeZ(comptime T: type, m: []const T) [:0]T {
+    return impl.dupeZ(T, m) catch oom();
+}
+
 pub fn dupe(comptime T: type, m: []const T) []T {
     return impl.dupe(T, m) catch oom();
 }

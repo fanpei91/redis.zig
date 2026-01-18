@@ -65,8 +65,18 @@ pub fn main() !void {
     logging.notice("Running mode={s}, port={}", .{ "standalone", server.port });
 
     try checkTcpBacklogSettings(server);
+    logging.warn("Server initialized", .{});
     checkMaxMemorySettings(server);
     loadDataFromDisk(server);
+    if (server.ipfd_count > 0) {
+        logging.notice("Ready to accept connections", .{});
+    }
+    if (server.sofd > 0) {
+        logging.notice(
+            "The server is now ready to accept connections at {s}",
+            .{server.unixsocket.?},
+        );
+    }
     try server.up();
 }
 

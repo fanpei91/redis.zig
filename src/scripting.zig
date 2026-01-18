@@ -394,8 +394,10 @@ pub const Lua = struct {
                 return lua_error(lua);
             }
 
-            const level: c_int = @intFromFloat(lua_tonumber(lua, -argc));
-            if (level < logging.DEBUG or level > logging.WARNING) {
+            const level: i32 = @intFromFloat(lua_tonumber(lua, -argc));
+            if (level < @intFromEnum(logging.Level.debug) or
+                level > @intFromEnum(logging.Level.warning))
+            {
                 lua_pushstring(lua, "Invalid debug level.");
                 return lua_error(lua);
             }
@@ -413,7 +415,7 @@ pub const Lua = struct {
                     msg = sds.cat(allocator.impl, msg, s[0..len]);
                 }
             }
-            logging.raw(@intCast(level), "{s}", .{sds.asBytes(msg)});
+            logging.raw(@enumFromInt(level), "{s}", .{sds.asBytes(msg)});
             return 0;
         }
 
@@ -627,19 +629,19 @@ pub const Lua = struct {
         lua_settable(lua, -3);
 
         lua_pushstring(lua, "LOG_DEBUG");
-        lua_pushnumber(lua, logging.DEBUG);
+        lua_pushnumber(lua, @intFromEnum(logging.Level.debug));
         lua_settable(lua, -3);
 
         lua_pushstring(lua, "LOG_VERBOSE");
-        lua_pushnumber(lua, logging.VERBOSE);
+        lua_pushnumber(lua, @intFromEnum(logging.Level.verbose));
         lua_settable(lua, -3);
 
         lua_pushstring(lua, "LOG_NOTICE");
-        lua_pushnumber(lua, logging.NOTICE);
+        lua_pushnumber(lua, @intFromEnum(logging.Level.notice));
         lua_settable(lua, -3);
 
         lua_pushstring(lua, "LOG_WARNING");
-        lua_pushnumber(lua, logging.WARNING);
+        lua_pushnumber(lua, @intFromEnum(logging.Level.warning));
         lua_settable(lua, -3);
 
         // redis.sha1hex

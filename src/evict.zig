@@ -127,4 +127,3 @@ const Server = @import("Server.zig");
 const server = &Server.instance;
 const Object = @import("Object.zig");
 const random = @import("random.zig");
-const log = std.log.scoped(.evict);

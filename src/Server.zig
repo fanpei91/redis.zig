@@ -3,6 +3,11 @@ pub const CONFIG_DEFAULT_DYNAMIC_HZ = true; // Adapt hz to # of clients.
 pub const CONFIG_DEFAULT_HZ = 10; // Time interrupt calls/sec.
 pub const CONFIG_MIN_HZ = 1;
 pub const CONFIG_MAX_HZ = 500;
+pub const CONFIG_DEFAULT_VERBOSITY = logging.Level.notice;
+pub const CONFIG_DEFAULT_LOGFILE = "";
+pub const CONFIG_DEFAULT_SYSLOG_ENABLED = false;
+pub const CONFIG_DEFAULT_SYSLOG_IDENT = "redis";
+pub const LOG_MAX_LEN = 1024; // Default maximum length of syslog messages.
 pub const CONFIG_DEFAULT_ACTIVE_REHASHING = true;
 pub const CONFIG_DEFAULT_TCP_BACKLOG = 511; // TCP listen backlog.
 pub const CONFIG_DEFAULT_CLIENT_TIMEOUT = 0; // Default client timeout: infinite
@@ -264,6 +269,12 @@ maxidletime: u32, // Client timeout in seconds
 dbnum: u32, // Total number of configured DBs
 tcpkeepalive: i32, // Set SO_KEEPALIVE if non-zero.
 client_max_querybuf_len: usize, // Limit for client query buffer length
+verbosity: logging.Level, // Loglevel in redis.conf
+// Logging
+logfile: [:0]u8, // Path of log file
+syslog_enabled: bool, // Is syslog enabled?
+syslog_ident: [:0]u8, // Syslog ident
+syslog_facility: i32, // Syslog facility
 // RDB persistence
 dirty: i64, // Changes to DB from the last save
 dirty_before_bgsave: i64, // Used to restore dirty on failed BGSAVE
@@ -363,6 +374,11 @@ pub fn create(configfile: ?sds.String, options: ?sds.String) !void {
 
 fn initConfig(self: *Server) void {
     self.config_hz = CONFIG_DEFAULT_HZ;
+    self.verbosity = CONFIG_DEFAULT_VERBOSITY;
+    self.logfile = allocator.dupeZ(u8, CONFIG_DEFAULT_LOGFILE);
+    self.syslog_enabled = CONFIG_DEFAULT_SYSLOG_ENABLED;
+    self.syslog_ident = allocator.dupeZ(u8, CONFIG_DEFAULT_SYSLOG_IDENT);
+    self.syslog_facility = @intCast(libc.LOG_LOCAL0);
     self.arch_bits = @bitSizeOf(*anyopaque);
     self.activerehashing = CONFIG_DEFAULT_ACTIVE_REHASHING;
     self.requirepass = null;
@@ -455,6 +471,7 @@ fn initConfig(self: *Server) void {
 
 fn init(self: *Server) !void {
     setupSignalHandlers();
+    self.openSysLog();
 
     self.hz = self.config_hz;
     self.cronloops = 0;
@@ -734,6 +751,16 @@ fn setupSignalHandlers() void {
     };
     posix.sigaction(posix.SIG.INT, &act, null);
     posix.sigaction(posix.SIG.TERM, &act, null);
+}
+
+fn openSysLog(self: *Server) void {
+    if (self.syslog_enabled) {
+        libc.openlog(
+            self.syslog_ident,
+            libc.LOG_PID | libc.LOG_NDELAY | libc.LOG_NOWAIT,
+            @intCast(self.syslog_facility),
+        );
+    }
 }
 
 fn sigShutdownHandler(sig: i32) callconv(.c) void {
@@ -1902,6 +1929,7 @@ const libc = @cImport({
     @cInclude("sys/errno.h");
     @cInclude("string.h");
     @cInclude("unistd.h");
+    @cInclude("sys/syslog.h");
 });
 const assert = std.debug.assert;
 const hasher = @import("hasher.zig");
