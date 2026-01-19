@@ -48,6 +48,7 @@ pub var table = [_]Command{
     .{ .name = "append", .proc = string.appendCommand, .arity = 3, .sflags = "wm" },
     .{ .name = "setrange", .proc = string.setrangeCommand, .arity = 4, .sflags = "wm" },
     .{ .name = "getrange", .proc = string.getrangeCommand, .arity = 4, .sflags = "r" },
+    .{ .name = "substr", .proc = string.getrangeCommand, .arity = 4, .sflags = "r" },
     .{ .name = "lpush", .proc = list.lpushCommand, .arity = -3, .sflags = "wmF" },
     .{ .name = "rpush", .proc = list.rpushCommand, .arity = -3, .sflags = "wmF" },
     .{ .name = "lpushx", .proc = list.lpushxCommand, .arity = -3, .sflags = "wmF" },

@@ -158,7 +158,7 @@ pub const EventLoop = struct {
         proc: FileProc,
         client_data: ClientData,
     ) !void {
-        if (fd >= self.getSetSize()) return error.InvalidFileDescriptor;
+        if (fd >= self.getSetSize()) return error.FdOutOfRange;
         try api.addEvent(self, fd, mask);
 
         const fe: *FileEvent = &self.events[@intCast(fd)];
